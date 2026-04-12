@@ -1,5 +1,5 @@
 # GaussianAD: Gaussian-Centric End-to-End Autonomous Driving
-### [Paper](https://arxiv.org/pdf/)  | [Project Page](https://wzzheng.net/GaussianAD)  | [Code](https://github.com/wzzheng/GaussianAD)
+### [Paper](https://arxiv.org/pdf/2412.10371)  | [Project Page](https://wzzheng.net/GaussianAD)  | [Code](https://github.com/wzzheng/GaussianAD)
 ![logo](./assets/logo.jpg)
 
 Check out our [Large Driving Model](https://github.com/wzzheng/LDM/) Series!
@@ -14,7 +14,8 @@ GaussianAD is a Gaussian-centric end-to-end framework which employs sparse yet c
 
 ## News
 
-- **[2024/12/16]** Paper released on [arXiv](https://arxiv.org/abs/).
+- **[2026/4/11]** Code release!
+- **[2024/12/16]** Paper released on [arXiv](https://arxiv.org/abs/2412.10371).
 
 ## Demo
 
@@ -43,6 +44,8 @@ Follow instructions [HERE](docs/installation.md) to prepare the environment.
 
 2. Download the occupancy annotations from SurroundOcc [HERE](https://github.com/weiyithu/SurroundOcc) and unzip it.
 
+3. Download [nuscenes_infos_train_gauddisn_ad.pkl](https://cloud.tsinghua.edu.cn/f/6beea891be9b4801824d/) and [nuscenes_infos_val_gauddisn_ad.pkl](https://cloud.tsinghua.edu.cn/f/4579e651079341129ef2/) and put them under data/nuscenes_cam/
+
 **Folder structure**
 ```
 GaussianAD
@@ -64,6 +67,7 @@ GaussianAD
 │   │   ├── val_samples/
 │   │   |   ├── xxxxxxxx.pcd.bin.npy
 │   │   |   ├── ...
+
 ```
 
 ### Train
@@ -101,7 +105,7 @@ If you find this project helpful, please consider citing the following paper:
 @article{gaussianad,
     title={GaussianAD: Gaussian-Centric End-to-End Autonomous Driving},
     author={Wenzhao Zheng, Junjie Wu, Yao Zheng, Sicheng Zuo, Zixun Xie, Longchao Yang, Yong Pan, Zhihui Hao, Peng Jia, XianPeng Lang, Shanghang Zhang},
-    journal={arXiv preprint arXiv: xxx},
+    journal={arXiv preprint arXiv: 2412.10371},
     year={2024}
 }
 ```
