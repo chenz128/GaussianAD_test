@@ -154,6 +154,7 @@ loss_input_convertion = dict(
 )
 # [STAGE-MAP-ONLY] freeze occ/det/plan modules so DDP only syncs map-related grads
 frozen_modules = ['head', 'decoder', 'planner_head']
+find_unused_parameters = True  # needed because encoder/temporal_encoder may have unused params
 
 # ========= model config ===============
 embed_dims = 128
@@ -209,7 +210,7 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp = True,
+        with_cp = False,  # [STAGE-MAP-ONLY] disabled to allow find_unused_parameters=True without DDP conflict
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False), # original DCNv2 will print log when perform load_state_dict
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
