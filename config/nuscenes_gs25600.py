@@ -39,51 +39,54 @@ grad_max_norm = 35
 loss = dict(
     type='MultiLoss',
     loss_cfgs=[
-        dict(
-            type='OccupancyLoss',
-            weight=1.0,
-            empty_label=17,
-            num_classes=18,
-            use_focal_loss=False,
-            use_dice_loss=False,
-            balance_cls_weight=True,
-            multi_loss_weights=dict(
-                loss_voxel_ce_weight=10.0,
-                loss_voxel_lovasz_weight=1.0),
-            use_sem_geo_scal_loss=False,
-            use_lovasz_loss=True,
-            lovasz_ignore=17,
-            manual_class_weight=[
-                1.01552756, 1.06897009, 1.30013094, 1.07253735, 0.94637502, 1.10087012,
-                1.26960524, 1.06258364, 1.189019,   1.06217292, 1.00595144, 0.85706115,
-                1.03923299, 0.90867526, 0.8936431,  0.85486129, 0.8527829,  0.5       ]),
-         dict(
-            type='OccupancyFlowLoss',
-            weight=1.0,
-            empty_label=17,
-            num_classes=18,
-            use_focal_loss=False,
-            use_dice_loss=False,
-            balance_cls_weight=True,
-            multi_loss_weights=dict(
-                loss_voxel_ce_weight=10.0,
-                loss_voxel_lovasz_weight=1.0),
-            use_sem_geo_scal_loss=False,
-            use_lovasz_loss=True,
-            lovasz_ignore=17,
-            manual_class_weight=[
-                1.01552756, 1.06897009, 1.30013094, 1.07253735, 0.94637502, 1.10087012,
-                1.26960524, 1.06258364, 1.189019,   1.06217292, 1.00595144, 0.85706115,
-                1.03923299, 0.90867526, 0.8936431,  0.85486129, 0.8527829,  0.5       ]),
-        dict(
-            type='DetectionLoss',
-            weight=1.0,
-            head_order=['center', 'center_z', 'dim', 'rot', 'vel'],
-            loss_weights={
-                'cls_weight': 1.0,
-                'loc_weight': 0.25,
-                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2, 1.0, 1.0]
-            }),
+        # [STAGE-MAP-ONLY] OccupancyLoss disabled
+        # dict(
+        #     type='OccupancyLoss',
+        #     weight=1.0,
+        #     empty_label=17,
+        #     num_classes=18,
+        #     use_focal_loss=False,
+        #     use_dice_loss=False,
+        #     balance_cls_weight=True,
+        #     multi_loss_weights=dict(
+        #         loss_voxel_ce_weight=10.0,
+        #         loss_voxel_lovasz_weight=1.0),
+        #     use_sem_geo_scal_loss=False,
+        #     use_lovasz_loss=True,
+        #     lovasz_ignore=17,
+        #     manual_class_weight=[
+        #         1.01552756, 1.06897009, 1.30013094, 1.07253735, 0.94637502, 1.10087012,
+        #         1.26960524, 1.06258364, 1.189019,   1.06217292, 1.00595144, 0.85706115,
+        #         1.03923299, 0.90867526, 0.8936431,  0.85486129, 0.8527829,  0.5       ]),
+        # [STAGE-MAP-ONLY] OccupancyFlowLoss disabled
+        # dict(
+        #     type='OccupancyFlowLoss',
+        #     weight=1.0,
+        #     empty_label=17,
+        #     num_classes=18,
+        #     use_focal_loss=False,
+        #     use_dice_loss=False,
+        #     balance_cls_weight=True,
+        #     multi_loss_weights=dict(
+        #         loss_voxel_ce_weight=10.0,
+        #         loss_voxel_lovasz_weight=1.0),
+        #     use_sem_geo_scal_loss=False,
+        #     use_lovasz_loss=True,
+        #     lovasz_ignore=17,
+        #     manual_class_weight=[
+        #         1.01552756, 1.06897009, 1.30013094, 1.07253735, 0.94637502, 1.10087012,
+        #         1.26960524, 1.06258364, 1.189019,   1.06217292, 1.00595144, 0.85706115,
+        #         1.03923299, 0.90867526, 0.8936431,  0.85486129, 0.8527829,  0.5       ]),
+        # [STAGE-MAP-ONLY] DetectionLoss disabled
+        # dict(
+        #     type='DetectionLoss',
+        #     weight=1.0,
+        #     head_order=['center', 'center_z', 'dim', 'rot', 'vel'],
+        #     loss_weights={
+        #         'cls_weight': 1.0,
+        #         'loc_weight': 0.25,
+        #         'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2, 1.0, 1.0]
+        #     }),
         dict(
             type='MapLoss',
             loss_cls=dict(
@@ -122,28 +125,28 @@ loss = dict(
             num_pts_per_gt_vec=fixed_ptsnum_per_gt_line,
             dir_interval=1,
             ),
-        dict(
-            type='PlanLoss',
-            weight=10.0,
-            ),
+        # [STAGE-MAP-ONLY] PlanLoss disabled
+        # dict(
+        #     type='PlanLoss',
+        #     weight=10.0,
+        #     ),
         ])
 
 loss_input_convertion = dict(
-    pred_occ='pred_occ',
-    sampled_xyz='sampled_xyz',
-    sampled_label='sampled_label',
-    occ_mask='occ_mask',
-    occ_flow='occ_flow',
-    pred_dicts='pred_dicts',
-    target_dicts='target_dicts',
-    batch_index='batch_index',
-    voxel_indices='voxel_indices',
-    # map_all_cls_scores = 'map_all_cls_scores',
-    # map_all_pts_preds = 'map_all_pts_preds',
-    ego_fut_preds = 'ego_fut_preds',
-    ego_fut_gt = 'ego_fut_trajs',
-    ego_fut_masks = 'ego_fut_masks',
-    ego_fut_cmd = 'ego_fut_cmd',
+    # [STAGE-MAP-ONLY] occ/det/plan inputs disabled
+    # pred_occ='pred_occ',
+    # sampled_xyz='sampled_xyz',
+    # sampled_label='sampled_label',
+    # occ_mask='occ_mask',
+    # occ_flow='occ_flow',
+    # pred_dicts='pred_dicts',
+    # target_dicts='target_dicts',
+    # batch_index='batch_index',
+    # voxel_indices='voxel_indices',
+    # ego_fut_preds='ego_fut_preds',
+    # ego_fut_gt='ego_fut_trajs',
+    # ego_fut_masks='ego_fut_masks',
+    # ego_fut_cmd='ego_fut_cmd',
     # map loss inputs
     all_cls_scores="all_cls_scores",
     all_bbox_preds="all_bbox_preds",
