@@ -127,6 +127,8 @@ def main(args):
             device_ids=[torch.cuda.current_device()],
             broadcast_buffers=False,
             find_unused_parameters=find_unused_parameters)
+        if cfg.get('static_graph', False):
+            my_model._set_static_graph()
         raw_model = my_model.module
     else:
         my_model = my_model.cuda()
