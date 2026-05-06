@@ -118,7 +118,21 @@ def main(local_rank, args):
             state_dict = ckpt['state_dict']
         else:
             state_dict = ckpt
-        print(raw_model.load_state_dict(state_dict, strict=False))
+        try:
+            print(raw_model.load_state_dict(state_dict, strict=False))
+        except RuntimeError:
+            # Skip keys with incompatible tensor shapes (e.g. neck channels).
+            model_state = raw_model.state_dict()
+            filtered_state_dict = {}
+            skipped = []
+            for k, v in state_dict.items():
+                if k in model_state and hasattr(v, 'shape') and model_state[k].shape == v.shape:
+                    filtered_state_dict[k] = v
+                else:
+                    skipped.append(k)
+
+            print(f'filtered {len(skipped)} incompatible keys from load_from checkpoint')
+            print(raw_model.load_state_dict(filtered_state_dict, strict=False))
 
     print_freq = cfg.print_freq
     from misc.metric_util import MeanIoU, DetMetric

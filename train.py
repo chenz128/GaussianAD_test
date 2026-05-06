@@ -29,7 +29,7 @@ from vis import vis_map_train
 def pass_print(*args, **kwargs):
     pass
 
-def initialize(args):
+def initialize(args):#多卡训练时的初始化，返回rank和local_rank
     rank = int(os.environ.get("RANK", 0))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     node_num = os.environ.get("NODE_NUM", None)
@@ -71,15 +71,15 @@ def initialize(args):
     affinity = gpu_affinity.set_affinity(local_rank, device_count)
     print(f"rank={rank}, local_rank={local_rank}, world_size={world_size}", flush=True)
 
-    return rank, local_rank
+    return rank, local_rank #这个函数返回的是rank和local_rank，rank是全局的进程编号，local_rank是当前节点上的GPU编号
 
 def main(args):
     # global settings
-    set_random_seed(args.seed)
-    torch.backends.cudnn.deterministic = False
+    set_random_seed(args.seed) #设置随机种子，保证实验的可复现性
+    torch.backends.cudnn.deterministic = False 
     torch.backends.cudnn.benchmark = True
 
-    # load config
+    # load config#从配置文件中加载训练配置，配置文件中包含了模型结构、优化器设置、数据加载等信息
     cfg = Config.fromfile(args.py_config)
     cfg.work_dir = args.work_dir
 
@@ -132,6 +132,7 @@ def main(args):
         my_model = my_model.cuda()
         raw_model = my_model
     logger.info('done ddp model')
+
 
     train_dataset_loader, val_dataset_loader = get_dataloader(
         cfg.train_dataset_config,

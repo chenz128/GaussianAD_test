@@ -624,7 +624,9 @@ class LoadOccupancySurroundOcc(object):
         return xyz # x, y, z, 3
 
     def get_occ(self, results, plan_traj=0, is_flow=False):
-        label_file = os.path.join(self.occ_path, results['pts_filename'].split('/')[-1]+'.npy')
+        label_file = results.get('occ_path', None)
+        if not (isinstance(label_file, str) and label_file.endswith('.npy') and os.path.exists(label_file)):
+            label_file = os.path.join(self.occ_path, results['pts_filename'].split('/')[-1]+'.npy')
         if os.path.exists(label_file):
             label = np.load(label_file)
 
