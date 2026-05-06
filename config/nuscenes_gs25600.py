@@ -152,6 +152,9 @@ loss_input_convertion = dict(
     all_bbox_preds="all_bbox_preds",
     all_pts_preds="all_pts_preds",
 )
+# [STAGE-MAP-ONLY] occ/det/plan heads have no grad, must allow unused params in DDP
+find_unused_parameters = True
+
 # ========= model config ===============
 embed_dims = 128
 num_decoder = 4
