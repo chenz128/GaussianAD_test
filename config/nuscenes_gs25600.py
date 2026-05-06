@@ -152,10 +152,8 @@ loss_input_convertion = dict(
     all_bbox_preds="all_bbox_preds",
     all_pts_preds="all_pts_preds",
 )
-# [STAGE-MAP-ONLY] occ/det/plan heads have no grad, must allow unused params in DDP
-# static_graph resolves the "marked ready twice" conflict with gradient checkpointing
-find_unused_parameters = True
-static_graph = True
+# [STAGE-MAP-ONLY] freeze occ/det/plan modules so DDP only syncs map-related grads
+frozen_modules = ['head', 'decoder', 'planner_head']
 
 # ========= model config ===============
 embed_dims = 128

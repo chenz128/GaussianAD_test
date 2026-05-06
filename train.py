@@ -113,6 +113,13 @@ def main(args):
 
     my_model = build_segmentor(cfg.model)
     my_model.init_weights()
+    # Freeze modules not contributing to the active losses (e.g. map-only stage)
+    for mod_name in cfg.get('frozen_modules', []):
+        mod = getattr(my_model, mod_name, None)
+        if mod is not None:
+            for param in mod.parameters():
+                param.requires_grad = False
+            logger.info(f'Frozen module: {mod_name}')
     n_parameters = sum(p.numel() for p in my_model.parameters() if p.requires_grad)
     logger.info(f'Number of params: {n_parameters}')
     if distributed:
@@ -127,8 +134,6 @@ def main(args):
             device_ids=[torch.cuda.current_device()],
             broadcast_buffers=False,
             find_unused_parameters=find_unused_parameters)
-        if cfg.get('static_graph', False):
-            my_model._set_static_graph()
         raw_model = my_model.module
     else:
         my_model = my_model.cuda()
