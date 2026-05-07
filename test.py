@@ -58,7 +58,8 @@ def main(local_rank, args):
 
     writer = None
     timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
-    log_file = osp.join(args.work_dir, f'{timestamp}.log')
+    log_name = args.log_name if args.log_name else f'test_{timestamp}'
+    log_file = osp.join(args.work_dir, f'{log_name}.log')
     logger = MMLogger('selfocc', log_file=log_file)
     MMLogger._instance_dict['selfocc'] = logger
     logger.info(f'Config:\n{cfg.pretty_text}')
@@ -240,6 +241,7 @@ if __name__ == '__main__':
     parser.add_argument('--resume-from', type=str, default='')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--vis-occ', action='store_true', default=False)
+    parser.add_argument('--log-name', type=str, default='', help='custom log file name (without .log)')
     args = parser.parse_args()
 
     ngpus = torch.cuda.device_count()
