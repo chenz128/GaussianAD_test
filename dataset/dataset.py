@@ -1576,12 +1576,15 @@ class NuScenesDataset(Dataset):
 
         if self.data_aug_conf is not None:
             input_dict["aug_configs"] = self._sample_augmentation()
-        # save ori_intrinsic before pipeline may drop it
+        # save keys before pipeline may drop them (needed for pseudo label loading)
         _ori_intrinsic_saved = np.array(input_dict.get('ori_intrinsic', input_dict.get('cam_intrinsic'))).copy()
+        _cam2ego_saved = np.array(input_dict['cam2ego']).copy() if self.use_pseudo_label else None
         for t in self.pipeline:
             input_dict = t(input_dict)
-        # restore ori_intrinsic (pipeline transforms may have removed it)
+        # restore after pipeline transforms
         input_dict['ori_intrinsic'] = _ori_intrinsic_saved
+        if _cam2ego_saved is not None:
+            input_dict['cam2ego'] = _cam2ego_saved
 
         return_dict = self.prepare_data(input_dict)
         return_dict = self.vectormap_pipeline(return_dict, input_dict)
