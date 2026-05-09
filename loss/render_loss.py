@@ -28,6 +28,9 @@ class RenderLoss(BaseLoss):
                 'pseudo_depth': 'pseudo_depth',
             }
         super().__init__(weight=weight, input_dict=input_dict, **kwargs)
+        # BaseLoss.__init__ sets self.loss_func = lambda: 0 as instance attr,
+        # which shadows our loss_func method. Delete it to restore method lookup.
+        del self.loss_func
 
         self.sem_lw = sem_lw
         self.depth_lw = depth_lw
