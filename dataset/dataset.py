@@ -1576,8 +1576,12 @@ class NuScenesDataset(Dataset):
 
         if self.data_aug_conf is not None:
             input_dict["aug_configs"] = self._sample_augmentation()
+        # save ori_intrinsic before pipeline may drop it
+        _ori_intrinsic_saved = np.array(input_dict.get('ori_intrinsic', input_dict.get('cam_intrinsic'))).copy()
         for t in self.pipeline:
             input_dict = t(input_dict)
+        # restore ori_intrinsic (pipeline transforms may have removed it)
+        input_dict['ori_intrinsic'] = _ori_intrinsic_saved
 
         return_dict = self.prepare_data(input_dict)
         return_dict = self.vectormap_pipeline(return_dict, input_dict)
