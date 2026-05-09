@@ -154,7 +154,7 @@ loss_input_convertion = dict(
 )
 # [NO-PLAN] only freeze planner_head since plan loss is disabled
 frozen_modules = ['planner_head']
-find_unused_parameters = True  # planner_head frozen, may have unused params
+find_unused_parameters = False  # with_cp=True conflicts with find_unused_parameters=True in DDP; frozen modules don't need it
 
 # ========= model config ===============
 embed_dims = 128
