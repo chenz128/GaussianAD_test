@@ -5,6 +5,7 @@ from copy import deepcopy
 from collections.abc import Sequence
 import tempfile
 import torch
+import torch.nn.functional as F
 import numpy as np
 from pyquaternion import Quaternion
 from torch.utils.data import Dataset
@@ -1232,6 +1233,12 @@ class NuScenesDataset(Dataset):
         map_ann_file=None,
         map_eval_use_same_gt_sample_num_flag=False,
         custom_eval_version='vad_nusc_detection_cvpr_2019',
+        # pseudo label configs
+        metric3d_root=None,
+        grounded_sam_root=None,
+        pseudo_label_scale=0.44,
+        max_pseudo_depth=40.0,
+        pseudo_label_crop_top=140,
     ):
         self.data_path = data_root
         data = mmengine.load(imageset)
@@ -1303,6 +1310,29 @@ class NuScenesDataset(Dataset):
         self.custom_eval_detection_configs = v1CustomDetectionConfig.deserialize(data)
         self.nusc = NuScenes(version='v1.0-trainval', dataroot=self.data_path,
                              verbose=False)
+
+        # pseudo label setup
+        self.metric3d_root = metric3d_root
+        self.grounded_sam_root = grounded_sam_root
+        self.pseudo_label_scale = pseudo_label_scale
+        self.max_pseudo_depth = max_pseudo_depth
+        self.pseudo_label_crop_top = pseudo_label_crop_top
+        self.use_pseudo_label = (metric3d_root is not None and grounded_sam_root is not None)
+        if self.use_pseudo_label:
+            # build scene_token -> scene_name mapping
+            self._scene_token_to_name = {
+                s['token']: s['name'] for s in self.nusc.scene
+            }
+            # pseudo label camera order (how npy files are saved)
+            self._pseudo_cam_order = [
+                'CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_BACK_LEFT',
+                'CAM_BACK', 'CAM_BACK_RIGHT', 'CAM_FRONT_RIGHT'
+            ]
+            # reorder indices: from pseudo_cam_order to sensor_types
+            self._pseudo_reorder = [
+                self._pseudo_cam_order.index(c) for c in self.sensor_types
+            ]
+
         self.__getitem__(0)
         self.eval_version='detection_cvpr_2019'
 
@@ -1559,6 +1589,64 @@ class NuScenesDataset(Dataset):
             "lidar2ego_rotation":info['lidar2ego_rotation'],
             "lidar2ego_translation":info['lidar2ego_translation'],},
         })
+
+        # ── pseudo label loading ──
+        if self.use_pseudo_label:
+            sample_token = info['token']
+            scene_name = self._scene_token_to_name[info['scene_token']]
+            scale = self.pseudo_label_scale
+            crop_top = self.pseudo_label_crop_top
+
+            # load raw pseudo labels (6, 900, 1600) in pseudo_cam_order
+            seg_path = os.path.join(self.grounded_sam_root, scene_name, f'{sample_token}.npy')
+            depth_path = os.path.join(self.metric3d_root, scene_name, f'{sample_token}.npy')
+            pseudo_seg = torch.from_numpy(np.load(seg_path).astype(np.int64))      # (6, 900, 1600)
+            pseudo_depth = torch.from_numpy(np.load(depth_path).astype(np.float32)) # (6, 900, 1600)
+
+            # reorder cameras to match sensor_types order
+            pseudo_seg = pseudo_seg[self._pseudo_reorder]
+            pseudo_depth = pseudo_depth[self._pseudo_reorder]
+
+            # downsample
+            if scale != 1.0:
+                pseudo_seg = F.interpolate(pseudo_seg[:, None].float(), scale_factor=scale, mode='nearest').squeeze(1).long()
+                pseudo_depth = F.interpolate(pseudo_depth[:, None], scale_factor=scale, mode='bilinear', align_corners=False).squeeze(1)
+
+            # crop top
+            if crop_top > 0:
+                pseudo_seg = pseudo_seg[:, crop_top:]
+                pseudo_depth = pseudo_depth[:, crop_top:]
+
+            # mask out far depth regions
+            far_mask = pseudo_depth > self.max_pseudo_depth
+            pseudo_seg[far_mask] = 0
+            pseudo_depth[far_mask] = 0.0
+
+            # sync flip with data augmentation
+            aug_configs = input_dict.get('aug_configs')
+            if aug_configs is not None:
+                _, _, _, flip, _ = aug_configs
+                if flip:
+                    pseudo_seg = pseudo_seg.flip(-1)
+                    pseudo_depth = pseudo_depth.flip(-1)
+
+            # compute render intrinsics from original cam_intrinsic (before aug)
+            # ori_intrinsic is (6, 4, 4) in sensor_types order
+            gs_intrins = input_dict['ori_intrinsic'][:, :3, :3].copy()  # (6, 3, 3)
+            gs_intrins[:, 0, 0] *= scale  # fx
+            gs_intrins[:, 1, 1] *= scale  # fy
+            gs_intrins[:, 0, 2] *= scale  # cx
+            gs_intrins[:, 1, 2] *= scale  # cy
+            gs_intrins[:, 1, 2] -= crop_top  # cy adjust for crop
+
+            # ego2cam extrinsics
+            cam2ego = input_dict['cam2ego']  # (6, 4, 4)
+            ego2cam = np.linalg.inv(cam2ego)  # (6, 4, 4)
+
+            return_dict['pseudo_seg'] = pseudo_seg           # (6, H', W')
+            return_dict['pseudo_depth'] = pseudo_depth       # (6, H', W')
+            return_dict['gs_intrins'] = torch.from_numpy(gs_intrins).float()  # (6, 3, 3)
+            return_dict['gs_extrins'] = torch.from_numpy(ego2cam).float()     # (6, 4, 4)
 
         return return_dict
 

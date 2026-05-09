@@ -19,6 +19,7 @@ class GaussianHead(BaseTaskHead):
         cuda_kwargs=None,
         dataset_type='nusc',
         empty_label=17,
+        render_config=None,
         **kwargs,
     ):
         super().__init__(init_cfg)
@@ -43,6 +44,12 @@ class GaussianHead(BaseTaskHead):
         self.register_buffer('grid_size', torch.tensor(grid_size, dtype=torch.float).unsqueeze(0))
 
         self.register_buffer('zero_tensor', torch.zeros(1, dtype=torch.float))
+
+        # 2D Gaussian splatting renderer (pseudo-label supervision)
+        self.rasterizer_2d = None
+        if render_config is not None:
+            from .gaussian_rasterizer import GaussianRasterizer2D
+            self.rasterizer_2d = GaussianRasterizer2D(**render_config)
 
     def init_weights(self):
         for m in self.modules():
@@ -183,7 +190,7 @@ class GaussianHead(BaseTaskHead):
             gs=(origi_opa, opacities, scales, CovInv),
             **kwargs)
 
-        return {
+        output = {
             'pred_occ': prediction,
             'sampled_label': sampled_label,
             'sampled_xyz': sampled_xyz,
@@ -191,4 +198,14 @@ class GaussianHead(BaseTaskHead):
             'gaussian': representation_temp['gaussian'],
             'occ_flow': occ_flow
         }
+
+        # 2D splatting for pseudo-label supervision (training only)
+        if self.training and self.rasterizer_2d is not None:
+            gs_extrins = metas['gs_extrins'].to(self.zero_tensor.device)  # (B, nC, 4, 4)
+            gs_intrins = metas['gs_intrins'].to(self.zero_tensor.device)  # (B, nC, 3, 3)
+            rendered_sem, rendered_depth = self.rasterizer_2d(gaussians, gs_extrins, gs_intrins)
+            output['rendered_sem'] = rendered_sem
+            output['rendered_depth'] = rendered_depth
+
+        return output
 

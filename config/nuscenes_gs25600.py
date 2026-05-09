@@ -84,43 +84,13 @@ loss = dict(
                 'loc_weight': 0.25,
                 'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2, 1.0, 1.0]
             }),
+        # [SPLATTING] MapLoss disabled — pseudo-label semantics implicitly constrain scene structure
+        # RenderLoss: pseudo-label supervision via 2D Gaussian splatting
         dict(
-            type='MapLoss',
-            loss_cls=dict(
-                type='FocalLoss',
-                use_sigmoid=True,
-                gamma=2.0,
-                alpha=0.25,
-                loss_weight=2.0),
-            loss_bbox=dict(type='L1Loss', loss_weight=0.0),
-            loss_iou=dict(type='GIoULoss', loss_weight=0.0),
-            loss_pts=dict(type='PtsL1Loss',
-                        loss_weight=5.0),
-            loss_dir=dict(type='PtsDirCosLoss', loss_weight=0.005),
-            loss_seg=dict(type='SimpleLoss',
-                pos_weight=4.0,
-                loss_weight=1.0),
-            loss_pv_seg=dict(type='SimpleLoss',
-                        pos_weight=1.0,
-                        loss_weight=2.0),
-            assigner=dict(
-                    type='MapTRAssigner',
-                    cls_cost=dict(type='FocalLossCost', weight=2.0),
-                    reg_cost=dict(type='BBoxL1Cost', weight=0.0, box_format='xywh'),
-                    # reg_cost=dict(type='BBox3DL1Cost', weight=0.25),
-                    # iou_cost=dict(type='IoUCost', weight=1.0), # Fake cost. This is just to make it compatible with DETR head.
-                    iou_cost=dict(type='IoUCost', iou_mode='giou', weight=0.0),
-                    pts_cost=dict(type='OrderedPtsL1Cost', weight=5),
-                    pc_range=pc_range),
-            sync_cls_avg_factor=True,
-            num_classes=num_map_classes,
-            gt_shift_pts_pattern='v2',
-            pc_range=pc_range,
-            code_weights=[1.0, 1.0, 1.0, 1.0],
-            aux_seg=_base_.aux_seg_cfg,
-            num_pts_per_vec=fixed_ptsnum_per_pred_line, # one bbox
-            num_pts_per_gt_vec=fixed_ptsnum_per_gt_line,
-            dir_interval=1,
+            type='RenderLoss',
+            weight=1.0,
+            sem_lw=2.0,
+            depth_lw=0.05,
             ),
         # [NO-PLAN] PlanLoss disabled
         # dict(
@@ -147,13 +117,20 @@ loss_input_convertion = dict(
     # ego_fut_gt='ego_fut_trajs',
     # ego_fut_masks='ego_fut_masks',
     # ego_fut_cmd='ego_fut_cmd',
-    # map loss inputs
-    all_cls_scores="all_cls_scores",
-    all_bbox_preds="all_bbox_preds",
-    all_pts_preds="all_pts_preds",
+    # [SPLATTING] map inputs disabled
+    # all_cls_scores="all_cls_scores",
+    # all_bbox_preds="all_bbox_preds",
+    # all_pts_preds="all_pts_preds",
+    # render loss inputs (from head output)
+    rendered_sem='rendered_sem',
+    rendered_depth='rendered_depth',
+    # render loss inputs (from metas/data)
+    pseudo_seg='pseudo_seg',
+    pseudo_depth='pseudo_depth',
 )
 # [NO-PLAN] only freeze planner_head since plan loss is disabled
-frozen_modules = ['planner_head']
+# [SPLATTING] also freeze map_head since map loss is disabled
+frozen_modules = ['planner_head', 'map_decoder']
 find_unused_parameters = True  # planner_head frozen, may have unused params
 
 # ========= model config ===============
@@ -195,7 +172,13 @@ train_dataset_config = dict(
     data_aug_conf=data_aug_conf,
     class_names=det_config['class_names'],
     pc_range=pc_range,
-    num_frames=4
+    num_frames=4,
+    # pseudo label configs (splatting branch)
+    metric3d_root='/data/chenz/Gaussianflowocc_test/data/metric_3d_nusc',
+    grounded_sam_root='/data/chenz/Gaussianflowocc_test/data/grounded_sam_nusc',
+    pseudo_label_scale=0.44,
+    max_pseudo_depth=40.0,
+    pseudo_label_crop_top=140,
 )
 
 model = dict(
@@ -382,6 +365,12 @@ model = dict(
             H=120, W=120, D=8,
             pc_min=[-30.0, -30.0, -2.0],
             grid_size=0.5),
+        render_config=dict(
+            render_h=256,   # int(900 * 0.44) - 140 = ~256
+            render_w=704,   # int(1600 * 0.44) = 704
+            sem_lw=2.0,
+            depth_lw=0.05,
+        ),
     ),
     decoder=dict(
         type='VoxelNeXt',
