@@ -131,7 +131,7 @@ loss_input_convertion = dict(
 # [NO-PLAN] only freeze planner_head since plan loss is disabled
 # [SPLATTING] also freeze map_head since map loss is disabled
 frozen_modules = ['planner_head', 'map_decoder']
-find_unused_parameters = True  # planner_head frozen, may have unused params
+find_unused_parameters = False  # with_cp=True conflicts with find_unused_parameters=True in DDP; frozen modules don't need it
 
 # ========= model config ===============
 embed_dims = 128
@@ -193,7 +193,7 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp = False,  # [STAGE-MAP-ONLY] disabled to allow find_unused_parameters=True without DDP conflict
+        with_cp = True,  # gradient checkpointing to reduce peak VRAM
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False), # original DCNv2 will print log when perform load_state_dict
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
