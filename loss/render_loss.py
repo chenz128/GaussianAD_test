@@ -58,19 +58,23 @@ class RenderLoss(BaseLoss):
             pseudo_seg:     (B, nC, H, W)     — pseudo semantic labels (0=invalid)
             pseudo_depth:   (B, nC, H, W)     — pseudo depth (0=invalid)
         """
-        # ── semantic loss ──
+        # eval mode: rendering was skipped, return 0 loss
+        if rendered_sem is None or rendered_depth is None:
+            return torch.tensor(0.0, requires_grad=False)
+
+        # ── semantic loss ──semantic是指渲染结果的语义分割图，pseudo_seg是指根据点云生成的伪标签语义分割图。rendered_sem和pseudo_seg都是(B, nC, H, W)的形状，其中nC是相机数量，H和W是图像的高和宽。semantic loss是计算rendered_sem和pseudo_seg之间的交叉熵损失，注意pseudo_seg中的0表示无效像素，不参与损失计算。
         pred_sem = rendered_sem.flatten(0, -2)     # (N, 17)
         target_sem = pseudo_seg.flatten().long()    # (N,)
         valid_sem = target_sem > 0
         if valid_sem.any():
-            pw = self.class_weight[target_sem[valid_sem]]
+            pw = self.class_weight[target_sem[valid_sem]]#这是一个权重张量，用于平衡不同类别的损失。class_weight是根据nuScenes数据集中各个类别的频率计算得到的，频率越低的类别权重越高。通过索引target_sem[valid_sem]，我们可以得到每个有效像素对应的类别权重，从而在计算交叉熵损失时给予稀有类别更大的关注。
             loss_sem = self.sem_lw * (
                 pw * self.loss_fn_ce(pred_sem[valid_sem], target_sem[valid_sem] - 1)
-            ).mean()
+            ).mean()#注意这里的target_sem[valid_sem] - 1是因为pseudo_seg中的类别标签是从1开始的，而CrossEntropyLoss要求类别标签从0开始，所以需要减1进行调整。
         else:
             loss_sem = pred_sem.sum() * 0.0
 
-        # ── depth loss ──
+        # ── depth loss ──depth是指渲染结果的深度图，pseudo_depth是指根据点云生成的伪标签深度图。rendered_depth和pseudo_depth都是(B, nC, H, W)的形状，其中nC是相机数量，H和W是图像的高和宽。depth loss是计算rendered_depth和pseudo_depth之间的均方误差损失，注意pseudo_depth中的0表示无效像素，不参与损失计算。
         pred_d = rendered_depth.flatten()
         target_d = pseudo_depth.flatten()
         dyn_mask = torch.isin(

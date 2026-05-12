@@ -200,10 +200,14 @@ class GaussianHead(BaseTaskHead):
         }
 
         # 2D splatting for pseudo-label supervision (training only)
-        if self.training and self.rasterizer_2d is not None:
-            gs_extrins = metas['gs_extrins'].to(self.zero_tensor.device)  # (B, nC, 4, 4)
-            gs_intrins = metas['gs_intrins'].to(self.zero_tensor.device)  # (B, nC, 3, 3)
-            rendered_sem, rendered_depth = self.rasterizer_2d(gaussians, gs_extrins, gs_intrins)
+        if self.rasterizer_2d is not None:
+            if self.training:
+                gs_extrins = metas['gs_extrins'].to(self.zero_tensor.device)  # (B, nC, 4, 4)
+                gs_intrins = metas['gs_intrins'].to(self.zero_tensor.device)  # (B, nC, 3, 3)
+                rendered_sem, rendered_depth = self.rasterizer_2d(gaussians, gs_extrins, gs_intrins)
+            else:
+                # eval: skip expensive rendering, output None so loss returns 0
+                rendered_sem, rendered_depth = None, None
             output['rendered_sem'] = rendered_sem
             output['rendered_depth'] = rendered_depth
 
