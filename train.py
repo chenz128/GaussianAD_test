@@ -30,11 +30,11 @@ def pass_print(*args, **kwargs):
     pass
 
 def initialize(args):#多卡训练时的初始化，返回rank和local_rank
-    rank = int(os.environ.get("RANK", 0))
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    node_num = os.environ.get("NODE_NUM", None)
-    gpu_count = os.environ.get("GPU_COUNT", None)
-    world_size = int(os.environ.get("WORLD_SIZE", None))
+    rank = int(os.environ.get("RANK", 0))#这里获取全局的rank，默认为0，如果是多卡训练，每个进程的rank会不同
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))#这里获取当前节点上的GPU编号，默认为0，如果是多卡训练，每个进程的local_rank会不同
+    node_num = os.environ.get("NODE_NUM", None)#这里获取节点数量，默认为None，如果是多卡训练，节点数量会大于1
+    gpu_count = os.environ.get("GPU_COUNT", None)#这里获取每个节点上的GPU数量，默认为None，如果是多卡训练，每个节点上的GPU数量会大于1
+    world_size = int(os.environ.get("WORLD_SIZE", None))#这里获取全局的进程数量，默认为None，如果是多卡训练，全局的进程数量会大于1
     if node_num is not None and gpu_count is not None:
         assert int(node_num) * int(gpu_count) == world_size
         print(f"node_num={node_num}, gpu_count={gpu_count}", flush=True)
@@ -112,9 +112,9 @@ def main(args):
     from loss import OPENOCC_LOSS
 
     my_model = build_segmentor(cfg.model)
-    my_model.init_weights()
+    my_model.init_weights()#初始化模型权重，这个函数会根据模型的定义来初始化权重，通常会使用一些常见的初始化方法，比如Xavier初始化或者Kaiming初始化等
     # Freeze modules not contributing to the active losses (e.g. map-only stage)
-    for mod_name in cfg.get('frozen_modules', []):
+    for mod_name in cfg.get('frozen_modules', []):#冻结模型中不参与当前损失计算的模块，这些模块在训练过程中不会更新权重，通常用于多阶段训练或者迁移学习等场景
         mod = getattr(my_model, mod_name, None)
         if mod is not None:
             for param in mod.parameters():
@@ -225,13 +225,13 @@ def main(args):
          'motorcycle', 'pedestrian', 'traffic_cone', 'trailer', 'truck',
          'driveable_surface', 'other_flat', 'sidewalk', 'terrain', 'manmade',
          'vegetation'],
-         True, 17, filter_minmax=False)
+         True, 17, filter_minmax=False)#这里的MeanIoU类是一个计算平均交并比（mIoU）的工具类，用于评估模型在语义分割任务中的性能。它接受以下参数：
     miou_metric.reset()
 
     while epoch < max_num_epochs:
         my_model.train()
-        os.environ['eval'] = 'false'
-        if hasattr(train_dataset_loader.sampler, 'set_epoch'):
+        os.environ['eval'] = 'false'#这里设置了一个环境变量eval为false，表示当前处于训练阶段。在训练过程中，模型会根据输入数据进行前向传播和反向传播来更新权重，而在评估阶段，模型会根据输入数据进行前向传播来计算损失和评估指标。通过设置这个环境变量，可以在模型的前向传播过程中区分训练和评估阶段，从而执行不同的操作，比如是否计算损失、是否更新权重等。
+        if hasattr(train_dataset_loader.sampler, 'set_epoch'):#这里检查了train_dataset_loader的采样器是否具有set_epoch方法，如果有的话，就调用这个方法来设置当前的epoch。这通常用于分布式训练中的数据采样器，以确保每个epoch的数据顺序不同，从而提高模型的泛化能力。
             train_dataset_loader.sampler.set_epoch(epoch)
         loss_list = []
         time.sleep(10)
@@ -241,7 +241,7 @@ def main(args):
             if first_run:
                 i_iter = i_iter + last_iter
 
-            for k in list(data.keys()):
+            for k in list(data.keys()):#这里遍历了数据字典中的所有键，并检查对应的值是否是一个PyTorch张量。如果是的话，就将这个张量移动到GPU上进行计算。这是为了确保在训练过程中，所有的输入数据都在GPU上，以加快计算速度。
                 if isinstance(data[k], torch.Tensor):
                     data[k] = data[k].cuda()
             input_imgs = data.pop('img')
@@ -249,15 +249,15 @@ def main(args):
 
             with torch.cuda.amp.autocast(amp):
                 # forward + backward + optimize
-                result_dict = my_model(imgs=input_imgs, metas=data, global_iter=global_iter)
+                result_dict = my_model(imgs=input_imgs, metas=data, global_iter=global_iter)#前向传播
 
                 loss_input = {
                     'metas': data
-                }
+                }#这个字典用来存储计算损失所需要的输入数据，初始时包含了一个键'metas'，对应的值是从数据字典中弹出的数据。这个数据通常包含了与输入图像相关的元信息，比如标签、坐标等。在后续的代码中，会根据配置文件中的loss_input_convertion来更新这个字典，添加更多的键值对，以满足损失函数的输入需求。
                 for loss_input_key, loss_input_val in cfg.loss_input_convertion.items():
                     if loss_input_key not in result_dict:
                         loss_input.update({
-                            loss_input_key: result_dict['metas'][loss_input_val]})
+                            loss_input_key: result_dict['metas'].get(loss_input_val)})
                     else:
                         loss_input.update({
                             loss_input_key: result_dict[loss_input_val]})
@@ -358,7 +358,7 @@ def main(args):
                     for loss_input_key, loss_input_val in cfg.loss_input_convertion.items():
                         if loss_input_key not in result_dict:
                             loss_input.update({
-                                loss_input_key: result_dict['metas'][loss_input_val]})
+                                loss_input_key: result_dict['metas'].get(loss_input_val)})
                         else:
                             loss_input.update({
                                 loss_input_key: result_dict[loss_input_val]})

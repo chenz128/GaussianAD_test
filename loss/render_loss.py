@@ -58,8 +58,8 @@ class RenderLoss(BaseLoss):
             pseudo_seg:     (B, nC, H, W)     — pseudo semantic labels (0=invalid)
             pseudo_depth:   (B, nC, H, W)     — pseudo depth (0=invalid)
         """
-        # eval mode: rendering was skipped, return 0 loss
-        if rendered_sem is None or rendered_depth is None:
+        # eval mode: rendering was skipped, or val dataset has no pseudo labels
+        if rendered_sem is None or rendered_depth is None or pseudo_seg is None or pseudo_depth is None:
             return torch.tensor(0.0, requires_grad=False)
 
         # ── semantic loss ──semantic是指渲染结果的语义分割图，pseudo_seg是指根据点云生成的伪标签语义分割图。rendered_sem和pseudo_seg都是(B, nC, H, W)的形状，其中nC是相机数量，H和W是图像的高和宽。semantic loss是计算rendered_sem和pseudo_seg之间的交叉熵损失，注意pseudo_seg中的0表示无效像素，不参与损失计算。
