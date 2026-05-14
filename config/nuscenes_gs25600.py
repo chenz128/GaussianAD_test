@@ -6,7 +6,7 @@ _base_ = [
 import os
 
 # =========== data config ==============
-input_shape = (1280, 704)
+input_shape = (1600, 864)
 data_aug_conf = {
     "resize_lim": (1.0, 1.0),
     "final_dim": input_shape[::-1],
@@ -16,7 +16,7 @@ data_aug_conf = {
     "W": 1600,
     "rand_flip": True,
 }
-num_frames = 4   # TODO: dataset 改为4帧时序输入
+num_frames = 4   # TODO: dataset 改为4帧时序输入 
 num_map_classes = len(_base_.map_classes)
 pc_range = [-30.0, -30.0, -2.0, 30.0, 30.0, 2.0]
 fixed_ptsnum_per_gt_line = 20 # now only support fixed_pts > 0
