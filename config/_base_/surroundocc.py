@@ -3,7 +3,7 @@ data_root = "data/nuscenes/"
 anno_root = "data/nuscenes_cam/"
 train_occ_path = "data/surroundocc/train_samples"
 val_occ_path = "data/surroundocc/val_samples"
-input_shape = (704, 256)
+input_shape = (704, 256)#这个输入尺寸是经过调整的，原始图像尺寸是1600x900，经过ResizeCropFlipImage这个数据增强步骤后变成了704x256。这个调整可能是为了适应模型的输入要求或者为了加快训练速度。需要注意的是，这个输入尺寸与模型的设计和训练过程密切相关，如果修改了输入尺寸，可能需要相应地调整模型的结构或者训练参数。
 batch_size = 1  # H20 96GB, full losses (occ+det+map, no plan)
 grid_size=[200, 200, 16]
 pc_range = [-15.0, -30.0, -2.0, 15.0, 30.0, 2.0]
@@ -136,15 +136,11 @@ val_dataset_config = dict(
 
 train_loader = dict(
     batch_size=batch_size,
-    num_workers=4,
+    num_workers=2,
     shuffle=True,
-    persistent_workers=True,
-    prefetch_factor=2,
 )
 
 val_loader = dict(
     batch_size=batch_size,
-    num_workers=4,
-    persistent_workers=True,
-    prefetch_factor=2,
+    num_workers=2,
 )
