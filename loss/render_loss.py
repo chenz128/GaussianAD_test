@@ -89,4 +89,29 @@ class RenderLoss(BaseLoss):
         else:
             loss_depth = pred_d.sum() * 0.0
 
+        # ── diagnostics（每500次iter打印一次，方便判断伪标签是否有效）──
+        self._diag_counter = getattr(self, '_diag_counter', 0) + 1
+        if self._diag_counter % 500 == 1:
+            valid_sem_ratio = valid_sem.float().mean().item()
+            valid_d_ratio   = valid_d.float().mean().item()
+            pred_depth_mean = pred_d[valid_d].mean().item() if valid_d.any() else 0.0
+            pred_depth_std  = pred_d[valid_d].std().item()  if valid_d.any() else 0.0
+            gt_depth_mean   = target_d[valid_d].mean().item() if valid_d.any() else 0.0
+            # 预测语义的熵均值（越低说明越自信，越高说明越接近随机）
+            import math
+            with torch.no_grad():
+                prob = torch.softmax(pred_sem[valid_sem], dim=-1) if valid_sem.any() else None
+                pred_entropy = (-( prob * (prob + 1e-8).log()).sum(-1)).mean().item() if prob is not None else float('nan')
+                rand_entropy = math.log(17)   # 随机猜测基准 ≈ 2.833
+            import logging
+            logger = logging.getLogger('mmengine')
+            logger.info(
+                f'[RenderLoss Diag] iter={self._diag_counter} | '
+                f'valid_sem={valid_sem_ratio:.2%} valid_depth={valid_d_ratio:.2%} | '
+                f'pred_depth: mean={pred_depth_mean:.2f}m std={pred_depth_std:.2f}m  '
+                f'gt_depth_mean={gt_depth_mean:.2f}m | '
+                f'sem_entropy={pred_entropy:.3f} (rand={rand_entropy:.3f}) | '
+                f'loss_sem={loss_sem.item():.4f} loss_depth={loss_depth.item():.4f}'
+            )
+
         return loss_sem + loss_depth
