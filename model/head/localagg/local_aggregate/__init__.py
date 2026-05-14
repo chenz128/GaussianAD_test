@@ -86,7 +86,7 @@ class _LocalAggregate(torch.autograd.Function):
             cov3D,
             opacities,
             semantics,
-            out_grad)
+            out_grad.float())  # ensure float32 for custom CUDA backward
 
         # Compute gradients for relevant tensors by invoking backward method
         means3D_grad, opacity_grad, semantics_grad, cov3D_grad = _C.local_aggregate_backward(*args)
@@ -133,6 +133,14 @@ class LocalAggregator(nn.Module):
         semantics = semantics.squeeze(0)
         scales = scales.detach().squeeze(0)
         cov3D = cov3D.squeeze(0)
+
+        # Cast to float32 for custom CUDA kernel (does not support half precision)
+        pts = pts.float()
+        means3D = means3D.float()
+        opacities = opacities.float()
+        semantics = semantics.float()
+        scales = scales.float()
+        cov3D = cov3D.float()
 
         points_int = ((pts - self.pc_min) / self.grid_size).to(torch.int)
         assert points_int.min() >= 0 and points_int[:, 0].max() < self.H and points_int[:, 1].max() < self.W and points_int[:, 2].max() < self.D
