@@ -95,9 +95,8 @@ class GaussianOccEncoder(BaseEncoder):
         for i, op in enumerate(self.operation_order):
             if op == 'spconv':
                 if self.with_cp and self.training:
-                    layer_i = self.layers[i]
-                    def _spconv(if_, anc):
-                        return layer_i(if_, anc)
+                    def _spconv(if_, anc, _layer=self.layers[i]):
+                        return _layer(if_, anc)
                     instance_feature = gradient_checkpoint(
                         _spconv, instance_feature, anchor, use_reentrant=False)
                 else:
@@ -112,10 +111,8 @@ class GaussianOccEncoder(BaseEncoder):
                 instance_feature = instance_feature + identity
             elif op == "deformable":
                 if self.with_cp and self.training:
-                    layer_i = self.layers[i]
-                    fm, m, ae_enc = feature_maps, metas, self.anchor_encoder
-                    def _deform(if_, anc, ae_):
-                        return layer_i(if_, anc, ae_, fm, m, anchor_encoder=ae_enc)
+                    def _deform(if_, anc, ae_, _layer=self.layers[i], _fm=feature_maps, _m=metas, _ae_enc=self.anchor_encoder):
+                        return _layer(if_, anc, ae_, _fm, _m, anchor_encoder=_ae_enc)
                     instance_feature = gradient_checkpoint(
                         _deform, instance_feature, anchor, anchor_embed, use_reentrant=False)
                 else:

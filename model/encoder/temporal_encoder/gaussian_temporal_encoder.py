@@ -114,10 +114,8 @@ class GaussianTemporalEncoder(BaseModule):
         for i, op in enumerate(self.operation_order):
             if op == 'spconv':
                 if self.with_cp and self.training:
-                    layer_i = self.layers[i]
-                    bidx = batch_indices
-                    def _spconv(if_, anc):
-                        return layer_i(if_, anc, bidx)
+                    def _spconv(if_, anc, _layer=self.layers[i], _bidx=batch_indices):
+                        return _layer(if_, anc, _bidx)
                     instance_feature = gradient_checkpoint(
                         _spconv, instance_feature, anchors, use_reentrant=False)
                 else:
