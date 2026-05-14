@@ -1,5 +1,6 @@
 from typing import List, Optional
 import torch, torch.nn as nn
+from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
 from mmseg.registry import MODELS
 from mmengine import build_from_cfg
@@ -20,12 +21,14 @@ class GaussianOccEncoder(BaseEncoder):
         num_decoder: int = 6,
         num_single_frame_decoder: int = -1,
         operation_order: Optional[List[str]] = None,
+        with_cp: bool = False,
         init_cfg=None,
         **kwargs,
     ):
         super().__init__(init_cfg)
         self.num_decoder = num_decoder
         self.num_single_frame_decoder = num_single_frame_decoder
+        self.with_cp = with_cp
 
         if operation_order is None:
             operation_order = [
@@ -91,9 +94,16 @@ class GaussianOccEncoder(BaseEncoder):
         prediction = []
         for i, op in enumerate(self.operation_order):
             if op == 'spconv':
-                instance_feature = self.layers[i](
-                    instance_feature,
-                    anchor)
+                if self.with_cp and self.training:
+                    layer_i = self.layers[i]
+                    def _spconv(if_, anc):
+                        return layer_i(if_, anc)
+                    instance_feature = gradient_checkpoint(
+                        _spconv, instance_feature, anchor, use_reentrant=False)
+                else:
+                    instance_feature = self.layers[i](
+                        instance_feature,
+                        anchor)
             elif op == "norm" or op == "ffn":
                 instance_feature = self.layers[i](instance_feature)
             elif op == "identity":
@@ -101,14 +111,22 @@ class GaussianOccEncoder(BaseEncoder):
             elif op == "add":
                 instance_feature = instance_feature + identity
             elif op == "deformable":
-                instance_feature = self.layers[i](
-                    instance_feature,
-                    anchor,
-                    anchor_embed,
-                    feature_maps,
-                    metas,
-                    anchor_encoder=self.anchor_encoder,
-                )
+                if self.with_cp and self.training:
+                    layer_i = self.layers[i]
+                    fm, m, ae_enc = feature_maps, metas, self.anchor_encoder
+                    def _deform(if_, anc, ae_):
+                        return layer_i(if_, anc, ae_, fm, m, anchor_encoder=ae_enc)
+                    instance_feature = gradient_checkpoint(
+                        _deform, instance_feature, anchor, anchor_embed, use_reentrant=False)
+                else:
+                    instance_feature = self.layers[i](
+                        instance_feature,
+                        anchor,
+                        anchor_embed,
+                        feature_maps,
+                        metas,
+                        anchor_encoder=self.anchor_encoder,
+                    )
             elif "refine" in op:
                 anchor, gaussian, offset = self.layers[i](
                     instance_feature,

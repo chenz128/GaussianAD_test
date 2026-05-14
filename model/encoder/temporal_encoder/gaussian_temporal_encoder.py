@@ -1,5 +1,6 @@
 import torch, numpy as np, torch.nn as nn
 import spconv.pytorch as spconv
+from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 from mmengine import MODELS
 from mmengine.model import BaseModule
 from functools import partial
@@ -24,6 +25,7 @@ class GaussianTemporalEncoder(BaseModule):
         operation_order = None,
         init_cfg = None,
         num_frames = 4,
+        with_cp: bool = False,
     ):
         super().__init__(init_cfg)
         self.get_xyz = partial(cartesian, pc_range=pc_range)
@@ -35,6 +37,7 @@ class GaussianTemporalEncoder(BaseModule):
         self.num_encoder = num_encoder
         self.operation_order = operation_order
         self.num_frames = num_frames
+        self.with_cp = with_cp
 
         # =========== build modules ===========
         def build(cfg):
@@ -110,10 +113,18 @@ class GaussianTemporalEncoder(BaseModule):
         prediction = []
         for i, op in enumerate(self.operation_order):
             if op == 'spconv':
-                instance_feature = self.layers[i](
-                    instance_feature,
-                    anchors,
-                    batch_indices)
+                if self.with_cp and self.training:
+                    layer_i = self.layers[i]
+                    bidx = batch_indices
+                    def _spconv(if_, anc):
+                        return layer_i(if_, anc, bidx)
+                    instance_feature = gradient_checkpoint(
+                        _spconv, instance_feature, anchors, use_reentrant=False)
+                else:
+                    instance_feature = self.layers[i](
+                        instance_feature,
+                        anchors,
+                        batch_indices)
             elif op == "norm" or op == "ffn":
                 instance_feature = self.layers[i](instance_feature)
             elif op == "identity":
