@@ -6,7 +6,7 @@ _base_ = [
 import os
 
 # =========== data config ==============
-input_shape = (1600, 864)
+input_shape = (1280, 704)
 data_aug_conf = {
     "resize_lim": (1.0, 1.0),
     "final_dim": input_shape[::-1],
