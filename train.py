@@ -261,8 +261,13 @@ def main(args):
                         loss_input.update({
                             loss_input_key: result_dict['metas'][loss_input_val]})
                     else:
-                        loss_input.update({
-                            loss_input_key: result_dict[loss_input_val]})
+                        val = result_dict[loss_input_val]
+                        # Cast fp16 model outputs to fp32 for loss (cdist, etc. don't support Half)
+                        if isinstance(val, torch.Tensor) and val.is_floating_point():
+                            val = val.float()
+                        elif isinstance(val, list):
+                            val = [v.float() if isinstance(v, torch.Tensor) and v.is_floating_point() else v for v in val]
+                        loss_input.update({loss_input_key: val})
                 loss, loss_dict = loss_func(loss_input)
 
                 loss = loss / grad_accumulation
