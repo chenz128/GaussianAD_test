@@ -248,9 +248,11 @@ def main(args):
             data_time_e = time.time()
 
             with torch.cuda.amp.autocast(amp):
-                # forward + backward + optimize
+                # forward (benefits from AMP fp16)
                 result_dict = my_model(imgs=input_imgs, metas=data, global_iter=global_iter)
 
+            # loss computation outside autocast to avoid dtype mismatches in target assignment
+            with torch.cuda.amp.autocast(False):
                 loss_input = {
                     'metas': data
                 }
