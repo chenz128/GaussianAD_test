@@ -89,7 +89,7 @@ class GaussianHead(BaseTaskHead):
         R = get_rotation_matrix(rotations) # b, g, 3, 3
         M = torch.matmul(S, R)
         Cov = torch.matmul(M.transpose(-1, -2), M)
-        CovInv = Cov.float().cpu().inverse().cuda().to(Cov.dtype) # b, g, 3, 3; float() for AMP compatibility
+        CovInv = Cov.float().cpu().inverse().cuda() # b, g, 3, 3; keep float32 (local_aggregate needs fp32)
         return means, origi_opa, opacities, scales, CovInv
 
     def get_filtered_lidar(self,lidar):

@@ -168,9 +168,11 @@ def main(args):
             t_in_epochs=False)
     amp = cfg.get('amp', False)
     if amp:
-        scaler = torch.cuda.amp.GradScaler()
+        # Use BF16 (no GradScaler needed - bfloat16 has same dynamic range as fp32)
+        amp_dtype = torch.bfloat16
         os.environ['amp'] = 'true'
     else:
+        amp_dtype = torch.float32
         os.environ['amp'] = 'false'
 
     # resume and load
@@ -247,8 +249,8 @@ def main(args):
             input_imgs = data.pop('img')
             data_time_e = time.time()
 
-            with torch.cuda.amp.autocast(amp):
-                # forward (benefits from AMP fp16)
+            with torch.cuda.amp.autocast(enabled=amp, dtype=amp_dtype):
+                # forward (benefits from AMP bf16)
                 result_dict = my_model(imgs=input_imgs, metas=data, global_iter=global_iter)
 
             # loss computation outside autocast to avoid dtype mismatches in target assignment
@@ -281,12 +283,11 @@ def main(args):
                     optimizer.step()
                     optimizer.zero_grad()
             else:
-                scaler.scale(loss).backward()
+                # BF16: no GradScaler needed (bfloat16 doesn't overflow like fp16)
+                loss.backward()
                 if (global_iter + 1) % grad_accumulation == 0:
-                    scaler.unscale_(optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(my_model.parameters(), cfg.grad_max_norm)
-                    scaler.step(optimizer)
-                    scaler.update()
+                    optimizer.step()
                     optimizer.zero_grad()
 
             loss_list.append(loss.detach().cpu().item())
