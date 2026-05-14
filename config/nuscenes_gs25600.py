@@ -36,9 +36,8 @@ optimizer = dict(
 )
 grad_max_norm = 35
 amp = True  # BF16 mixed precision: ~40% memory saving, negligible accuracy loss on H20
-batch_size = 2  # AMP + encoder gradient checkpointing enables batch=2 on H20 96GB
-train_loader = dict(batch_size=batch_size, num_workers=4, shuffle=True)
-val_loader = dict(batch_size=1, num_workers=2)
+# NOTE: batch_size>1 不可行——temporal encoder 在 refine_module 中用 unsqueeze(0) 强制输出 bs=1
+# 使用梯度累积代替: --gradient-accumulation 4 → effective batch = 1*4GPU*4accum = 16
 # ========= model config ===============
 loss = dict(
     type='MultiLoss',
