@@ -43,7 +43,9 @@ def get_dataloader(
             shuffle=False,
             sampler=val_sampler,
             num_workers=val_loader["num_workers"],
-            pin_memory=True)
+            pin_memory=True,
+            persistent_workers=val_loader.get("persistent_workers", False),
+            prefetch_factor=val_loader.get("prefetch_factor", 2))
 
         return None, val_dataset_loader
 
@@ -67,7 +69,9 @@ def get_dataloader(
         shuffle=False if dist else train_loader["shuffle"],
         sampler=train_sampler,
         num_workers=train_loader["num_workers"],
-        pin_memory=True)
+        pin_memory=True,
+        persistent_workers=train_loader.get("persistent_workers", False),
+        prefetch_factor=train_loader.get("prefetch_factor", 2))
     val_dataset_loader = DataLoader(
         dataset=val_wrapper,
         batch_size=val_loader["batch_size"],
@@ -75,6 +79,8 @@ def get_dataloader(
         shuffle=False,
         sampler=val_sampler,
         num_workers=val_loader["num_workers"],
-        pin_memory=True)
+        pin_memory=True,
+        persistent_workers=val_loader.get("persistent_workers", False),
+        prefetch_factor=val_loader.get("prefetch_factor", 2))
 
     return train_dataset_loader, val_dataset_loader

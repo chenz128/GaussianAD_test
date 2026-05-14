@@ -136,11 +136,15 @@ val_dataset_config = dict(
 
 train_loader = dict(
     batch_size=batch_size,
-    num_workers=2,
-    shuffle=True
+    num_workers=8,
+    shuffle=True,
+    persistent_workers=True,
+    prefetch_factor=4,
 )
 
 val_loader = dict(
     batch_size=batch_size,
-    num_workers=2
+    num_workers=8,
+    persistent_workers=True,
+    prefetch_factor=4,
 )
