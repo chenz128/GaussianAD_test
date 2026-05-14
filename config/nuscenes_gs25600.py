@@ -287,7 +287,7 @@ model = dict(
         ),
         num_decoder=num_decoder,
         num_single_frame_decoder=num_single_frame_decoder,
-        with_cp=True,  # gradient checkpointing on deformable+spconv layers: ~10 GB saving
+        with_cp=False,  # gradient checkpointing disabled: bs=1 has plenty of VRAM (54/98GB)
         operation_order=[
             "deformable",
             "ffn",
@@ -366,7 +366,7 @@ model = dict(
             ],
             spatial_shape=[num_frames, 120, 120, 8],
         ),
-        with_cp=True,  # gradient checkpointing on spconv layers in temporal encoder
+        with_cp=False,  # gradient checkpointing disabled: bs=1 has plenty of VRAM (54/98GB)
         operation_order=[
             "spconv",
             "refine",
