@@ -8,7 +8,7 @@ import os
 # =========== data config ==============
 input_shape = (1600, 864)
 data_aug_conf = {
-    "resize_lim": (1.0, 1.0),
+    "resize_lim": (1.0, 1.0),#这是一个元组，定义了输入图像在数据增强过程中可能的缩放范围。resize_lim=(1.0, 1.0)表示输入图像将保持原始尺寸，不进行缩放。如果想要在训练过程中对输入图像进行随机缩放，可以将这个范围设置为一个大于1.0的值，例如resize_lim=(0.8, 1.2)，这样输入图像就会被随机缩放到原始尺寸的80%到120%之间。
     "final_dim": input_shape[::-1],
     "bot_pct_lim": (0.0, 0.0),
     "rot_lim": (0.0, 0.0),
@@ -19,7 +19,7 @@ data_aug_conf = {
 num_frames = 4   # TODO: dataset 改为4帧时序输入
 num_map_classes = len(_base_.map_classes)
 pc_range = [-30.0, -30.0, -2.0, 30.0, 30.0, 2.0]
-fixed_ptsnum_per_gt_line = 20 # now only support fixed_pts > 0
+fixed_ptsnum_per_gt_line = 20 # now only support fixed_pts > 0这
 fixed_ptsnum_per_pred_line = 20
 
 
@@ -89,8 +89,10 @@ loss = dict(
         dict(
             type='RenderLoss',
             weight=1.0,
-            sem_lw=2.0,
-            depth_lw=0.05,
+            sem_lw=2.0,#这是语义损失的权重，控制语义损失在总损失中的重要性。较大的sem_lw会使模型更关注语义分割的准确性，而较小的sem_lw则会降低语义损失的影响力。
+            depth_lw=0.05,#这是深度损失的权重，控制深度损失在总损失中的重要性。较大的depth_lw会使模型更关注深度预测的准确性，而较小的depth_lw则会降低深度损失的影响力。由于深度损失通常比语义损失更容易产生较大的数值，因此这里设置了一个较小的权重来平衡两者的影响。
+            vis_dir='out/nuscenes_gs25600_splatting/render_vis',  # 渲染可视化输出目录
+            vis_every=500,  # 每隔多少次 iter 保存一次可视化图片
             ),
         # [NO-PLAN] PlanLoss disabled
         # dict(
@@ -127,29 +129,29 @@ loss_input_convertion = dict(
     # render loss inputs (from metas/data)
     pseudo_seg='pseudo_seg',
     pseudo_depth='pseudo_depth',
-)
+)#这是一个字典，定义了不同损失函数所需的输入数据在模型输出或数据加载过程中对应的键名。通过这个字典，模型在计算损失时可以根据键名从输入数据中提取相应的张量。例如，RenderLoss需要的输入包括'rendered_sem'、'rendered_depth'、'pseudo_seg'和'pseudo_depth'，这些键名会被映射到实际的数据张量上，以便在计算损失时使用。
 # [NO-PLAN] only freeze planner_head since plan loss is disabled
 # [SPLATTING] also freeze map_head since map loss is disabled
 frozen_modules = ['planner_head', 'map_decoder']
 find_unused_parameters = False  # with_cp=True conflicts with find_unused_parameters=True in DDP; frozen modules don't need it
 
 # ========= model config ===============
-embed_dims = 128
+embed_dims = 128#这是高斯编码器和解码器中使用的特征维度。较大的embed_dims可以提供更丰富的特征表示能力，但也会增加模型的计算复杂度和内存占用。根据实际需求和资源限制，可以调整这个值来平衡性能和效率。
 num_decoder = 4
 num_single_frame_decoder = 1
 grid_size=[120, 120, 8]
 scale_range = [0.08, 0.64]
-xyz_coordinate = 'cartesian'
-phi_activation = 'sigmoid'
-include_opa = True
+xyz_coordinate = 'cartesian'#笛卡尔坐标系
+phi_activation = 'sigmoid'#激活函数使用sigmoid，这意味着高斯点的特征会被压缩到0和1之间，适合表示概率或权重等信息。
+include_opa = True#学习透明度信息
 load_from = 'ckpts/r101_dcn_fcos3d_pretrain.pth'
-semantics = True
-semantic_dim = 17
+semantics = True#学习语义信息
+semantic_dim = 17#这是语义特征的维度，通常对应于数据集中不同类别的数量。在nuScenes数据集中，semantic_dim=17表示有17个不同的语义类别（不包括背景或无效类别）。这个参数用于定义高斯点云中每个点的语义特征维度，以便模型能够学习和区分不同的语义类别。
 
 offset = True
 offset_dim = 2*6
 
-voxel_size=[0.5, 0.5, 0.5]
+voxel_size=[0.5, 0.5, 0.5]#体素的分辨率，表示每个体素在x、y、z三个维度上的实际尺寸。较小的voxel_size可以提供更高的空间分辨率，但也会增加计算复杂度和内存占用。根据实际需求和资源限制，可以调整这个值来平衡性能和效率。
 det_config = dict(
     class_names=['car','truck', 'construction_vehicle', 'bus', 'trailer',
               'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'],
@@ -159,8 +161,8 @@ det_config = dict(
     point_cloud_range=pc_range,
     depth_downsample_factor=None,
 )
-_dim_ = 256
-_pos_dim_ = _dim_//2
+_dim_ = 256#这是高斯点云中每个点的特征维度，通常用于定义高斯点云编码器和解码器中的特征表示能力。较大的_dim_可以提供更丰富的特征表示，但也会增加计算复杂度和内存占用。
+_pos_dim_ = _dim_//2#这是位置特征的维度，通常是_dim_的一半，用于表示高斯点云中每个点的位置特征。
 
 val_dataset_config = dict(
     data_aug_conf=data_aug_conf,
@@ -176,9 +178,9 @@ train_dataset_config = dict(
     # pseudo label configs (splatting branch)
     metric3d_root='/data/chenz/Gaussianflowocc_test/data/metric_3d_nusc',
     grounded_sam_root='/data/chenz/Gaussianflowocc_test/data/grounded_sam_nusc',
-    pseudo_label_scale=0.44,
-    max_pseudo_depth=40.0,
-    pseudo_label_crop_top=140,
+    pseudo_label_scale=0.44,#这是一个缩放因子，用于调整根据点云生成的伪标签的尺度。由于点云数据和图像数据之间存在一定的尺度差异，直接使用点云生成的伪标签可能会导致与图像上的实际物体位置不匹配。通过设置pseudo_label_scale，可以对伪标签进行适当的缩放，使其更好地对齐图像上的物体，从而提高渲染损失的监督效果。具体的缩放因子需要根据数据集和模型的特点进行调整，以获得最佳性能。
+    max_pseudo_depth=40.0,#这是一个阈值，用于过滤根据点云生成的伪标签中的深度值。由于点云数据中可能存在一些异常值或远距离的点，这些点在图像上可能对应于无效或不相关的区域。通过设置max_pseudo_depth，可以将伪标签中深度值超过该阈值的像素视为无效，从而在计算渲染损失时忽略这些像素。这有助于提高模型的训练稳定性和性能，特别是在处理具有较大深度范围的数据集时。
+    pseudo_label_crop_top=140,#这是一个参数，用于在计算渲染损失时裁剪伪标签的顶部区域。由于图像的顶部区域通常包含天空或其他不相关的背景信息，这些区域的伪标签可能对训练没有帮助，甚至可能引入噪声。通过设置pseudo_label_crop_top，可以在计算渲染损失时忽略图像顶部的指定像素行，从而提高模型的训练效果。
 )
 
 model = dict(
@@ -191,13 +193,13 @@ model = dict(
         out_indices=(0, 1, 2, 3),
         frozen_stages=1,
         norm_cfg=dict(type='BN2d', requires_grad=False),
-        norm_eval=True,
+        norm_eval=True,#在训练过程中，冻结BatchNorm层的统计信息，即不更新其均值和方差。这通常在使用预训练模型时进行，以保持预训练权重的稳定性。
         style='caffe',
-        with_cp = True,  # gradient checkpointing to reduce peak VRAM
+        with_cp = True, # 这是一个布尔值，表示是否在ResNet的卷积层中使用checkpointing技术来节省内存。启用with_cp=True会在前向传播过程中保存一些中间激活值，并在反向传播时重新计算它们，以减少内存占用。这对于训练大型模型或使用较大批量大小时非常有用，但会增加一些计算开销。根据实际情况，可以选择是否启用这个选项来平衡内存使用和计算效率。
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False), # original DCNv2 will print log when perform load_state_dict
-        stage_with_dcn=(False, False, True, True)),
+        stage_with_dcn=(False, False, True, True)),#这是一个元组，表示ResNet的每个阶段是否使用可变形卷积（Deformable Convolution）。在这个配置中，前两个阶段（stage 1和stage 2）不使用可变形卷积，而后两个阶段（stage 3和stage 4）使用可变形卷积。使用可变形卷积可以增强模型对几何变形的适应能力，从而提高特征提取的效果。根据实际需求，可以调整这个元组来选择在哪些阶段使用可变形卷积。
     img_neck=dict(
-        start_level=1),
+        start_level=1),#这是一个参数，表示特征金字塔网络（FPN）从ResNet的哪个阶段开始构建特征金字塔。在这个配置中，start_level=1表示FPN将从ResNet的第二个阶段（stage 2）的输出特征图开始构建特征金字塔，而忽略第一个阶段（stage 1）的输出特征图。根据实际需求，可以调整这个参数来选择从哪个阶段开始使用ResNet的特征图进行后续处理。
     lifter=dict(
         type='GaussianLifter',
         num_anchor=25600,
@@ -207,7 +209,7 @@ model = dict(
         include_opa=include_opa,
         offset=offset,
         offset_dim=offset_dim,
-    ),
+    ),#这是一个字典，定义了高斯点云编码器（GaussianLifter）的配置参数。num_anchor=25600表示使用25600个锚点来表示场景中的物体和结构；embed_dims=128表示每个锚点的特征维度为128；anchor_grad=True表示在训练过程中对锚点进行梯度更新；semantic_dim=17表示语义特征的维度为17，对应于数据集中不同类别的数量；include_opa=True表示在编码器中包含透明度信息；offset=True表示使用偏移量来增强锚点的位置表达能力；offset_dim=12表示偏移量特征的维度为12。这些参数共同定义了高斯点云编码器的结构和功能，以便模型能够有效地从输入图像中提取空间和语义信息。
     encoder=dict(
         type='GaussianOccEncoder',
         anchor_encoder=dict(
@@ -351,13 +353,13 @@ model = dict(
     ),
     head=dict(
         type='GaussianHead',
-        apply_loss_type='random_1',
+        apply_loss_type='random_1',#这是一个字符串参数，表示在训练过程中应用损失函数的方式。'random_1'表示在每个训练步骤中随机选择一个损失函数进行优化，而不是同时优化所有损失函数。这种方式可以帮助模型更好地平衡不同损失函数的影响，避免某个损失函数过度主导训练过程。根据实际需求，可以选择不同的应用方式，例如'sequential'（按顺序应用损失函数）或'all'（同时应用所有损失函数）。
         num_classes=semantic_dim + 1,
         empty_args=dict(
             _delete_=True,
             mean=[0, 0, -1.0],
             scale=[60, 60, 4.0],
-        ),
+        ),#这是一个字典，定义了高斯点云头部（GaussianHead）中用于表示空白区域的参数。mean=[0, 0, -1.0]表示空白区域的高斯分布的均值位置，通常设置在视图中心下方以覆盖地面区域；scale=[60, 60, 4.0]表示空白区域的高斯分布的尺度，较大的值可以使空白区域覆盖更广泛的范围，以确保模型能够正确地识别和处理空白区域。这些参数对于训练模型区分有物体存在的区域和没有物体的空白区域非常重要。
         with_empty=True,
         cuda_kwargs=dict(
             _delete_=True,

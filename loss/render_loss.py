@@ -1,8 +1,53 @@
+import os
+import math
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from . import OPENOCC_LOSS
 from .base_loss import BaseLoss
+
+# nuScenes occupancy 17类颜色表（0-indexed，对应 pseudo_seg 中 label 1~17 减1后的索引）
+_NUSC_PALETTE = np.array([
+    [112, 128, 144],  # 0: barrier
+    [220,  20,  60],  # 1: bicycle
+    [255, 127,  80],  # 2: bus
+    [255, 158,   0],  # 3: car
+    [233, 150,  70],  # 4: construction_vehicle
+    [255,  61,  99],  # 5: motorcycle
+    [  0,   0, 230],  # 6: pedestrian
+    [ 47,  79,  79],  # 7: traffic_cone
+    [255, 140,   0],  # 8: trailer
+    [255,  99,  71],  # 9: truck
+    [  0, 207, 191],  # 10: driveable_surface
+    [175,   0,  75],  # 11: other_flat
+    [ 75,   0,  75],  # 12: sidewalk
+    [112, 180,  60],  # 13: terrain
+    [222, 184, 135],  # 14: manmade
+    [  0, 175,   0],  # 15: vegetation
+    [  0,   0,   0],  # 16: free/empty
+], dtype=np.uint8)
+
+
+def _colorize_sem(cls_map_0indexed):
+    """cls_map_0indexed: (H, W) int, values 0-16 → RGB (H, W, 3)"""
+    cls = np.clip(cls_map_0indexed, 0, 16)
+    return _NUSC_PALETTE[cls]
+
+
+def _depth_to_rgb(depth_np, vmin=0.0, vmax=40.0):
+    """depth_np: (H, W) float → RGB (H, W, 3) using turbo-like colormap"""
+    norm = np.clip((depth_np - vmin) / (vmax - vmin + 1e-6), 0.0, 1.0)
+    # simple heat map: black→blue→cyan→green→yellow→red
+    r = np.clip(norm * 4 - 2, 0, 1)
+    g = np.clip(np.minimum(norm * 4, 4 - norm * 4), 0, 1)
+    b = np.clip(1 - norm * 4, 0, 1)
+    rgb = np.stack([r, g, b], axis=-1)
+    # invalid pixels (depth==0) → gray
+    invalid = depth_np <= 0
+    rgb[invalid] = 0.5
+    return (rgb * 255).astype(np.uint8)
 
 
 @OPENOCC_LOSS.register_module()
@@ -17,6 +62,8 @@ class RenderLoss(BaseLoss):
         weight=1.0,
         sem_lw=2.0,
         depth_lw=0.05,
+        vis_dir=None,
+        vis_every=500,
         input_dict=None,
         **kwargs,
     ):
@@ -34,6 +81,8 @@ class RenderLoss(BaseLoss):
 
         self.sem_lw = sem_lw
         self.depth_lw = depth_lw
+        self.vis_dir = vis_dir
+        self.vis_every = vis_every
 
         # dynamic classes — depth loss unreliable for moving objects
         self.dynamic_classes = torch.tensor([2, 3, 4, 5, 6, 7, 9, 10])
@@ -89,21 +138,18 @@ class RenderLoss(BaseLoss):
         else:
             loss_depth = pred_d.sum() * 0.0
 
-        # ── diagnostics（每500次iter打印一次，方便判断伪标签是否有效）──
+        # ── diagnostics（每 vis_every iter 打印一次，并保存渲染可视化图片）──
         self._diag_counter = getattr(self, '_diag_counter', 0) + 1
-        if self._diag_counter % 500 == 1:
+        if self._diag_counter % self.vis_every == 1:
             valid_sem_ratio = valid_sem.float().mean().item()
             valid_d_ratio   = valid_d.float().mean().item()
             pred_depth_mean = pred_d[valid_d].mean().item() if valid_d.any() else 0.0
             pred_depth_std  = pred_d[valid_d].std().item()  if valid_d.any() else 0.0
             gt_depth_mean   = target_d[valid_d].mean().item() if valid_d.any() else 0.0
-            # 预测语义的熵均值（越低说明越自信，越高说明越接近随机）
-            import math
             with torch.no_grad():
                 prob = torch.softmax(pred_sem[valid_sem], dim=-1) if valid_sem.any() else None
-                pred_entropy = (-( prob * (prob + 1e-8).log()).sum(-1)).mean().item() if prob is not None else float('nan')
+                pred_entropy = (-(prob * (prob + 1e-8).log()).sum(-1)).mean().item() if prob is not None else float('nan')
                 rand_entropy = math.log(17)   # 随机猜测基准 ≈ 2.833
-            import logging
             logger = logging.getLogger('mmengine')
             logger.info(
                 f'[RenderLoss Diag] iter={self._diag_counter} | '
@@ -113,5 +159,56 @@ class RenderLoss(BaseLoss):
                 f'sem_entropy={pred_entropy:.3f} (rand={rand_entropy:.3f}) | '
                 f'loss_sem={loss_sem.item():.4f} loss_depth={loss_depth.item():.4f}'
             )
+            # 保存渲染可视化图片
+            if self.vis_dir is not None:
+                self._save_vis(rendered_sem, rendered_depth, pseudo_seg, pseudo_depth,
+                               step=self._diag_counter)
 
         return loss_sem + loss_depth
+
+    def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step):
+        """
+        保存所有相机的渲染结果对比图（batch 0）。
+        每张图为横向拼接: [pred_sem | gt_sem | pred_depth | gt_depth]
+        所有相机纵向堆叠，保存为 render_vis/step_{step:06d}.jpg
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            return
+        try:
+            os.makedirs(self.vis_dir, exist_ok=True)
+            B, nC, H, W, _ = rendered_sem.shape
+            rows = []
+            for cam in range(nC):
+                # 语义：渲染预测 argmax（0-indexed）
+                pred_cls = rendered_sem[0, cam].detach().cpu().argmax(dim=-1).numpy()  # (H, W)
+                pred_sem_rgb = _colorize_sem(pred_cls)  # (H, W, 3)
+
+                # 语义：伪标签 GT（1-indexed, 0=invalid）→ 0-indexed for palette
+                gt_cls_raw = pseudo_seg[0, cam].detach().cpu().numpy().astype(np.int32)  # (H, W)
+                gt_sem_rgb = np.where(
+                    (gt_cls_raw[..., None] > 0),
+                    _NUSC_PALETTE[(np.clip(gt_cls_raw, 1, 17) - 1)],
+                    np.array([128, 128, 128], dtype=np.uint8)   # invalid → 灰色
+                ).astype(np.uint8)
+
+                # 深度：渲染预测
+                pred_d_np = rendered_depth[0, cam].detach().cpu().numpy()  # (H, W)
+                pred_d_rgb = _depth_to_rgb(pred_d_np)  # (H, W, 3)
+
+                # 深度：伪标签 GT
+                gt_d_np = pseudo_depth[0, cam].detach().cpu().numpy()  # (H, W)
+                gt_d_rgb = _depth_to_rgb(gt_d_np)  # (H, W, 3)
+
+                # 添加标签栏（在图片顶部写相机编号，用黑色像素行分隔）
+                separator = np.zeros((2, W * 4, 3), dtype=np.uint8)
+                row = np.concatenate([pred_sem_rgb, gt_sem_rgb, pred_d_rgb, gt_d_rgb], axis=1)
+                rows.append(separator)
+                rows.append(row)
+
+            combined = np.concatenate(rows, axis=0)
+            out_path = os.path.join(self.vis_dir, f'step_{step:06d}.jpg')
+            Image.fromarray(combined).save(out_path, quality=90)
+        except Exception as e:
+            logging.getLogger('mmengine').warning(f'[RenderLoss] vis save failed: {e}')
