@@ -24,13 +24,11 @@ TRAIN_RE = re.compile(
     r"lr: (?P<lr>[0-9.eE+-]+), time: (?P<iter_time>[0-9.]+) \((?P<data_time>[0-9.]+)\)"
 )
 
-LOSS_RE = re.compile(
-    r"OccupancyLoss: (?P<occupancy_loss>[0-9.]+), "
-    r"OccupancyFlowLoss: (?P<occupancy_flow_loss>[0-9.]+), "
-    r"DetectionLoss: (?P<detection_loss>[0-9.]+), "
-    r"MapLoss: (?P<map_loss>[0-9.]+), "
-    r"PlanLoss: (?P<plan_loss>[0-9.]+)"
-)
+# Flexible regex: match any "KeyName: value" pairs in the loss line.
+# Handles logs with varying subsets of losses (e.g. noplan has no PlanLoss,
+# splatting has RenderLoss instead of MapLoss/PlanLoss, etc.)
+LOSS_ITEM_RE = re.compile(r"(\w+): ([0-9.]+)")
+LOSS_LINE_RE = re.compile(r"OccupancyLoss:")
 
 
 def parse_args():
@@ -75,9 +73,18 @@ def parse_log(log_path):
                 records.append(pending)
                 continue
 
-            loss_match = LOSS_RE.search(line)
-            if loss_match and pending is not None:
-                pending.update({key: float(value) for key, value in loss_match.groupdict().items()})
+            if LOSS_LINE_RE.search(line) and pending is not None:
+                key_map = {
+                    "OccupancyLoss": "occupancy_loss",
+                    "OccupancyFlowLoss": "occupancy_flow_loss",
+                    "DetectionLoss": "detection_loss",
+                    "MapLoss": "map_loss",
+                    "PlanLoss": "plan_loss",
+                    "RenderLoss": "render_loss",
+                }
+                for name, value in LOSS_ITEM_RE.findall(line):
+                    snake = key_map.get(name, name.lower())
+                    pending[snake] = float(value)
                 pending = None
 
     return records
@@ -156,6 +163,7 @@ def save_component_losses(records, out_dir, dpi, smooth_window):
         "detection_loss",
         "map_loss",
         "plan_loss",
+        "render_loss",
     ]
     available = [key for key in component_keys if any(key in item for item in records)]
     if not available:
