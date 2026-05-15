@@ -45,21 +45,21 @@ class GaussianLifter(BaseLifter):
         if offset:
             offsets = torch.randn(num_anchor, offset_dim, dtype=torch.float)
 
-        anchor = torch.cat([xyz, scale, rots, opacity, semantic, offsets], dim=-1)
+        anchor = torch.cat([xyz, scale, rots, opacity, semantic, offsets], dim=-1)#这里的anchor是高斯编码器的输入参数，包括位置、尺度、旋转、透明度、语义和偏移量等信息。通过训练，模型会学习如何调整这些参数来更好地拟合输入数据，从而实现高斯编码器的功能。
 
         self.num_anchor = num_anchor
         self.anchor = nn.Parameter(
             torch.tensor(anchor, dtype=torch.float32),
             requires_grad=anchor_grad,
-        )
+        )#anchor是一个可训练的参数，表示高斯编码器的初始状态。通过训练，模型会学习如何调整这个anchor参数来更好地拟合输入数据，从而实现高斯编码器的功能。
         self.anchor_init = anchor
 
     def init_weight(self):
         self.anchor.data = self.anchor.data.new_tensor(self.anchor_init)
 
     def forward(self, ms_img_feats, **kwargs):
-        batch_size = ms_img_feats[0].shape[0]
-        anchor = torch.tile(self.anchor[None], (batch_size, 1, 1))
+        batch_size = ms_img_feats[0].shape[0]#ms_img_feats是多尺度图像特征的列表，每个元素对应一个尺度的特征图。通过这些特征图，模型可以提取不同尺度的信息来辅助高斯编码器的学习和预测。
+        anchor = torch.tile(self.anchor[None], (batch_size, 1, 1))#anchor是高斯编码器的输出参数，表示每个锚点的状态。通过训练，模型会学习如何调整这个anchor参数来更好地拟合输入数据，从而实现高斯编码器的功能。这里使用torch.tile将anchor扩展到与批量大小相同的维度，以便在后续的计算中进行批量处理。
 
         return {
             'representation': anchor,

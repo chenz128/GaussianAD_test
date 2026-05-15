@@ -528,7 +528,7 @@ git commit -m "add pseudo label supervision"
 git push origin splatting
 
 # 远程拉取并训练（train.py 自动检测 latest.pth，无需额外参数即可接续）
-ssh -p 31256 root@8.130.174.55 "cd /data/chenz/GaussianAD && git pull origin splatting"
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/GaussianAD && git pull origin splatting"
 # 之后重启训练即可，work-dir 相同则自动接续
 ```
 
@@ -560,7 +560,7 @@ ssh -p 31256 root@8.130.174.55 "cd /data/chenz/GaussianAD && git pull origin spl
 ### 快速查看 main 分支 mIoU 基准
 
 ```bash
-ssh -p 31256 root@8.130.174.55 "grep mIoU /data/chenz/GaussianAD/out/nuscenes_gs25600_noplan_run.log | tail -5"
+ssh -p 30300 root@8.130.174.55 "grep mIoU /data/chenz/GaussianAD/out/nuscenes_gs25600_noplan_run.log | tail -5"
 ```
 
 ### 可视化图片格式

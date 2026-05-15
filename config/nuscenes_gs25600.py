@@ -304,7 +304,7 @@ model = dict(
         ),
         num_decoder=num_decoder,
         num_single_frame_decoder=num_single_frame_decoder,
-        with_cp=False,
+        with_cp=True,
         operation_order=[
             "deformable",
             "ffn",
@@ -387,7 +387,7 @@ model = dict(
             "spconv",
             "refine",
         ] * 3,
-        with_cp=False,
+        with_cp=True,
     ),
     head=dict(
         type='GaussianHead',

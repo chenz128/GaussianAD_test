@@ -1,6 +1,6 @@
 ---
 name: h20-remote-server
-description: "H20远程服务器开发工作流。Use when: 连接远程服务器、在远端编译/运行/测试代码、同步代码提交、管理远端工作空间 /data/chenz、SSH连接H20服务器、远端执行命令、代码同步。SSH地址: ssh -p 31256 root@8.130.174.55，NAS盘: /data，主工作空间: /data/chenz。"
+description: "H20远程服务器开发工作流。Use when: 连接远程服务器、在远端编译/运行/测试代码、同步代码提交、管理远端工作空间 /data/chenz、SSH连接H20服务器、远端执行命令、代码同步。SSH地址: ssh -p 30300 root@8.130.174.55，NAS盘: /data，主工作空间: /data/chenz。"
 argument-hint: "可选：指定要执行的具体任务（如：编译、测试、同步代码）"
 ---
 
@@ -10,7 +10,7 @@ argument-hint: "可选：指定要执行的具体任务（如：编译、测试�
 
 | 项目 | 值 |
 |------|-----|
-| SSH 连接命令 | `ssh -p 31256 root@8.130.174.55` |
+| SSH 连接命令 | `ssh -p 30300 root@8.130.174.55` |
 | NAS 盘路径 | `/data` |
 | **主工作空间** | `/data/chenz`（**唯一允许的工作空间**） |
 
@@ -28,7 +28,7 @@ argument-hint: "可选：指定要执行的具体任务（如：编译、测试�
 ### 1. 连接远端服务器
 
 ```bash
-ssh -p 31256 root@8.130.174.55
+ssh -p 30300 root@8.130.174.55
 ```
 
 连接后确认工作目录：
@@ -47,10 +47,10 @@ cd /data/chenz/<项目名>
 
 ```bash
 # 示例：编译
-ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && <编译命令>"
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && <编译命令>"
 
 # 示例：运行训练/测试
-ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && <运行命令>"
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && <运行命令>"
 ```
 
 4. 查看远端输出结果，在本地分析日志和错误。
@@ -66,13 +66,13 @@ git commit -m "提交信息"
 git push origin <branch>
 
 # 远端：拉取最新代码，保持干净状态
-ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <branch>"
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <branch>"
 ```
 
 **验证远端状态干净：**
 
 ```bash
-ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && git status"
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git status"
 # 期望输出：nothing to commit, working tree clean
 ```
 
@@ -83,7 +83,7 @@ ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && git status"
 **检查远端未跟踪文件：**
 
 ```bash
-ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && git status --short"
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git status --short"
 ```
 
 **将临时文件夹加入 `.gitignore`（在本地操作后同步）：**
@@ -100,7 +100,7 @@ git commit -m "chore: ignore temp files on remote"
 git push origin <branch>
 
 # 远端拉取
-ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <branch>"
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <branch>"
 ```
 
 ---
@@ -120,20 +120,20 @@ ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <b
 
 ```bash
 # 连接服务器
-ssh -p 31256 root@8.130.174.55
+ssh -p 30300 root@8.130.174.55
 
 # 在远端执行单条命令
-ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && <命令>"
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && <命令>"
 
 # 查看远端 GPU 状态
-ssh -p 31256 root@8.130.174.55 "nvidia-smi"
+ssh -p 30300 root@8.130.174.55 "nvidia-smi"
 
 # 查看远端磁盘使用
-ssh -p 31256 root@8.130.174.55 "df -h /data"
+ssh -p 30300 root@8.130.174.55 "df -h /data"
 
 # 查看远端工作空间
-ssh -p 31256 root@8.130.174.55 "ls /data/chenz"
+ssh -p 30300 root@8.130.174.55 "ls /data/chenz"
 
 # 同步代码到远端
-ssh -p 31256 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <branch> && git status"
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <branch> && git status"
 ```
