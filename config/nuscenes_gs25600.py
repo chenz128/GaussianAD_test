@@ -84,7 +84,43 @@ loss = dict(
                 'loc_weight': 0.25,
                 'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2, 1.0, 1.0]
             }),
-        # [SPLATTING] MapLoss disabled — pseudo-label semantics implicitly constrain scene structure
+        # [SPLATTING] MapLoss re-enabled with gradient checkpointing
+        dict(
+            type='MapLoss',
+            loss_cls=dict(
+                type='FocalLoss',
+                use_sigmoid=True,
+                gamma=2.0,
+                alpha=0.25,
+                loss_weight=2.0),
+            loss_bbox=dict(type='L1Loss', loss_weight=0.0),
+            loss_iou=dict(type='GIoULoss', loss_weight=0.0),
+            loss_pts=dict(type='PtsL1Loss',
+                        loss_weight=5.0),
+            loss_dir=dict(type='PtsDirCosLoss', loss_weight=0.005),
+            loss_seg=dict(type='SimpleLoss',
+                pos_weight=4.0,
+                loss_weight=1.0),
+            loss_pv_seg=dict(type='SimpleLoss',
+                        pos_weight=1.0,
+                        loss_weight=2.0),
+            assigner=dict(
+                    type='MapTRAssigner',
+                    cls_cost=dict(type='FocalLossCost', weight=2.0),
+                    reg_cost=dict(type='BBoxL1Cost', weight=0.0, box_format='xywh'),
+                    iou_cost=dict(type='IoUCost', iou_mode='giou', weight=0.0),
+                    pts_cost=dict(type='OrderedPtsL1Cost', weight=5),
+                    pc_range=pc_range),
+            sync_cls_avg_factor=True,
+            num_classes=num_map_classes,
+            gt_shift_pts_pattern='v2',
+            pc_range=pc_range,
+            code_weights=[1.0, 1.0, 1.0, 1.0],
+            aux_seg=_base_.aux_seg_cfg,
+            num_pts_per_vec=fixed_ptsnum_per_pred_line,
+            num_pts_per_gt_vec=fixed_ptsnum_per_gt_line,
+            dir_interval=1,
+            ),
         # RenderLoss: pseudo-label supervision via 2D Gaussian splatting
         dict(
             type='RenderLoss',
@@ -94,11 +130,11 @@ loss = dict(
             vis_dir='out/nuscenes_gs25600_splatting/render_vis',  # 渲染可视化输出目录
             vis_every=500,  # 每隔多少次 iter 保存一次可视化图片
             ),
-        # [NO-PLAN] PlanLoss disabled
-        # dict(
-        #     type='PlanLoss',
-        #     weight=10.0,
-        #     ),
+        # PlanLoss re-enabled
+        dict(
+            type='PlanLoss',
+            weight=10.0,
+            ),
         ])
 
 loss_input_convertion = dict(
@@ -114,15 +150,15 @@ loss_input_convertion = dict(
     target_dicts='target_dicts',
     batch_index='batch_index',
     voxel_indices='voxel_indices',
-    # [NO-PLAN] plan inputs disabled
-    # ego_fut_preds='ego_fut_preds',
-    # ego_fut_gt='ego_fut_trajs',
-    # ego_fut_masks='ego_fut_masks',
-    # ego_fut_cmd='ego_fut_cmd',
-    # [SPLATTING] map inputs disabled
-    # all_cls_scores="all_cls_scores",
-    # all_bbox_preds="all_bbox_preds",
-    # all_pts_preds="all_pts_preds",
+    # plan inputs
+    ego_fut_preds='ego_fut_preds',
+    ego_fut_gt='ego_fut_trajs',
+    ego_fut_masks='ego_fut_masks',
+    ego_fut_cmd='ego_fut_cmd',
+    # map inputs
+    all_cls_scores="all_cls_scores",
+    all_bbox_preds="all_bbox_preds",
+    all_pts_preds="all_pts_preds",
     # render loss inputs (from head output)
     rendered_sem='rendered_sem',
     rendered_depth='rendered_depth',
@@ -130,9 +166,8 @@ loss_input_convertion = dict(
     pseudo_seg='pseudo_seg',
     pseudo_depth='pseudo_depth',
 )#这是一个字典，定义了不同损失函数所需的输入数据在模型输出或数据加载过程中对应的键名。通过这个字典，模型在计算损失时可以根据键名从输入数据中提取相应的张量。例如，RenderLoss需要的输入包括'rendered_sem'、'rendered_depth'、'pseudo_seg'和'pseudo_depth'，这些键名会被映射到实际的数据张量上，以便在计算损失时使用。
-# [NO-PLAN] only freeze planner_head since plan loss is disabled
-# [SPLATTING] also freeze map_head since map loss is disabled
-frozen_modules = ['planner_head', 'map_decoder']
+# All modules trainable (map + plan + render all enabled)
+frozen_modules = []
 find_unused_parameters = False  # with_cp=True conflicts with find_unused_parameters=True in DDP; frozen modules don't need it
 
 # ========= model config ===============
@@ -268,6 +303,7 @@ model = dict(
         ),
         num_decoder=num_decoder,
         num_single_frame_decoder=num_single_frame_decoder,
+        with_cp=True,
         operation_order=[
             "deformable",
             "ffn",
@@ -350,6 +386,7 @@ model = dict(
             "spconv",
             "refine",
         ] * 3,
+        with_cp=True,
     ),
     head=dict(
         type='GaussianHead',
