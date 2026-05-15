@@ -191,8 +191,14 @@ def main(args):
         map_location = 'cpu'
         ckpt = torch.load(cfg.resume_from, map_location=map_location)
         print(raw_model.load_state_dict(ckpt['state_dict'], strict=False))
-        optimizer.load_state_dict(ckpt['optimizer'])
-        scheduler.load_state_dict(ckpt['scheduler'])
+        try:
+            optimizer.load_state_dict(ckpt['optimizer'])
+        except (ValueError, KeyError) as e:
+            logger.info(f'Optimizer state mismatch (frozen modules changed?), skipping optimizer resume: {e}')
+        try:
+            scheduler.load_state_dict(ckpt['scheduler'])
+        except (ValueError, KeyError) as e:
+            logger.info(f'Scheduler state mismatch, skipping scheduler resume: {e}')
         epoch = ckpt['epoch']
         global_iter = ckpt['global_iter']
         last_iter = ckpt['last_iter'] if 'last_iter' in ckpt else 0
