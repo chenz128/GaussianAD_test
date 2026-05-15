@@ -167,7 +167,9 @@ def main(args):
             warmup_lr_init=1e-6,
             t_in_epochs=False)
     amp = cfg.get('amp', False)
-    if amp:
+    backbone_fp16 = cfg.get('backbone_fp16', False)
+    use_scaler = amp or backbone_fp16
+    if use_scaler:
         scaler = torch.cuda.amp.GradScaler()
         os.environ['amp'] = 'true'
     else:
@@ -273,7 +275,7 @@ def main(args):
 
                 if args.vis_map:
                     vis_map_train(result_dict, data)
-            if not amp:
+            if not use_scaler:
                 loss.backward()
                 if (global_iter + 1) % grad_accumulation == 0:
                     grad_norm = torch.nn.utils.clip_grad_norm_(my_model.parameters(), cfg.grad_max_norm)

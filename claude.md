@@ -100,6 +100,7 @@ Loss 计算:
 
 ```
 3D Gaussians
+  ↓ 取 semantics_logits（softplus 之前的 raw logits）
   ↓ gsplat.rasterization（可微 2D 渲染，仅训练时）
   ↓
 渲染语义图 (nC, H', W', 17) + 渲染深度图 (nC, H', W')
@@ -110,32 +111,44 @@ CE Loss vs grounded_sam      MSE Loss vs metric_3d
 梯度回传 → 优化高斯的 means / scales / rotations / semantics
 ```
 
+**关键**：gsplat 渲染使用的是 `semantics_logits`（raw logits），而非 `semantics`（softplus 激活后的值）。
+这样渲染结果仍是 logits 空间，可直接用 `CrossEntropyLoss` 计算语义损失。
+
 推理时**完全不走 2D 渲染分支**，3D 输出路径（LocalAggregator）不受影响。
 
 ---
 
-## Splatting 分支训练策略（已确定）
+## Splatting 分支训练策略（已确定，2026-05-15 更新）
 
-### Loss 配置
+### Loss 配置（全量 loss）
 
 | Loss | 状态 | 理由 |
 |------|------|------|
 | OccupancyLoss | ✅ 保留 | 核心 3D 占用语义监督 |
 | OccupancyFlowLoss | ✅ 保留 | 核心动态场景监督 |
 | DetectionLoss | ✅ 保留 | 核心 3D 检测监督 |
+| MapLoss | ✅ 保留 | 地图结构监督（显存允许，已加回） |
 | RenderLoss（伪标签语义+深度） | ✅ 新增 | gsplat 2D 渲染 vs 伪标签 |
-| MapLoss | ❌ 去掉 | 伪标签语义已隐含约束场景结构，省 VRAM 给渲染 |
-| PlanLoss | ❌ 去掉 | — |
+| PlanLoss | ✅ 保留 | 规划监督（显存允许，已加回） |
+
+> **历史变更**：Phase 1 最初去掉了 MapLoss 和 PlanLoss 以省显存。2026-05-15 实测发现全量 loss（6 个）在单卡 96GB 上仅占 67-76 GB，无需任何 gradient checkpointing，因此全部加回。
+
+### 显存实测（2026-05-15）
+
+| 配置 | with_cp | 显存占用 | 状态 |
+|------|---------|----------|------|
+| 全量 loss（6个），无 cp | `False` | 67-76 GB / 96 GB | ✅ 安全运行 |
+| 仅 occ+flow+det+render，无 cp | `False` | ~54 GB | — |
 
 ### 渲染分辨率
 
 - **初始值 0.44×**（396×704），GaussianFlowOcc 已验证
 - 做成可配置参数 `pseudo_label_scale`，VRAM 有余量可调高
-- H20 96GB 单卡，去掉 map/plan + 0.44× 渲染，显存非常安全
+- H20 96GB 单卡，全量 loss + 0.44× 渲染，显存 67-76 GB，安全
 
 ### 阶段规划
 
-- **Phase 1**：标准 loss（occ+flow+det）+ 伪标签 RenderLoss 联合训练 → 对比 main 分支 baseline
+- **Phase 1**（当前）：全量 loss（occ+flow+det+map+plan+render）联合训练 → 对比 main 分支 baseline
 - **Phase 2**（如 Phase 1 涨点）：去掉标准 loss，仅伪标签监督 → 探测上限
 
 ---
@@ -668,6 +681,76 @@ out/nuscenes_gs25600_splatting/render_vis/step_000001.jpg
 
 ---
 
+### 调试记录（2026-05-15 语义渲染不学习的根因分析与修复）
+
+#### 根因：softplus 激活 + alpha-blending ≠ logits
+
+**问题描述：**
+- 高斯的 `semantics` 字段经过 `softplus` 激活，输出为非负值
+- gsplat 的 `rasterization` 对 `colors`（即 semantics）做 alpha-blending 混合
+- `render_loss.py` 用 `CrossEntropyLoss` 对渲染结果计算 loss，期望输入为 **logits**
+- 但 `softplus(x)` 经过 alpha-blend 后的值不再是 logits：
+  - 始终为正数，无法表达"不是某类"（负 logit）
+  - 多高斯混合后值趋于平均，梯度极弱
+
+**本质错误：** `Σ αᵢ·softplus(logitᵢ)` ≠ logits，直接用 CE loss 无法有效学习。
+
+#### 修复方案：Plan A — 渲染 raw logits（commit e4a4d4a）
+
+1. `model/encoder/gaussian_encoder/refine_module.py`：
+   - `GaussianPrediction` 新增 `semantics_logits` 字段（softplus 之前的 raw 值）
+   - 两个 `get_gaussian` 方法都返回 `semantics_logits=raw_logits`
+
+2. `model/head/gaussian_rasterizer.py`：
+   - `forward()` 中使用 `gaussian.semantics_logits` 而非 `gaussian.semantics`
+   - 渲染结果仍在 logits 空间，`CrossEntropyLoss` 直接适用
+
+3. 不影响 3D occupancy 路径：
+   - `LocalAggregator` 仍使用 `gaussian.semantics`（softplus 后）
+   - 与 OccupancyLoss 的交互完全不变
+
+**关键理解：**
+- `semantics`（softplus 后）→ 3D occupancy 渲染（Mahalanobis 加权）→ OccupancyLoss
+- `semantics_logits`（raw）→ 2D gsplat 渲染（alpha-blending）→ CrossEntropyLoss
+
+---
+
+### 全量 loss 启用记录（2026-05-15）
+
+#### 背景
+
+最初 splatting 分支去掉了 MapLoss 和 PlanLoss，原因是担心显存不够。
+实测发现 occ+flow+det+render 仅占 ~54 GB / 96 GB，有 40+ GB 余量。
+
+#### 改动
+
+- 加回 MapLoss（完整 MapTRv2 配置）
+- 加回 PlanLoss（weight=10.0）
+- `frozen_modules = []`（解冻 map_decoder 和 planner_head）
+- `loss_input_convertion` 加回 map/plan 相关 key
+
+#### Optimizer state 兼容性
+
+由于解冻模块导致 optimizer param groups 数量变化，`train.py` 中加了 try/except：
+```python
+try:
+    optimizer.load_state_dict(ckpt['optimizer'])
+except ValueError as e:
+    logger.info(f'Optimizer state mismatch ..., skipping optimizer resume: {e}')
+```
+Optimizer 不 resume 仅影响前几个 iter 的动量/学习率预热，对训练质量无实质影响。
+
+#### 训练启动方式（tmux）
+
+```bash
+# 在 tmux session train_splatting 中运行
+cd /data/chenz/GaussianAD && CUDA_VISIBLE_DEVICES=0,1,2,3 /data/chenz/conda_env/splatting/bin/torchrun \
+    --nproc_per_node 4 --master_port 12457 \
+    train.py --py-config config/nuscenes_gs25600.py --work-dir out/nuscenes_gs25600_splatting --dataset nuscenes
+```
+
+---
+
 ## 版本记录
 
 | 日期 | 更新内容 |
@@ -678,3 +761,4 @@ out/nuscenes_gs25600_splatting/render_vis/step_000001.jpg
 | 2026-05-09 | 确定 splatting 分支训练策略：occ+flow+det+render，去掉 map/plan，渲染 0.44×（可配置） |
 | 2026-05-11 | 记录 splatting 分支首次启动的三个关键 Bug 及修复方法；纠正 conda activate 错误说明 |
 | 2026-05-14 | 标记所有已确认细节为完成；新增 Loss 详解（DetectionLoss/RenderLoss）；新增 RenderLoss 有效性诊断四步法；新增可视化模块（commit 7fc218c）；补充接续训练说明 |
+| 2026-05-15 | **全量 loss 启用**（map+plan 加回）；发现语义渲染不学习的根因（softplus→alpha-blend≠logits）；修复为 Plan A（渲染 raw logits）；训练改为 tmux `train_splatting` |

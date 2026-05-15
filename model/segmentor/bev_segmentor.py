@@ -1,4 +1,5 @@
 
+import torch
 from mmseg.models import SEGMENTORS
 from mmseg.models import build_backbone
 
@@ -13,6 +14,7 @@ class BEVSegmentor(CustomBaseSegmentor):
         freeze_img_neck=False,
         img_backbone_out_indices=[1, 2, 3],
         extra_img_backbone=None,
+        backbone_fp16=False,
         # use_post_fusion=False,
         **kwargs,
     ):
@@ -22,6 +24,7 @@ class BEVSegmentor(CustomBaseSegmentor):
         self.freeze_img_backbone = freeze_img_backbone
         self.freeze_img_neck = freeze_img_neck
         self.img_backbone_out_indices = img_backbone_out_indices
+        self.backbone_fp16 = backbone_fp16
         # self.use_post_fusion = use_post_fusion
 
         if freeze_img_backbone:
@@ -37,16 +40,20 @@ class BEVSegmentor(CustomBaseSegmentor):
 
         B, F, N, C, H, W = imgs.size()
         imgs = imgs.reshape(B * F * N, C, H, W)
-        img_feats_backbone = self.img_backbone(imgs)
-        if isinstance(img_feats_backbone, dict):
-            img_feats_backbone = list(img_feats_backbone.values())
-        img_feats = []
-        for idx in self.img_backbone_out_indices:
-            img_feats.append(img_feats_backbone[idx])
-        img_feats = self.img_neck(img_feats)
+
+        with torch.cuda.amp.autocast(enabled=self.backbone_fp16, dtype=torch.float16):
+            img_feats_backbone = self.img_backbone(imgs)
+            if isinstance(img_feats_backbone, dict):
+                img_feats_backbone = list(img_feats_backbone.values())
+            img_feats = []
+            for idx in self.img_backbone_out_indices:
+                img_feats.append(img_feats_backbone[idx])
+            img_feats = self.img_neck(img_feats)
 
         img_feats_reshaped = []
         for img_feat in img_feats:
+            if self.backbone_fp16:
+                img_feat = img_feat.float()
             BFN, C, H, W = img_feat.size()
             # if self.use_post_fusion:
             #     img_feats_reshaped.append(img_feat.unsqueeze(1))

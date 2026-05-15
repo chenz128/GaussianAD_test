@@ -169,6 +169,7 @@ loss_input_convertion = dict(
 # All modules trainable (map + plan + render all enabled)
 frozen_modules = []
 find_unused_parameters = False  # with_cp=True conflicts with find_unused_parameters=True in DDP; frozen modules don't need it
+backbone_fp16 = True  # selective AMP: only backbone+neck run in fp16, rest stays fp32
 
 # ========= model config ===============
 embed_dims = 128#这是高斯编码器和解码器中使用的特征维度。较大的embed_dims可以提供更丰富的特征表示能力，但也会增加模型的计算复杂度和内存占用。根据实际需求和资源限制，可以调整这个值来平衡性能和效率。
