@@ -51,3 +51,4 @@ class GaussianPrediction(NamedTuple):
     rotations: Tensor
     opacities: Tensor
     semantics: Tensor
+    semantics_logits: Tensor = None  # raw logits before activation, for 2D rendering

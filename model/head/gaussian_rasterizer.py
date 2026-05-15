@@ -86,7 +86,7 @@ class GaussianRasterizer2D(nn.Module):
                 gaussian.rotations[b],
                 gaussian.scales[b],
                 gaussian.opacities[b, :, 0],
-                gaussian.semantics[b],
+                gaussian.semantics_logits[b],  # use raw logits for proper CE loss
                 gs_extrins[b],
                 gs_intrins[b],
             )

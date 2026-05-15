@@ -118,18 +118,21 @@ class SparseGaussian3DRefinementModule(BaseModule):
         gs_scales = safe_sigmoid(output[..., 3:6])
         gs_scales = self.scale_range[0] + (self.scale_range[1] - self.scale_range[0]) * gs_scales
 
-        semantics = output[..., self.semantic_start: (self.semantic_start + self.semantic_dim)]
+        semantics_logits = output[..., self.semantic_start: (self.semantic_start + self.semantic_dim)]
         if self.semantics_activation == 'softmax':
-            semantics = semantics.softmax(dim=-1)
+            semantics = semantics_logits.softmax(dim=-1)
         elif self.semantics_activation == 'softplus':
-            semantics = F.softplus(semantics)
+            semantics = F.softplus(semantics_logits)
+        else:
+            semantics = semantics_logits
 
         gaussian = GaussianPrediction(
             means=xyz,
             scales=gs_scales,
             rotations=output[..., 6:10],
             opacities=safe_sigmoid(output[..., 10: (10 + int(self.include_opa))]),
-            semantics=semantics
+            semantics=semantics,
+            semantics_logits=semantics_logits,
         )
         offset = output[..., -self.offset_dim:]
         return output, gaussian, offset
@@ -160,17 +163,20 @@ class SparseGaussian3DRefinementModule(BaseModule):
         gs_scales = safe_sigmoid(output[..., 3:6])
         gs_scales = self.scale_range[0] + (self.scale_range[1] - self.scale_range[0]) * gs_scales
 
-        semantics = output[..., self.semantic_start: (self.semantic_start + self.semantic_dim)]
+        semantics_logits = output[..., self.semantic_start: (self.semantic_start + self.semantic_dim)]
         if self.semantics_activation == 'softmax':
-            semantics = semantics.softmax(dim=-1)
+            semantics = semantics_logits.softmax(dim=-1)
         elif self.semantics_activation == 'softplus':
-            semantics = F.softplus(semantics)
+            semantics = F.softplus(semantics_logits)
+        else:
+            semantics = semantics_logits
 
         gaussian = GaussianPrediction(
             means=xyz,
             scales=gs_scales,
             rotations=output[..., 6:10],
             opacities=safe_sigmoid(output[..., 10: (10 + int(self.include_opa))]),
-            semantics=semantics
+            semantics=semantics,
+            semantics_logits=semantics_logits,
         )
         return gaussian
