@@ -41,7 +41,7 @@ class BEVSegmentor(CustomBaseSegmentor):
         B, F, N, C, H, W = imgs.size()
         imgs = imgs.reshape(B * F * N, C, H, W)
 
-        with torch.cuda.amp.autocast(enabled=self.backbone_fp16, dtype=torch.float16):
+        with torch.cuda.amp.autocast(enabled=self.backbone_fp16, dtype=torch.bfloat16):
             img_feats_backbone = self.img_backbone(imgs)
             if isinstance(img_feats_backbone, dict):
                 img_feats_backbone = list(img_feats_backbone.values())

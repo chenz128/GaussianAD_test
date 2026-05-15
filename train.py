@@ -168,12 +168,11 @@ def main(args):
             t_in_epochs=False)
     amp = cfg.get('amp', False)
     backbone_fp16 = cfg.get('backbone_fp16', False)
-    use_scaler = amp or backbone_fp16
+    # bf16 doesn't need GradScaler (same dynamic range as fp32)
+    use_scaler = amp  # only full-model fp16 needs scaler
     if use_scaler:
         scaler = torch.cuda.amp.GradScaler()
-        os.environ['amp'] = 'true'
-    else:
-        os.environ['amp'] = 'false'
+    os.environ['amp'] = 'true' if amp else 'false'
 
     # resume and load
     epoch = 0
