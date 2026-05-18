@@ -116,10 +116,13 @@ class RenderLoss(BaseLoss):
         target_sem = pseudo_seg.flatten().long()    # (N,)
         valid_sem = target_sem > 0
         if valid_sem.any():
-            pw = self.class_weight[target_sem[valid_sem]]#这是一个权重张量，用于平衡不同类别的损失。class_weight是根据nuScenes数据集中各个类别的频率计算得到的，频率越低的类别权重越高。通过索引target_sem[valid_sem]，我们可以得到每个有效像素对应的类别权重，从而在计算交叉熵损失时给予稀有类别更大的关注。
+            pw = self.class_weight[target_sem[valid_sem]]
+            # pseudo_seg labels 1-16 directly correspond to Gaussian semantic channels 1-16
+            # (channel 0 = noise/others in OccupancyLoss, not supervised by RenderLoss)
+            # Do NOT subtract 1: the CE target must match the OccupancyLoss class indices
             loss_sem = self.sem_lw * (
-                pw * self.loss_fn_ce(pred_sem[valid_sem], target_sem[valid_sem] - 1)
-            ).mean()#注意这里的target_sem[valid_sem] - 1是因为pseudo_seg中的类别标签是从1开始的，而CrossEntropyLoss要求类别标签从0开始，所以需要减1进行调整。
+                pw * self.loss_fn_ce(pred_sem[valid_sem], target_sem[valid_sem])
+            ).mean()
         else:
             loss_sem = pred_sem.sum() * 0.0
 
@@ -181,16 +184,20 @@ class RenderLoss(BaseLoss):
             B, nC, H, W, _ = rendered_sem.shape
             rows = []
             for cam in range(nC):
-                # 语义：渲染预测 argmax（0-indexed）
+                # 语义：渲染预测 argmax — model class 0=noise, 1=barrier, ..., 16=vegetation
                 pred_cls = rendered_sem[0, cam].detach().cpu().argmax(dim=-1).numpy()  # (H, W)
-                pred_sem_rgb = _colorize_sem(pred_cls)  # (H, W, 3)
+                pred_sem_rgb = np.where(
+                    (pred_cls[..., None] > 0),
+                    _NUSC_PALETTE[np.clip(pred_cls - 1, 0, 16)],
+                    np.array([128, 128, 128], dtype=np.uint8)   # class 0 (noise) → gray
+                ).astype(np.uint8)
 
-                # 语义：伪标签 GT（1-indexed, 0=invalid）→ 0-indexed for palette
+                # 语义：伪标签 GT — pseudo_seg 0=invalid, 1=barrier, ..., 16=vegetation
                 gt_cls_raw = pseudo_seg[0, cam].detach().cpu().numpy().astype(np.int32)  # (H, W)
                 gt_sem_rgb = np.where(
                     (gt_cls_raw[..., None] > 0),
-                    _NUSC_PALETTE[(np.clip(gt_cls_raw, 1, 17) - 1)],
-                    np.array([128, 128, 128], dtype=np.uint8)   # invalid → 灰色
+                    _NUSC_PALETTE[np.clip(gt_cls_raw - 1, 0, 16)],
+                    np.array([128, 128, 128], dtype=np.uint8)   # invalid → gray
                 ).astype(np.uint8)
 
                 # 深度：渲染预测
