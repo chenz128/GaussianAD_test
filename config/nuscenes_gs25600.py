@@ -221,6 +221,10 @@ train_dataset_config = dict(
 
 model = dict(
     img_backbone_out_indices=[0, 1, 2, 3],
+    # Run backbone + encoder for historical frames under torch.no_grad() to
+    # save activation memory and backward time. Only the current (last) frame
+    # contributes gradients. Temporal encoder still sees all frames.
+    history_no_grad=True,
     img_backbone=dict(
         _delete_=True,
         type='ResNet',

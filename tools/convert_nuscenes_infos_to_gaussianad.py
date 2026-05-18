@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert generic nuScenes info PKLs into GaussianAD-compatible PKLs.
+"""Convert generic nuScenes info PKLs into GaussianAD-compatible PKLs (v6).
 
 This script converts
 - data/nuscenes_cam/nuscenes_infos_train.pkl
@@ -10,6 +10,21 @@ into the format expected by this repository:
 
 It also rebuilds `info['data']` entries (LIDAR_TOP + 6 cameras) from
 nuScenes devkit, and fills missing fields required by dataset loading.
+
+v6 changes (target: ~90% parity with the author's original PKL):
+- P0: write `info["scene_token"]` (required by pseudo-label branch).
+- P0: recompute `gt_velocity` in LIDAR_TOP frame via nusc.box_velocity,
+      using the same anno-matching as agent-future filling (toggleable
+      via --no-recompute-velocity).
+- P0: write back authentic `num_lidar_pts`/`num_radar_pts` from matched
+      sample_annotations instead of the ones(.) placeholder.
+- P1: ego_fut_cmd thresholds aligned with VAD (lateral 2.0 m, yaw 5°).
+- P1: agent gt<->annotation matching uses a distance-adaptive cutoff.
+- P1: gt_ego_lcf_feat fills ax/ay/yaw_rate (idx 2..4), nuScenes ego
+      box size (idx 5..6), |v| (idx 7), steering proxy (idx 8).
+- P1: default --min-map-line-length raised to 2.0 m (VAD-style).
+- P1: --mask-plan-outside-range defaults to True (use --no-mask-...
+      to disable).
 """
 
 import argparse
@@ -45,16 +60,28 @@ HISTORY_STEPS = 2
 FUTURE_STEP_SECONDS = 0.5
 DEFAULT_MAP_PC_RANGE = (-30.0, -30.0, -2.0, 30.0, 30.0, 2.0)
 DEFAULT_EGO_FUT_CMD = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-DEFAULT_MIN_MAP_LINE_LENGTH = 0.5
+# v6: VAD-style map simplification.
+DEFAULT_MIN_MAP_LINE_LENGTH = 2.0
 DEFAULT_MAP_SIMPLIFY_TOLERANCE = 0.05
 STATIC_COMMAND_DISP_THRESHOLD = 1.0
 STATIC_COMMAND_PATH_THRESHOLD = 2.0
-TURN_LATERAL_THRESHOLD = 1.0
-TURN_YAW_THRESHOLD = 0.20
+# v6: VAD command thresholds (lateral 2 m, yaw ~5 deg).
+TURN_LATERAL_THRESHOLD = 2.0
+TURN_YAW_THRESHOLD = 0.0873  # 5 degrees
 TURN_YAW_SCORE_WEIGHT = 4.0
 CMD_RIGHT_IDX = 0
 CMD_STRAIGHT_IDX = 1
 CMD_LEFT_IDX = 2
+# v6: nuScenes ego vehicle (Renault Zoe) approximate footprint, matches VAD.
+NUSC_EGO_LENGTH = 4.084
+NUSC_EGO_WIDTH = 1.730
+# v6: distance-adaptive matching cutoff (cap_meters = base + slope * dist_to_ego)
+MATCH_BASE_RADIUS = 2.5
+MATCH_DIST_SLOPE = 0.05
+MATCH_MAX_RADIUS = 6.0
+MATCH_BASE_COST = 4.0
+MATCH_COST_SLOPE = 0.10
+MATCH_MAX_COST = 9.0
 PLANNER_TYPE_BY_NAME = {
     "pedestrian": 2,
     "car": 14,
@@ -674,6 +701,10 @@ def _match_gt_boxes_to_annotations(
         gt_name = str(gt_names[gt_idx])
         gt_center = gt_boxes[gt_idx, :3]
         gt_size = np.sort(gt_boxes[gt_idx, 3:6])
+        # v6: adaptive cutoff -- distant objects need larger tolerance.
+        ego_dist = float(np.linalg.norm(gt_center[:2]))
+        radius_cap = min(MATCH_BASE_RADIUS + MATCH_DIST_SLOPE * ego_dist, MATCH_MAX_RADIUS)
+        cost_cap = min(MATCH_BASE_COST + MATCH_COST_SLOPE * ego_dist, MATCH_MAX_COST)
         best_j = None
         best_cost = float("inf")
         best_center_dist = float("inf")
@@ -689,14 +720,36 @@ def _match_gt_boxes_to_annotations(
                 best_j = cand_idx
         if best_j is None:
             continue
-        if best_center_dist > 2.5 or best_cost > 4.0:
+        if best_center_dist > radius_cap or best_cost > cost_cap:
             continue
         matches[gt_idx] = candidates[best_j]
         used.add(best_j)
     return matches
 
 
-def _fill_scene_agent_future_labels(scene_infos: List[Dict[str, Any]], nusc: NuScenes) -> None:
+def _velocity_global_to_lidar(
+    velocity_global_xy: np.ndarray,
+    info: Dict[str, Any],
+) -> np.ndarray:
+    """v6: Rotate a global-frame planar velocity into LIDAR_TOP frame."""
+    if not np.all(np.isfinite(velocity_global_xy)):
+        return np.array([np.nan, np.nan], dtype=np.float32)
+    velo3 = np.array([float(velocity_global_xy[0]), float(velocity_global_xy[1]), 0.0], dtype=np.float64)
+    # global -> ego
+    ego_rot = Quaternion(info["ego2global_rotation"]).rotation_matrix
+    velo_ego = np.linalg.inv(ego_rot) @ velo3
+    # ego -> lidar
+    lidar_rot = Quaternion(info["lidar2ego_rotation"]).rotation_matrix
+    velo_lidar = np.linalg.inv(lidar_rot) @ velo_ego
+    return velo_lidar[:2].astype(np.float32)
+
+
+def _fill_scene_agent_future_labels(
+    scene_infos: List[Dict[str, Any]],
+    nusc: NuScenes,
+    recompute_velocity: bool = True,
+    refill_num_pts: bool = True,
+) -> None:
     for info in scene_infos:
         gt_boxes = _as_numpy(info.get("gt_boxes", _zeros((0, 7), np.float32)), np.float32)
         gt_names = np.asarray(info.get("gt_names", np.array([], dtype=object)))
@@ -738,6 +791,41 @@ def _fill_scene_agent_future_labels(scene_infos: List[Dict[str, Any]], nusc: NuS
             )
 
         matches = _match_gt_boxes_to_annotations(gt_boxes, gt_names, candidates)
+
+        # v6: write back authentic num_lidar_pts / num_radar_pts / velocity
+        if refill_num_pts:
+            new_n_lidar = np.zeros((num_agents,), dtype=np.int32)
+            new_n_radar = np.zeros((num_agents,), dtype=np.int32)
+            for gt_idx, matched in matches.items():
+                ann = matched["ann"]
+                new_n_lidar[gt_idx] = int(ann.get("num_lidar_pts", 0))
+                new_n_radar[gt_idx] = int(ann.get("num_radar_pts", 0))
+            # only overwrite if old field looks like the placeholder (all ones / zeros / shape mismatch)
+            old_lidar = info.get("num_lidar_pts")
+            if (
+                old_lidar is None
+                or np.asarray(old_lidar).shape != (num_agents,)
+                or np.all(np.asarray(old_lidar) == 1)
+            ):
+                info["num_lidar_pts"] = new_n_lidar
+            old_radar = info.get("num_radar_pts")
+            if (
+                old_radar is None
+                or np.asarray(old_radar).shape != (num_agents,)
+            ):
+                info["num_radar_pts"] = new_n_radar
+
+        if recompute_velocity:
+            new_vel = np.zeros((num_agents, 2), dtype=np.float32)
+            for gt_idx, matched in matches.items():
+                ann = matched["ann"]
+                v_global = nusc.box_velocity(ann["token"])[:2]
+                new_vel[gt_idx] = _velocity_global_to_lidar(np.asarray(v_global), info)
+            # keep unmatched rows at 0 (NaN -> 0)
+            new_vel[~np.isfinite(new_vel)] = 0.0
+            info["gt_velocity"] = new_vel
+            gt_velocity = new_vel
+
         for gt_idx, matched in matches.items():
             current_ann = matched["ann"]
             prev_center = gt_boxes[gt_idx, :2].astype(np.float32)
@@ -804,6 +892,9 @@ def _fill_scene_planner_labels(
         step_trajs = _zeros((FUTURE_STEPS, 2), np.float32)
         fut_masks = _zeros((FUTURE_STEPS,), np.float32)
         ego_lcf_feat = _zeros((9,), np.float32)
+        # v6: fill ego footprint by default; speed/steering filled below if available.
+        ego_lcf_feat[5] = NUSC_EGO_LENGTH
+        ego_lcf_feat[6] = NUSC_EGO_WIDTH
         if future_positions:
             cumulative = np.asarray(future_positions, dtype=np.float32)
             step_offsets = cumulative.copy()
@@ -829,8 +920,26 @@ def _fill_scene_planner_labels(
                 1e-3,
             ) if idx + 1 < len(scene_infos) else FUTURE_STEP_SECONDS
             ego_lcf_feat[0:2] = step_trajs[0] / first_dt if fut_masks[0] > 0 else 0.0
+            # v6: acceleration via second-order finite difference (idx 2..4).
+            if fut_masks[0] > 0 and fut_masks[1] > 0 and idx + 2 < len(scene_infos):
+                second_dt = max(
+                    (float(scene_infos[idx + 2]["timestamp"]) - float(scene_infos[idx + 1]["timestamp"])) / 1e6,
+                    1e-3,
+                )
+                v0 = step_trajs[0] / first_dt
+                v1 = step_trajs[1] / second_dt
+                ego_lcf_feat[2:4] = (v1 - v0) / max(0.5 * (first_dt + second_dt), 1e-3)
+            # yaw rate over the available horizon.
+            horizon_t = max(len(future_yaws) * FUTURE_STEP_SECONDS, 1e-3)
+            yaw_rate = float(yaw_delta / horizon_t)
+            ego_lcf_feat[4] = yaw_rate
             ego_lcf_feat[7] = float(np.linalg.norm(ego_lcf_feat[0:2]))
-            ego_lcf_feat[8] = float(yaw_delta / max(len(future_yaws) * FUTURE_STEP_SECONDS, 1e-3))
+            # steering proxy: yaw_rate * L / v (bicycle model), clipped.
+            v_norm = ego_lcf_feat[7]
+            if v_norm > 0.5:
+                ego_lcf_feat[8] = float(np.clip(yaw_rate * NUSC_EGO_LENGTH / v_norm, -1.0, 1.0))
+            else:
+                ego_lcf_feat[8] = yaw_rate
         else:
             info["gt_ego_fut_cmd"] = DEFAULT_EGO_FUT_CMD.copy()
 
@@ -986,6 +1095,8 @@ def _convert_one(
     strict: bool,
     skip_missing_occ: bool,
     max_samples: int,
+    recompute_velocity: bool = True,
+    refill_num_pts: bool = True,
 ) -> None:
     src = mmengine.load(src_path)
     if not isinstance(src, dict) or "infos" not in src:
@@ -1030,6 +1141,8 @@ def _convert_one(
         log = nusc.get("log", scene["log_token"])
 
         info["token"] = token
+        info["scene_token"] = scene_token  # v6: required by pseudo-label branch in dataset.py
+        info["scene_name"] = scene["name"]  # v6: convenient lookup for pseudo-label dirs
         info["timestamp"] = info.get("timestamp", sample["timestamp"])
         info["lidar_path"] = info.get("lidar_path", lidar_sd["filename"])
 
@@ -1092,7 +1205,12 @@ def _convert_one(
                 min_map_line_length,
                 map_simplify_tolerance,
             )
-        _fill_scene_agent_future_labels(arr, nusc)
+        _fill_scene_agent_future_labels(
+            arr,
+            nusc,
+            recompute_velocity=recompute_velocity,
+            refill_num_pts=refill_num_pts,
+        )
         _fill_scene_planner_labels(
             arr,
             plan_valid_pc_range=plan_valid_pc_range,
@@ -1144,8 +1262,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--src-train", default="data/nuscenes_cam/nuscenes_infos_train.pkl")
     parser.add_argument("--src-val", default="data/nuscenes_cam/nuscenes_infos_val.pkl")
 
-    parser.add_argument("--dst-train", default="data/nuscenes_cam/nuscenes_infos_train_gaussian_ad.pkl")
-    parser.add_argument("--dst-val", default="data/nuscenes_cam/nuscenes_infos_val_gaussian_ad.pkl")
+    parser.add_argument("--dst-train", default="data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v6.pkl")
+    parser.add_argument("--dst-val", default="data/nuscenes_cam/nuscenes_infos_val_gaussian_ad_v6.pkl")
     parser.add_argument("--surroundocc-train-dir", default="data/surroundocc/train_samples")
     parser.add_argument("--surroundocc-val-dir", default="data/surroundocc/val_samples")
     parser.add_argument(
@@ -1186,8 +1304,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mask-plan-outside-range",
-        action="store_true",
-        help="Mask ego future steps after the cumulative trajectory leaves --plan-valid-pc-range.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="v6: default True. Mask ego future steps after the cumulative trajectory leaves --plan-valid-pc-range. "
+             "Use --no-mask-plan-outside-range to disable.",
+    )
+    parser.add_argument(
+        "--recompute-velocity",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="v6: default True. Recompute gt_velocity in LIDAR_TOP frame via nusc.box_velocity. "
+             "Use --no-recompute-velocity to keep source values.",
+    )
+    parser.add_argument(
+        "--refill-num-pts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="v6: default True. Overwrite placeholder num_lidar_pts/num_radar_pts with the values from \
+              nuScenes sample_annotations.",
     )
 
     parser.add_argument(
@@ -1232,6 +1366,8 @@ def main() -> None:
             strict=args.strict,
             skip_missing_occ=args.skip_missing_occ,
             max_samples=args.max_train_samples,
+            recompute_velocity=args.recompute_velocity,
+            refill_num_pts=args.refill_num_pts,
         )
     if not args.skip_val:
         _convert_one(
@@ -1248,6 +1384,8 @@ def main() -> None:
             strict=args.strict,
             skip_missing_occ=args.skip_missing_occ,
             max_samples=args.max_val_samples,
+            recompute_velocity=args.recompute_velocity,
+            refill_num_pts=args.refill_num_pts,
         )
 
     print("[DONE] conversion finished.")

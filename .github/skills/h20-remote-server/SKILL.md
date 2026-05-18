@@ -113,6 +113,8 @@ ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <b
 | 使用 `/data/chenz` 以外的工作空间 | 只允许 `/data/chenz` |
 | 在远端直接 `git commit` | 提交只在本地进行 |
 | 将临时文件提交到版本库 | 必须加入 `.gitignore` |
+| **未经用户明确允许停止训练进程** | 严禁在未获得用户明确指令的情况下 kill、中断或停止任何正在运行的训练进程（包括但不限于 `kill`、`pkill`、`Ctrl+C`、关闭 tmux 会话等操作） |
+| **未经用户明确允许重新启动训练** | 严禁在未获得用户明确指令的情况下重新发起训练（包括直接启动 `torchrun`/`python train.py`，或通过脚本间接触发） |
 
 ---
 

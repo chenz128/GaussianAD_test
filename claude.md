@@ -819,6 +819,85 @@ pred_sem_rgb = np.where(
 
 ---
 
+## PKL 数据转换脚本（tools/convert_nuscenes_infos_to_gaussianad.py）
+
+作者 GitHub 的 PKL 文件损坏，需要从标准 nuScenes infos PKL 自行转换。
+
+### v6 改进（2026-05-18）
+
+目标：使转换后 PKL 的数据分布尽量接近作者原始 PKL 的训练效果。
+
+#### P0 修复（正确性，必须做）
+
+| 改动 | 说明 |
+|------|------|
+| 写入 `info["scene_token"]` 和 `info["scene_name"]` | dataset.py L1603 pseudo-label 分支读 scene_token，不写则 KeyError 崩溃 |
+| `num_lidar_pts` / `num_radar_pts` 回填真值 | 原来是 `np.ones((n,))` 占位，导致 dataset 的 `filter_min_points_in_gt` 过滤完全失效，保留了大量无效 gt_box |
+| 重算 `gt_velocity` 到 LIDAR_TOP 坐标系 | 用 `nusc.box_velocity()` 返回 global 系速度，经 global→ego→lidar 两步旋转转换（由 `_velocity_global_to_lidar()` 完成），`--no-recompute-velocity` 可关闭 |
+
+#### P1 修复（质量，提升分布匹配度）
+
+| 改动 | 说明 |
+|------|------|
+| ego_fut_cmd 阈值对齐 VAD | `TURN_LATERAL_THRESHOLD` 1.0→2.0 m，`TURN_YAW_THRESHOLD` 0.20→0.0873 rad（5°），修复 STRAIGHT 命令占比过高（>0.90）的问题 |
+| agent 匹配距离自适应 | `radius_cap = min(2.5 + 0.05·d_ego, 6.0)` m，`cost_cap = min(4.0 + 0.10·d_ego, 9.0)`，远处目标不再漏匹配 |
+| `gt_ego_lcf_feat` 9 维全填 | [0:2] vx,vy / [2:4] ax,ay（二阶差分）/ [4] 偏航角速率 / [5:6] ego 车身尺寸(4.084, 1.730) / [7] \|v\| / [8] 转向代理量（自行车模型） |
+| `min_map_line_length` 0.5→2.0 m | 对齐 VAD 配置，减少地图碎片 |
+| `--mask-plan-outside-range` 默认 True | 超出 BEV 范围的 ego future step 自动掩膜，use `--no-mask-plan-outside-range` 关闭 |
+| 输出文件名默认含 `_v6` 后缀 | 避免覆盖旧版 |
+
+#### 常量
+
+```python
+MATCH_BASE_RADIUS   = 2.5    # 距离自适应匹配基础半径
+MATCH_DIST_SLOPE    = 0.05   # 每米增量
+MATCH_MAX_RADIUS    = 6.0    # 上限
+NUSC_EGO_LENGTH     = 4.084  # Renault Zoe
+NUSC_EGO_WIDTH      = 1.730
+TURN_LATERAL_THRESHOLD = 2.0    # m
+TURN_YAW_THRESHOLD     = 0.0873 # rad (~5°)
+DEFAULT_MIN_MAP_LINE_LENGTH = 2.0  # m
+```
+
+#### 运行命令（H20）
+
+```bash
+/data/chenz/conda_env/GaussianAD/bin/python tools/convert_nuscenes_infos_to_gaussianad.py \
+    --dataroot data/nuscenes --version v1.0-trainval \
+    --surroundocc-train-dir data/surroundocc/train_samples \
+    --surroundocc-val-dir   data/surroundocc/val_samples
+# 输出: data/nuscenes_cam/nuscenes_infos_{train,val}_gaussian_ad_v6.pkl
+```
+
+### 统计分析脚本（tools/stats_gaussianad_pkl.py）
+
+转换完成后用此脚本体检 PKL 质量，不依赖作者原始 PKL：
+
+```bash
+python tools/stats_gaussianad_pkl.py \
+    --pkl data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v6.pkl
+# 可选: --pkl-ref 旧版 pkl（对比 v5 vs v6 各项指标变化）
+```
+
+**9 大体检维度：**
+1. 顶层结构（infos dict / metadata list 是否存在）
+2. 必需 key 缺失（REQUIRED_FRAME_KEYS + PSEUDO_LABEL_KEYS）
+3. ego_fut_cmd 命令分布（健康范围：STRAIGHT 55-85%，L/R 各 5-25%）
+4. fut_valid_rate（≥80%）/ agent future 覆盖率（≥65%）
+5. gt_boxes 分布（过滤前/后，含百分位数）
+6. gt_map 三类元素数（divider/ped_crossing/boundary 均值）
+7. velocity_norm 分布 / num_lidar_pts 分布（验证 P0 #2 写回效果）
+8. 伪标签就绪度（scene_token/scene_name 缺失数）
+9. 内置启发式健康告警（`[OK]`/`[WARN]`/`[FAIL]`）
+
+**判读重点（v6 相较 v5 的预期变化）：**
+- `num_lidar_pts.mean` 应从 ≈1 升至几十（真实点数）
+- `cmd_ratio.STRAIGHT` 应从 >0.90 降至 0.65-0.80
+- `ego_lcf_feat_nonzero_dim_count` dim2-6 应从 0 变为显著非 0
+- `scene_token` / `scene_name` 缺失数应为 0
+
+---
+
 ## 版本记录
 
 | 日期 | 更新内容 |
@@ -832,3 +911,4 @@ pred_sem_rgb = np.where(
 | 2026-05-15 | **全量 loss 启用**（map+plan 加回）；发现语义渲染不学习的根因（softplus→alpha-blend≠logits）；修复为 Plan A（渲染 raw logits）；训练改为 tmux `train_splatting` |
 | 2026-05-15 | 训练扩展为 **8 卡**（GPU 0-7），3516 iters/epoch |
 | 2026-05-18 | **发现并修复 RenderLoss off-by-one 类别索引 bug**：CE target 错位导致所有类梯度方向错误，bicycle 18 epoch 全 0%；修复 commit eb138cf；同步修复可视化 palette 映射；max_epochs 延长至 30（commit b19c429），接续 epoch 18 继续训练 |
+| 2026-05-18 | **PKL 转换脚本 v6**：P0 修复（scene_token、num_lidar_pts 真值回填、velocity 坐标系重算）+ P1 质量改进（VAD 命令阈值、自适应匹配、ego_lcf_feat 全维度、map 线长过滤 2m）；新增体检脚本 `tools/stats_gaussianad_pkl.py` |
