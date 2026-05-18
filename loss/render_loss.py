@@ -73,6 +73,7 @@ class RenderLoss(BaseLoss):
                 'rendered_depth': 'rendered_depth',
                 'pseudo_seg': 'pseudo_seg',
                 'pseudo_depth': 'pseudo_depth',
+                'input_imgs': 'input_imgs',
             }
         super().__init__(weight=weight, input_dict=input_dict, **kwargs)
         # BaseLoss.__init__ sets self.loss_func = lambda: 0 as instance attr,
@@ -101,13 +102,14 @@ class RenderLoss(BaseLoss):
         # linear for large errors. delta=2m is a reasonable threshold for outdoor scenes.
         self.loss_fn_depth = nn.HuberLoss(delta=2.0, reduction='mean')
 
-    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
+    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, input_imgs=None):
         """
         Args:
             rendered_sem:   (B, nC, H, W, 17) — rendered semantic logits
             rendered_depth: (B, nC, H, W)     — rendered depth
             pseudo_seg:     (B, nC, H, W)     — pseudo semantic labels (0=invalid)
             pseudo_depth:   (B, nC, H, W)     — pseudo depth (0=invalid)
+            input_imgs:     (B, F, N, C, H, W) — original camera images (optional, for vis)
         """
         # eval mode: rendering was skipped, or val dataset has no pseudo labels
         if rendered_sem is None or rendered_depth is None or pseudo_seg is None or pseudo_depth is None:
@@ -170,14 +172,14 @@ class RenderLoss(BaseLoss):
             # 保存渲染可视化图片
             if self.vis_dir is not None:
                 self._save_vis(rendered_sem, rendered_depth, pseudo_seg, pseudo_depth,
-                               step=self._diag_counter)
+                               step=self._diag_counter, input_imgs=input_imgs)
 
         return loss_sem + loss_depth
 
-    def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step):
+    def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step, input_imgs=None):
         """
         保存所有相机的渲染结果对比图（batch 0）。
-        每张图为横向拼接: [pred_sem | gt_sem | pred_depth | gt_depth]
+        每张图为横向拼接: [pred_sem | gt_sem | pred_depth | gt_depth | orig_img]
         所有相机纵向堆叠，保存为 render_vis/step_{step:06d}.jpg
         """
         # DDP: only rank 0 saves to avoid 8 processes writing the same file concurrently
@@ -217,9 +219,29 @@ class RenderLoss(BaseLoss):
                 gt_d_np = pseudo_depth[0, cam].detach().cpu().numpy()  # (H, W)
                 gt_d_rgb = _depth_to_rgb(gt_d_np)  # (H, W, 3)
 
-                # 添加标签栏（在图片顶部写相机编号，用黑色像素行分隔）
-                separator = np.zeros((2, W * 4, 3), dtype=np.uint8)
-                row = np.concatenate([pred_sem_rgb, gt_sem_rgb, pred_d_rgb, gt_d_rgb], axis=1)
+                # 原始相机图像（当前帧，batch 0）
+                orig_img_rgb = None
+                if input_imgs is not None:
+                    try:
+                        # input_imgs: (B, F, N, C, H_img, W_img)
+                        img_t = input_imgs[0, -1, cam].detach().cpu().float().numpy()  # (C, H_img, W_img)
+                        img_t = img_t.transpose(1, 2, 0)  # (H_img, W_img, C)
+                        # un-normalize: ImageNet mean/std, RGB
+                        img_t = img_t * np.array([58.395, 57.12, 57.375], dtype=np.float32) \
+                                      + np.array([123.675, 116.28, 103.53], dtype=np.float32)
+                        img_t = np.clip(img_t, 0, 255).astype(np.uint8)
+                        orig_img_pil = Image.fromarray(img_t).resize((W, H), Image.BILINEAR)
+                        orig_img_rgb = np.array(orig_img_pil)
+                    except Exception:
+                        pass
+
+                # 用黑色像素行分隔相机
+                n_cols = 5 if orig_img_rgb is not None else 4
+                separator = np.zeros((2, W * n_cols, 3), dtype=np.uint8)
+                cols = [pred_sem_rgb, gt_sem_rgb, pred_d_rgb, gt_d_rgb]
+                if orig_img_rgb is not None:
+                    cols.append(orig_img_rgb)
+                row = np.concatenate(cols, axis=1)
                 rows.append(separator)
                 rows.append(row)
 
