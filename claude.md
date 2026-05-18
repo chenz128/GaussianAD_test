@@ -135,10 +135,10 @@ CE Loss vs grounded_sam      MSE Loss vs metric_3d
 
 ### 显存实测（2026-05-15）
 
-| 配置 | with_cp | 显存占用 | 状态 |
-|------|---------|----------|------|
-| 全量 loss（6个），无 cp | `False` | 67-76 GB / 96 GB | ✅ 安全运行 |
-| 仅 occ+flow+det+render，无 cp | `False` | ~54 GB | — |
+| 配置 | GPU数 | with_cp | 显存占用 | 状态 |
+|------|-------|---------|----------|------|
+| 全量 loss（6个），无 cp | 8卡 | `False` | 67-76 GB / 96 GB | ✅ 安全运行 |
+| 仅 occ+flow+det+render，无 cp | 4卡 | `False` | ~54 GB | — |
 
 ### 渲染分辨率
 
@@ -542,11 +542,12 @@ ssh -p 30300 root@8.130.174.55 "cd /data/chenz/GaussianAD && git pull origin spl
 
 ## RenderLoss 有效性诊断
 
-### 当前训练状态（2026-05-14）
+### 当前训练状态（2026-05-18）
 
-- splatting 分支正在跑 Epoch 4，已记录约 395 次 loss
-- RenderLoss 均值约 **2.84**，而 $\log(17) \approx 2.833$ 是17类随机猜测时的交叉熵期望值
-- ⚠️ **目前渲染语义接近随机分布，尚未收敛**
+- splatting 分支：8卡，max_epochs=30，从 epoch 18 接续（off-by-one 修复后）
+- 修复前（epoch 1-18）：RenderLoss 均值约 **2.84**，类别索引错位，bicycle 全 0%
+- 修复后（epoch 18 起）：RenderLoss 第一个 iter = **8.77**（正确 target 更难），预计逐步下降
+- 预计 epoch 22-24 开始出现 bicycle IoU > 0%
 
 ### 四步诊断法
 
@@ -740,14 +741,81 @@ except ValueError as e:
 ```
 Optimizer 不 resume 仅影响前几个 iter 的动量/学习率预热，对训练质量无实质影响。
 
-#### 训练启动方式（tmux）
+#### 训练启动方式（tmux，8卡）
 
 ```bash
 # 在 tmux session train_splatting 中运行
-cd /data/chenz/GaussianAD && CUDA_VISIBLE_DEVICES=0,1,2,3 /data/chenz/conda_env/splatting/bin/torchrun \
-    --nproc_per_node 4 --master_port 12457 \
+cd /data/chenz/GaussianAD && CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 /data/chenz/conda_env/splatting/bin/torchrun \
+    --nproc_per_node 8 --master_port 12457 \
     train.py --py-config config/nuscenes_gs25600.py --work-dir out/nuscenes_gs25600_splatting --dataset nuscenes
 ```
+
+---
+
+### 调试记录（2026-05-18 RenderLoss 类别索引 off-by-one 根因分析与修复）
+
+#### 现象：bicycle IoU 18 个 epoch 全部 0%
+
+- splatting 分支跑完 18 epoch，bicycle IoU 始终 0.00%（precision=0, recall=0）
+- 对比 v4 baseline：epoch 8（step 等价）时 bicycle = 2.90%，说明异常
+- `total_positive` 中 bicycle 从 179 → 164 → 98，逐 epoch 下降，说明模型在主动**学会不预测** bicycle
+- motorcycle（第二稀有）也从 v4 的 9.68% 降到 splatting 的 1.16%
+
+#### 根因：CE target 错位一位
+
+`render_loss.py` 原始代码：
+```python
+loss_sem = CE(pred_sem[valid_sem], target_sem[valid_sem] - 1)
+```
+
+Gaussian 17 个语义通道与 OccupancyLoss / pseudo_seg 的映射关系：
+- OccupancyLoss：channel 0=noise, 1=barrier, 2=bicycle, ..., 16=vegetation
+- pseudo_seg：label 0=invalid, 1=barrier, 2=bicycle, ..., 16=vegetation
+
+`- 1` 导致每个类别错位一位：
+
+| 通道 | OccLoss 教它（正确） | RenderLoss 教它（bug） |
+|------|---------------------|----------------------|
+| 0 | noise | barrier ❌ |
+| 1 | barrier | bicycle ❌ |
+| 2 | bicycle | bus ❌ |
+| ... | ... | ... |
+
+bicycle（44K GT voxels，最稀有）的 OccLoss 信号本就微弱，被 RenderLoss 的错误梯度完全压制 → 18 epoch 全 0%。
+
+**同时，可视化图（render_vis）的 pred 侧也有同样的 palette 错位**，导致历史图片里预测颜色和 GT 颜色不是同一套映射，无法用于诊断。
+
+#### 修复（commit eb138cf）
+
+1. **CE target**：去掉 `- 1`，直接用 `target_sem[valid_sem]` 作为 CE target（1-16 对应 channel 1-16）
+2. **可视化 pred 侧**：channel 0 → 灰色（noise），channel 1-16 → `palette[channel - 1]`（与 GT 侧对齐）
+
+```python
+# 修复后
+loss_sem = CE(pred_sem[valid_sem], target_sem[valid_sem])  # 无 -1
+
+# 可视化 pred 侧
+pred_sem_rgb = np.where(
+    (pred_cls[..., None] > 0),
+    _NUSC_PALETTE[np.clip(pred_cls - 1, 0, 16)],
+    np.array([128, 128, 128])   # class 0 (noise) → gray
+)
+```
+
+#### 处置方案
+
+- 已跑 18/20 epoch，剩余 2 epoch 不足以让被污染的权重恢复
+- 将 `max_epochs = 20 → 30`（commit b19c429），接续 latest.pth 继续训练
+- 修复后第一个 iter：`RenderLoss: 8.77`（从平均 2.2 飙升，正常——正确 target 更难拟合）
+- 预计 epoch 22-24 开始看到 bicycle IoU > 0%
+
+#### 关于 val RenderLoss = 0
+
+**这是正常的、有意设计的行为。**
+- `gaussian_head.py` 在 `self.training=False` 时跳过 gsplat 渲染，输出 `None`
+- `render_loss.py` 收到 `None` 直接返回 `0.0`
+- Val 评估只依赖 3D occupancy 路径（LocalAggregator），RenderLoss 对 mIoU 无任何影响
+- 跳过的唯一原因：省时间（6 相机 × 4K+ val samples 开销大）
 
 ---
 
@@ -762,3 +830,5 @@ cd /data/chenz/GaussianAD && CUDA_VISIBLE_DEVICES=0,1,2,3 /data/chenz/conda_env/
 | 2026-05-11 | 记录 splatting 分支首次启动的三个关键 Bug 及修复方法；纠正 conda activate 错误说明 |
 | 2026-05-14 | 标记所有已确认细节为完成；新增 Loss 详解（DetectionLoss/RenderLoss）；新增 RenderLoss 有效性诊断四步法；新增可视化模块（commit 7fc218c）；补充接续训练说明 |
 | 2026-05-15 | **全量 loss 启用**（map+plan 加回）；发现语义渲染不学习的根因（softplus→alpha-blend≠logits）；修复为 Plan A（渲染 raw logits）；训练改为 tmux `train_splatting` |
+| 2026-05-15 | 训练扩展为 **8 卡**（GPU 0-7），3516 iters/epoch |
+| 2026-05-18 | **发现并修复 RenderLoss off-by-one 类别索引 bug**：CE target 错位导致所有类梯度方向错误，bicycle 18 epoch 全 0%；修复 commit eb138cf；同步修复可视化 palette 映射；max_epochs 延长至 30（commit b19c429），接续 epoch 18 继续训练 |
