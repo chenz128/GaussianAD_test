@@ -97,7 +97,9 @@ class RenderLoss(BaseLoss):
         self.register_buffer('class_weight', log_w / log_w.mean())
 
         self.loss_fn_ce = nn.CrossEntropyLoss(reduction='none')
-        self.loss_fn_depth = nn.MSELoss()
+        # Huber loss is more robust than MSE for depth: quadratic for small errors,
+        # linear for large errors. delta=2m is a reasonable threshold for outdoor scenes.
+        self.loss_fn_depth = nn.HuberLoss(delta=2.0, reduction='mean')
 
     def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
         """
@@ -133,7 +135,10 @@ class RenderLoss(BaseLoss):
             pseudo_seg.flatten(),
             self.dynamic_classes.to(pseudo_seg.device)
         )
-        valid_d = (target_d > 0.5) & ~dyn_mask
+        # Also require pred_d > 0: pixels with no Gaussian coverage have rendered_depth=0.
+        # Computing loss against a valid target there (e.g. MSE(0, 15m)=225) creates
+        # spurious gradients. Only supervise pixels where Gaussians actually render.
+        valid_d = (target_d > 0.5) & (pred_d.detach() > 0) & ~dyn_mask
         if valid_d.any():
             loss_depth = self.depth_lw * self.loss_fn_depth(
                 pred_d[valid_d], target_d[valid_d]

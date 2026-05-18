@@ -110,21 +110,24 @@ class GaussianRasterizer2D(nn.Module):
         valid_sem = target_sem > 0
         if valid_sem.any():
             pw = self.class_weight[target_sem[valid_sem]]
+            # NOTE: pseudo_seg labels 1-16 map directly to Gaussian channels 1-16 (no -1)
             loss_sem = self.sem_lw * (
-                pw * self.loss_fn_ce(pred_sem[valid_sem], target_sem[valid_sem] - 1)
+                pw * self.loss_fn_ce(pred_sem[valid_sem], target_sem[valid_sem])
             ).mean()
         else:
             loss_sem = pred_sem.sum() * 0.0
 
         # ── depth loss ──
+        # NOTE: this compute_loss method is dead code — training uses RenderLoss in
+        # loss/render_loss.py instead. Kept for reference only.
         pred_d = rendered_depth.flatten()
         target_d = pseudo_depth.flatten()
-        # only static regions with valid depth
         dyn_mask = torch.isin(
             pseudo_seg.flatten(),
             self.dynamic_classes.to(pseudo_seg.device)
         )
-        valid_d = (target_d > 0.5) & ~dyn_mask
+        # pred_d > 0: exclude pixels with no Gaussian coverage (rendered_depth=0)
+        valid_d = (target_d > 0.5) & (pred_d.detach() > 0) & ~dyn_mask
         if valid_d.any():
             loss_depth = self.depth_lw * self.loss_fn_depth(pred_d[valid_d], target_d[valid_d])
         else:
