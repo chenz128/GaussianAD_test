@@ -175,6 +175,10 @@ class RenderLoss(BaseLoss):
         每张图为横向拼接: [pred_sem | gt_sem | pred_depth | gt_depth]
         所有相机纵向堆叠，保存为 render_vis/step_{step:06d}.jpg
         """
+        # DDP: only rank 0 saves to avoid 8 processes writing the same file concurrently
+        import torch.distributed as dist
+        if dist.is_initialized() and dist.get_rank() != 0:
+            return
         try:
             from PIL import Image
         except ImportError:
