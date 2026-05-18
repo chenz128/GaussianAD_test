@@ -311,6 +311,8 @@ def main(args):
 
             if args.iter_resume:
                 if (i_iter + 1) % 50 == 0 and local_rank == 0:
+                    ckpt_dir = os.path.join(os.path.abspath(args.work_dir), 'checkpoints')
+                    os.makedirs(ckpt_dir, exist_ok=True)
                     dict_to_save = {
                         'state_dict': raw_model.state_dict(),
                         'optimizer': optimizer.state_dict(),
@@ -319,7 +321,7 @@ def main(args):
                         'global_iter': global_iter,
                         'last_iter': i_iter + 1,
                     }
-                    save_file_name = os.path.join(os.path.abspath(args.work_dir), 'iter.pth')
+                    save_file_name = os.path.join(ckpt_dir, 'iter.pth')
                     torch.save(dict_to_save, save_file_name)
                     dst_file = osp.join(args.work_dir, 'latest.pth')
                     symlink(save_file_name, dst_file)
@@ -327,6 +329,8 @@ def main(args):
 
         # save checkpoint
         if local_rank == 0:
+            ckpt_dir = os.path.join(os.path.abspath(args.work_dir), 'checkpoints')
+            os.makedirs(ckpt_dir, exist_ok=True)
             dict_to_save = {
                 'state_dict': raw_model.state_dict(),
                 'optimizer': optimizer.state_dict(),
@@ -334,7 +338,7 @@ def main(args):
                 'epoch': epoch + 1,
                 'global_iter': global_iter,
             }
-            save_file_name = os.path.join(os.path.abspath(args.work_dir), f'epoch_{epoch+1}.pth')
+            save_file_name = os.path.join(ckpt_dir, f'epoch_{epoch+1}.pth')
             torch.save(dict_to_save, save_file_name)
             dst_file = osp.join(args.work_dir, 'latest.pth')
             symlink(save_file_name, dst_file)

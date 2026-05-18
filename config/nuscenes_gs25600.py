@@ -127,8 +127,8 @@ loss = dict(
             weight=1.0,
             sem_lw=2.0,#这是语义损失的权重，控制语义损失在总损失中的重要性。较大的sem_lw会使模型更关注语义分割的准确性，而较小的sem_lw则会降低语义损失的影响力。
             depth_lw=0.05,#这是深度损失的权重，控制深度损失在总损失中的重要性。较大的depth_lw会使模型更关注深度预测的准确性，而较小的depth_lw则会降低深度损失的影响力。由于深度损失通常比语义损失更容易产生较大的数值，因此这里设置了一个较小的权重来平衡两者的影响。
-            vis_dir='out/nuscenes_gs25600_splatting/render_vis',  # 渲染可视化输出目录
-            vis_every=250,  # 每隔多少次 iter 保存一次可视化图片
+            vis_dir='out/nuscenes_gs25600_nograd/render_vis',  # 渲染可视化输出目录
+            vis_every=500,  # 每隔多少次 iter 保存一次可视化图片
             ),
         # PlanLoss re-enabled
         dict(
