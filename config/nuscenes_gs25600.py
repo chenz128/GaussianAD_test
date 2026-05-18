@@ -201,12 +201,14 @@ _dim_ = 256#这是高斯点云中每个点的特征维度，通常用于定义�
 _pos_dim_ = _dim_//2#这是位置特征的维度，通常是_dim_的一半，用于表示高斯点云中每个点的位置特征。
 
 val_dataset_config = dict(
+    imageset='data/nuscenes_cam/nuscenes_infos_val_gaussian_ad_v6.pkl',
     data_aug_conf=data_aug_conf,
     class_names=det_config['class_names'],
     pc_range=pc_range,
     num_frames=4
 )
 train_dataset_config = dict(
+    imageset='data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v6.pkl',
     data_aug_conf=data_aug_conf,
     class_names=det_config['class_names'],
     pc_range=pc_range,

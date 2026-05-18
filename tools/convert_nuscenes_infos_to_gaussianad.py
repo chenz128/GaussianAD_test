@@ -1304,24 +1304,43 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mask-plan-outside-range",
-        action=argparse.BooleanOptionalAction,
+        dest="mask_plan_outside_range",
+        action="store_true",
         default=True,
-        help="v6: default True. Mask ego future steps after the cumulative trajectory leaves --plan-valid-pc-range. "
-             "Use --no-mask-plan-outside-range to disable.",
+        help="v6: default True. Mask ego future steps after the cumulative trajectory leaves --plan-valid-pc-range.",
+    )
+    parser.add_argument(
+        "--no-mask-plan-outside-range",
+        dest="mask_plan_outside_range",
+        action="store_false",
+        help="Disable --mask-plan-outside-range.",
     )
     parser.add_argument(
         "--recompute-velocity",
-        action=argparse.BooleanOptionalAction,
+        dest="recompute_velocity",
+        action="store_true",
         default=True,
-        help="v6: default True. Recompute gt_velocity in LIDAR_TOP frame via nusc.box_velocity. "
-             "Use --no-recompute-velocity to keep source values.",
+        help="v6: default True. Recompute gt_velocity in LIDAR_TOP frame via nusc.box_velocity.",
+    )
+    parser.add_argument(
+        "--no-recompute-velocity",
+        dest="recompute_velocity",
+        action="store_false",
+        help="Keep source gt_velocity values.",
     )
     parser.add_argument(
         "--refill-num-pts",
-        action=argparse.BooleanOptionalAction,
+        dest="refill_num_pts",
+        action="store_true",
         default=True,
-        help="v6: default True. Overwrite placeholder num_lidar_pts/num_radar_pts with the values from \
+        help="v6: default True. Overwrite placeholder num_lidar_pts/num_radar_pts with values from \
               nuScenes sample_annotations.",
+    )
+    parser.add_argument(
+        "--no-refill-num-pts",
+        dest="refill_num_pts",
+        action="store_false",
+        help="Keep placeholder num_lidar_pts/num_radar_pts.",
     )
 
     parser.add_argument(
