@@ -1,7 +1,7 @@
 print_freq = 50
 work_dir = None
 load_from = None
-max_epochs = 20
+max_epochs = 30
 import os
 eval_every_epochs = int(os.environ.get("EVAL_EVERY_EPOCHS", 1))
 
