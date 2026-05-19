@@ -1629,13 +1629,16 @@ class NuScenesDataset(Dataset):
             pseudo_seg[far_mask] = 0
             pseudo_depth[far_mask] = 0.0
 
-            # sync flip with data augmentation
+            # NOTE: Do NOT flip pseudo_seg/pseudo_depth here.
+            # gsplat rendering uses ORIGINAL (un-flipped) camera intrinsics/extrinsics,
+            # so the rendered image is always in original camera orientation.
+            # Pseudo labels must stay in the same orientation to match.
+
+            # Store flip flag for visualization alignment of input_imgs
             aug_configs = input_dict.get('aug_configs')
+            aug_flip = False
             if aug_configs is not None:
-                _, _, _, flip, _ = aug_configs
-                if flip:
-                    pseudo_seg = pseudo_seg.flip(-1)
-                    pseudo_depth = pseudo_depth.flip(-1)
+                _, _, _, aug_flip, _ = aug_configs
 
             # compute render intrinsics from original cam_intrinsic (before aug)
             # ori_intrinsic is (6, 4, 4) in sensor_types order
@@ -1654,6 +1657,7 @@ class NuScenesDataset(Dataset):
             return_dict['pseudo_depth'] = pseudo_depth       # (6, H', W')
             return_dict['gs_intrins'] = torch.from_numpy(gs_intrins).float()  # (6, 3, 3)
             return_dict['gs_extrins'] = torch.from_numpy(ego2cam).float()     # (6, 4, 4)
+            return_dict['aug_flip'] = aug_flip               # bool
 
         return return_dict
 

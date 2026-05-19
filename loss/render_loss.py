@@ -74,6 +74,7 @@ class RenderLoss(BaseLoss):
                 'pseudo_seg': 'pseudo_seg',
                 'pseudo_depth': 'pseudo_depth',
                 'input_imgs': 'input_imgs',
+                'aug_flip': 'aug_flip',
             }
         super().__init__(weight=weight, input_dict=input_dict, **kwargs)
         # BaseLoss.__init__ sets self.loss_func = lambda: 0 as instance attr,
@@ -102,7 +103,7 @@ class RenderLoss(BaseLoss):
         # linear for large errors. delta=2m is a reasonable threshold for outdoor scenes.
         self.loss_fn_depth = nn.HuberLoss(delta=2.0, reduction='mean')
 
-    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, input_imgs=None):
+    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, input_imgs=None, aug_flip=None):
         """
         Args:
             rendered_sem:   (B, nC, H, W, 17) — rendered semantic logits
@@ -110,6 +111,7 @@ class RenderLoss(BaseLoss):
             pseudo_seg:     (B, nC, H, W)     — pseudo semantic labels (0=invalid)
             pseudo_depth:   (B, nC, H, W)     — pseudo depth (0=invalid)
             input_imgs:     (B, F, N, C, H, W) — original camera images (optional, for vis)
+            aug_flip:       bool or None       — whether input image was horizontally flipped
         """
         # eval mode: rendering was skipped, or val dataset has no pseudo labels
         if rendered_sem is None or rendered_depth is None or pseudo_seg is None or pseudo_depth is None:
@@ -172,15 +174,20 @@ class RenderLoss(BaseLoss):
             # 保存渲染可视化图片
             if self.vis_dir is not None:
                 self._save_vis(rendered_sem, rendered_depth, pseudo_seg, pseudo_depth,
-                               step=self._diag_counter, input_imgs=input_imgs)
+                               step=self._diag_counter, input_imgs=input_imgs, aug_flip=aug_flip)
 
         return loss_sem + loss_depth
 
-    def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step, input_imgs=None):
+    def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step, input_imgs=None, aug_flip=None):
         """
         保存所有相机的渲染结果对比图（batch 0）。
         每张图为横向拼接: [pred_sem | gt_sem | pred_depth | gt_depth | orig_img]
         所有相机纵向堆叠，保存为 render_vis/step_{step:06d}.jpg
+
+        Alignment: rendered/pseudo are in ORIGINAL camera orientation (never flipped).
+        input_imgs may be flipped by augmentation — we un-flip it here for display.
+        input_imgs covers a different vertical region (top 36px crop) vs pseudo labels
+        (top ~318px crop in original space), so we crop input_imgs to match.
         """
         # DDP: only rank 0 saves to avoid 8 processes writing the same file concurrently
         import torch.distributed as dist
@@ -223,13 +230,27 @@ class RenderLoss(BaseLoss):
                 orig_img_rgb = None
                 if input_imgs is not None:
                     try:
-                        # input_imgs: (B, F, N, C, H_img, W_img)
+                        # input_imgs: (B, F, N, C, H_img, W_img) — augmented (may be flipped)
                         img_t = input_imgs[0, -1, cam].detach().cpu().float().numpy()  # (C, H_img, W_img)
                         img_t = img_t.transpose(1, 2, 0)  # (H_img, W_img, C)
                         # un-normalize: ImageNet mean/std, RGB
                         img_t = img_t * np.array([58.395, 57.12, 57.375], dtype=np.float32) \
                                       + np.array([123.675, 116.28, 103.53], dtype=np.float32)
                         img_t = np.clip(img_t, 0, 255).astype(np.uint8)
+                        # Un-flip: rendering/pseudo labels are in original orientation
+                        flip_val = False
+                        if aug_flip is not None:
+                            flip_val = aug_flip.item() if hasattr(aug_flip, 'item') else bool(aug_flip)
+                        if flip_val:
+                            img_t = img_t[:, ::-1, :].copy()
+                        # Crop to match pseudo label region:
+                        # input_imgs covers original rows 36-899 (H_img=864 pixels)
+                        # pseudo labels cover original rows ~318-899 (after 0.44x + crop_top=140)
+                        # Crop top portion of input_imgs to show same region
+                        H_img = img_t.shape[0]  # 864
+                        # original row 318 maps to input_imgs row (318-36) = 282
+                        crop_start = int((318 - 36) / (900 - 36) * H_img)  # ~282
+                        img_t = img_t[crop_start:, :, :]
                         orig_img_pil = Image.fromarray(img_t).resize((W, H), Image.BILINEAR)
                         orig_img_rgb = np.array(orig_img_pil)
                     except Exception:
