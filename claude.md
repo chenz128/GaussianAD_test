@@ -10,11 +10,13 @@
 |----------|----------|------------|------|
 | 原始监督（occ + det + map 等标准 loss） | `main` | `/data/chenz/conda_env/GaussianAD` | 当前正在跑的 noplan 训练 |
 | 伪标签监督（2D Gaussian Splatting + gsplat） | `splatting` | `/data/chenz/conda_env/splatting` | gsplat 只在 splatting 环境中安装 |
+| 训练速度优化 | `faster` | `/data/chenz/conda_env/faster` | 基于 splatting 分支，专注训练加速优化 |
 
 **规则：**
 - 代码修改后 push 到对应分支，远端 pull 对应分支再训练
 - ⚠️ `/data/chenz/conda_env/` 下的环境**没有** `activate` 脚本，**不能**用 `source activate` 或 `conda activate`
 - 必须用完整路径调用：`/data/chenz/conda_env/splatting/bin/python` 和 `/data/chenz/conda_env/splatting/bin/torchrun`
+- faster 分支同理：`/data/chenz/conda_env/faster/bin/python` 和 `/data/chenz/conda_env/faster/bin/torchrun`
 - 两套方案互不干扰：本地切分支不影响远端正在跑的训练
 
 ---
@@ -898,6 +900,101 @@ python tools/stats_gaussianad_pkl.py \
 
 ---
 
+## faster 分支：GPU 训练加速优化
+
+**创建时间**：2026-05-19  
+**基础分支**：`splatting`（完整继承 splatting 所有功能）  
+**Conda 环境**：`/data/chenz/conda_env/faster`（克隆自 splatting，7.1GB）  
+**目标**：在不改变模型结构和 loss 的前提下，通过消除 GPU idle 时间提升训练速度。
+
+### 性能瓶颈分析（来自 trace.json，单 iter ~10.5s profiler 时间）
+
+| 瓶颈 | 来源 | 估计浪费 |
+|------|------|---------|
+| SubMConv backward 的 cudaFree/cudaMalloc | spconv 11次反向各 400ms | ~2400ms |
+| NCHW↔NHWC 格式转换 | backbone 497 个转换 kernel | ~268ms |
+| lidar2global double→float 类型转换 | temporal encoder 每 iter | ~400ms |
+| nonzero() GPU→CPU 同步 | gaussian_head get_filtered_lidar × 6 | ~4ms |
+
+> **注**：trace 中 10.5s 是 profiler overhead（单卡、含仪器化开销），实际多卡训练时间更短。
+
+### 已实现优化（commit c29ca34）
+
+#### Opt-1：channels_last 内存格式（预期 -268ms/iter）
+
+**文件**：`model/segmentor/bev_segmentor.py`
+
+```python
+# _run_img_backbone_flat() 首行加入：
+imgs_flat = imgs_flat.to(memory_format=torch.channels_last)
+```
+
+**原理**：cuDNN 内部偏好 NHWC 算法，但 PyTorch 默认 NCHW 存储，每层 conv 前后都要做格式转换。
+改为 channels_last 后，转换消除。**DCNv2（stages 3,4）** 不支持 channels_last，PyTorch dispatcher
+自动 fallback 到 contiguous NCHW，不会出错，stages 1,2 和 FPN 完整受益。
+
+#### Opt-2：lidar2global 预转 float32（预期 -400ms/iter）
+
+**文件**：`model/encoder/temporal_encoder/gaussian_temporal_encoder.py`
+
+```python
+# 原代码（numpy float64 → GPU 路径上做类型转换 → 触发 cudaStreamSynchronize）：
+lidar2global = torch.tensor(metas['lidar2global'][0], dtype=anchors.dtype, device=anchors.device)
+
+# 修改后（在 numpy 端做 float64→float32，zero-copy 送 GPU）：
+lidar2global = torch.from_numpy(
+    np.asarray(metas['lidar2global'][0], dtype=np.float32)
+).to(anchors.device, non_blocking=True)
+```
+
+**原理**：`torch.tensor()` 在 GPU 路径上做 double→float 类型转换时，对 tiny tensor（如 [7,4,4]）
+会触发同步阻塞（`cudaStreamSynchronize`）。改为 numpy 端预转换 + `non_blocking=True` 后，
+类型转换在 CPU 完成，GPU 传输异步进行，消除同步点。
+
+#### Opt-3：nonzero → bool mask（预期 -4ms/iter）
+
+**文件**：`model/head/gaussian_head.py`
+
+```python
+# 原代码（nonzero 必须 GPU→CPU 同步确定输出大小）：
+mask = torch.nonzero(mask).squeeze()
+if len(mask) == 0: ...
+
+# 修改后（bool mask 直接索引，避免同步）：
+if not mask.any(): ...
+return lidar[mask].unsqueeze(0).contiguous(), mask, valid
+```
+
+**原理**：`torch.nonzero()` 在返回前必须 GPU→CPU 同步（因为 output size 未知）。
+换用 bool mask 后，下游 `tensor[bool_mask]` 索引方式完全兼容（调用处不需修改），
+消除 `get_filtered_lidar` 的 6 次/iter 同步。
+
+### 已分析但暂不实施的优化
+
+| 方案 | 预期收益 | 风险 | 结论 |
+|------|---------|------|------|
+| **Opt-4** spconv backward 内存池 | ~1000ms | 中高：env var 可能不存在；升级 spconv 版本风险大 | 等 1/2/3 验证后再评估 |
+| **Opt-5** torch.compile(backbone) | 10-20% | 高：`with_cp=True` + torch.compile 梯度正确性存疑；DCNv2 graph break 使收益打折 | 不建议，代价不对称 |
+
+### 启动训练命令（待 GPU 资源就绪后执行）
+
+```bash
+# 远端拉取最新代码
+ssh -p 30300 root@8.130.174.55 "cd /data/chenz/GaussianAD && git checkout faster && git pull origin faster"
+
+# 启动训练（7卡，与 nograd 训练使用不同 port 和 work-dir）
+cd /data/chenz/GaussianAD
+CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7 /data/chenz/conda_env/faster/bin/torchrun \
+    --nproc_per_node 7 --master_port 12459 \
+    train.py --py-config config/nuscenes_gs25600.py \
+    --work-dir out/nuscenes_gs25600_faster --dataset nuscenes
+```
+
+> **注意**：GPU 1-7 当前被 nograd 训练占用（每卡 ~35GB，剩余 ~62GB），faster 训练预计需要 67-76GB/卡，
+> 两者同时运行会 OOM。需等 nograd 训练结束后再启动。
+
+---
+
 ## 版本记录
 
 | 日期 | 更新内容 |
@@ -912,3 +1009,4 @@ python tools/stats_gaussianad_pkl.py \
 | 2026-05-15 | 训练扩展为 **8 卡**（GPU 0-7），3516 iters/epoch |
 | 2026-05-18 | **发现并修复 RenderLoss off-by-one 类别索引 bug**：CE target 错位导致所有类梯度方向错误，bicycle 18 epoch 全 0%；修复 commit eb138cf；同步修复可视化 palette 映射；max_epochs 延长至 30（commit b19c429），接续 epoch 18 继续训练 |
 | 2026-05-18 | **PKL 转换脚本 v6**：P0 修复（scene_token、num_lidar_pts 真值回填、velocity 坐标系重算）+ P1 质量改进（VAD 命令阈值、自适应匹配、ego_lcf_feat 全维度、map 线长过滤 2m）；新增体检脚本 `tools/stats_gaussianad_pkl.py` |
+| 2026-05-19 | **创建 faster 分支**：基于 splatting，克隆 conda 环境为 `faster`；实现 Opt-1（channels_last）、Opt-2（lidar2global float32 预转换）、Opt-3（nonzero→bool mask）三项 GPU 加速优化（commit c29ca34）；分析 Opt-4/5 风险，暂不实施 |
