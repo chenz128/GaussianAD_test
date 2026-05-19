@@ -45,6 +45,10 @@ class BEVSegmentor(CustomBaseSegmentor):
         """Run backbone+FPN on a flat (M, C, H, W) image batch.
         Returns the multi-scale FPN feature list, each (M, C', H', W').
         """
+        # [Opt-1] channels_last: 消除 cuDNN 在每层 conv 前后的 NCHW↔NHWC 转换开销。
+        # stages 1,2 及 FPN 的所有 conv 完全受益；含 DCNv2 的 stages 3,4 由 PyTorch
+        # dispatcher 自动 fallback 到 contiguous NCHW，不会出错。
+        imgs_flat = imgs_flat.to(memory_format=torch.channels_last)
         with torch.cuda.amp.autocast(enabled=self.backbone_fp16, dtype=torch.bfloat16):
             img_feats_backbone = self.img_backbone(imgs_flat)
             if isinstance(img_feats_backbone, dict):

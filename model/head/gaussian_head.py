@@ -104,10 +104,11 @@ class GaussianHead(BaseTaskHead):
         mask_x = (means3D_int[:, 0] >= 0) & (means3D_int[:, 0] < 120)
         mask_y = (means3D_int[:, 1] >= 0) & (means3D_int[:, 1] < 120)
         mask_z = (means3D_int[:, 2] >= 0) & (means3D_int[:, 2] < 8)
+        # [Opt-3] 用 bool mask 替代 nonzero()：nonzero() 必须 GPU→CPU 同步才能确定
+        # 输出 tensor 的大小，bool 索引直接避免该同步；下游用 mask 索引同样兼容 bool tensor。
         mask = mask_x & mask_y & mask_z
-        mask = torch.nonzero(mask).squeeze()
         valid = True
-        if len(mask) == 0:
+        if not mask.any():
             valid = False
             return lidar, mask, valid
         return lidar[mask].unsqueeze(0).contiguous(), mask, valid

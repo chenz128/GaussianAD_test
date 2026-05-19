@@ -77,7 +77,11 @@ class GaussianTemporalEncoder(BaseModule):
         # anchors: bs, num_frames, g, c
 
         # warp anchors from previous to current frame
-        lidar2global = torch.tensor(metas['lidar2global'][0], dtype=anchors.dtype, device=anchors.device)
+        # [Opt-2] 先在 numpy 端做 float64→float32 转换，避免 torch.tensor() 在 GPU 路径
+        # 上做类型转换时触发 cudaStreamSynchronize（对小 tensor 影响尤为明显）。
+        lidar2global = torch.from_numpy(
+            np.asarray(metas['lidar2global'][0], dtype=np.float32)
+        ).to(anchors.device, non_blocking=True)
         B, F, N, _ = anchors.shape
         xyz = self.get_xyz(anchors) # bs, f, n, 3
         prev2cur = torch.matmul(torch.linalg.inv(lidar2global[0]), lidar2global[:F])[None, :, None] # bs, f, 1, 4, 4
