@@ -161,6 +161,9 @@ def main():
                     loss_input[lk] = result_dict['metas'].get(lv)
                 else:
                     loss_input[lk] = result_dict[lv]
+            # Optional render-loss inputs (visualization only)
+            loss_input.setdefault('input_imgs', None)
+            loss_input.setdefault('aug_flip', None)
             loss, _ = loss_func(loss_input)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(my_model.parameters(), cfg.grad_max_norm)
@@ -207,6 +210,9 @@ def main():
                                 loss_input[lk] = result_dict['metas'].get(lv)
                             else:
                                 loss_input[lk] = result_dict[lv]
+                        # Optional render-loss inputs (visualization only)
+                        loss_input.setdefault('input_imgs', None)
+                        loss_input.setdefault('aug_flip', None)
                         loss, loss_dict = loss_func(loss_input)
 
                 # Backward
