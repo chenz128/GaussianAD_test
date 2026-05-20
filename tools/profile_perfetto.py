@@ -144,15 +144,27 @@ def main():
     print(f"  Output: {args.output}")
     print()
 
+    def _bar(current, total, width=30, prefix=''):
+        """Print a simple ASCII progress bar with ETA."""
+        pct = current / max(total, 1)
+        filled = int(width * pct)
+        bar = '█' * filled + '░' * (width - filled)
+        return f"  {prefix}[{bar}] {current}/{total} ({pct*100:.0f}%)"
+
+    warmup_times = []
+
     # ── Warmup (no profiling, let CUDA JIT / cuDNN autotune settle) ──
     for i in range(warmup):
-        print(f"  Warmup iter {i}...", flush=True)
+        t0 = time.time()
+        print(f"\n  {'─'*60}", flush=True)
+        print(f"  [Warmup {i+1}/{warmup}] 开始 — CUDA JIT 编译阶段，第1次最慢...", flush=True)
         data = next(data_iter)
         for k in list(data.keys()):
             if isinstance(data[k], torch.Tensor):
                 data[k] = data[k].cuda()
         input_imgs = data.pop('img')
         optimizer.zero_grad()
+        print(f"    → forward...", flush=True)
         with torch.cuda.amp.autocast(amp):
             result_dict = my_model(imgs=input_imgs, metas=data, global_iter=0)
             loss_input = {'metas': data}
@@ -164,15 +176,25 @@ def main():
             # Optional render-loss inputs (visualization only)
             loss_input.setdefault('input_imgs', None)
             loss_input.setdefault('aug_flip', None)
+            print(f"    → loss...", flush=True)
             loss, _ = loss_func(loss_input)
+        print(f"    → backward...", flush=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(my_model.parameters(), cfg.grad_max_norm)
         optimizer.step()
         optimizer.zero_grad()
         torch.cuda.synchronize()
+        elapsed = time.time() - t0
+        warmup_times.append(elapsed)
+        print(f"  [Warmup {i+1}/{warmup}] 完成 ✓  耗时 {elapsed:.1f}s", flush=True)
+        print(_bar(i+1, warmup, prefix='Warmup 进度 '), flush=True)
 
     # ── Profiled iterations ──
-    print(f"  Starting profiled iterations...", flush=True)
+    print(f"\n  {'─'*60}", flush=True)
+    print(f"  开始 Profiled 阶段 ({active} iters)，profiler 本身有额外开销...", flush=True)
+
+    profiled_times = []
+    profile_start_wall = time.time()
 
     with torch.profiler.profile(
         activities=[
@@ -185,9 +207,13 @@ def main():
         with_flops=True,
     ) as prof:
         for i in range(active):
+            t0 = time.time()
+            print(f"\n  {'─'*60}", flush=True)
+            print(f"  [Profile iter {i+1}/{active}] 开始...", flush=True)
             with torch.profiler.record_function(f"=== ITER {warmup + i} ==="):
                 # Data loading
                 with torch.profiler.record_function("## 0. data_loading"):
+                    print(f"    → [1/5] 数据加载...", flush=True)
                     data = next(data_iter)
                     for k in list(data.keys()):
                         if isinstance(data[k], torch.Tensor):
@@ -197,11 +223,13 @@ def main():
                 optimizer.zero_grad()
 
                 # Forward
+                print(f"    → [2/5] Forward (backbone+encoder+head)...", flush=True)
                 with torch.profiler.record_function("## FORWARD"):
                     with torch.cuda.amp.autocast(amp):
                         result_dict = my_model(imgs=input_imgs, metas=data, global_iter=0)
 
                 # Loss
+                print(f"    → [3/5] Loss 计算...", flush=True)
                 with torch.profiler.record_function("## 9. loss_compute"):
                     with torch.cuda.amp.autocast(amp):
                         loss_input = {'metas': data}
@@ -216,25 +244,44 @@ def main():
                         loss, loss_dict = loss_func(loss_input)
 
                 # Backward
+                print(f"    → [4/5] Backward...", flush=True)
                 with torch.profiler.record_function("## 10. backward"):
                     loss.backward()
 
                 # Optimizer
+                print(f"    → [5/5] Optimizer step...", flush=True)
                 with torch.profiler.record_function("## 11. optimizer_step"):
                     torch.nn.utils.clip_grad_norm_(my_model.parameters(), cfg.grad_max_norm)
                     optimizer.step()
                     optimizer.zero_grad()
 
                 torch.cuda.synchronize()
-            print(f"  Profiled iter {warmup + i} done.", flush=True)
+
+            elapsed = time.time() - t0
+            profiled_times.append(elapsed)
+            avg_t = sum(profiled_times) / len(profiled_times)
+            remaining_iters = active - (i + 1)
+            eta_s = remaining_iters * avg_t
+            eta_str = f"{eta_s/60:.1f}min" if eta_s >= 60 else f"{eta_s:.0f}s"
+            print(f"  [Profile iter {i+1}/{active}] 完成 ✓  耗时 {elapsed:.1f}s  |  均值 {avg_t:.1f}s/iter", flush=True)
+            if remaining_iters > 0:
+                print(f"  预计还需 {eta_str} (剩余 {remaining_iters} iters)", flush=True)
+            print(_bar(i+1, active, prefix='Profile 进度 '), flush=True)
+
+    total_profile_time = time.time() - profile_start_wall
+    print(f"\n  Profiled 阶段完成，共耗时 {total_profile_time/60:.1f}min", flush=True)
+    print(f"  正在导出 trace 文件（可能需要 1-3 分钟）...", flush=True)
 
     # ── Export ──
     output_path = osp.abspath(args.output)
+    t_export = time.time()
     prof.export_chrome_trace(output_path)
+    export_elapsed = time.time() - t_export
     file_size = os.path.getsize(output_path) / 1024 / 1024
     print(f"\n{'=' * 70}")
-    print(f"  Trace exported: {output_path} ({file_size:.1f} MB)")
-    print(f"  Open https://ui.perfetto.dev/ and drag-drop the file to visualize.")
+    print(f"  ✓ Trace 已导出: {output_path}")
+    print(f"    文件大小: {file_size:.1f} MB  |  导出耗时: {export_elapsed:.1f}s")
+    print(f"  打开 https://ui.perfetto.dev/ 拖入文件即可查看")
     print(f"{'=' * 70}")
 
     # ── Also print a quick text summary ──
