@@ -1060,26 +1060,62 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7 /data/chenz/conda_env/faster/bin/torchrun \
 
 ---
 
+### spconv 提速实验（2026-05-20，结论：**H20 sm_90 上无解**）
+
+> **适用分支**：`faster`（实验在 faster 分支进行，未影响 main/splatting）
+
+#### 实验背景
+
+baseline 3.10 s/iter 中，spconv SubMConv backward 占 ~4400ms（trace.json 实测），是最大单一瓶颈。
+尝试通过 spconv 的两条优化路径攻克：
+
+1. **Opt-spconv-1**（indice_key 共享）：同一个 `SparseConv3DBlock` 内 3 个 SubMConv3d 共享 indice_key，
+   复用 hash table（rulebook），避免 forward/backward 重复构建。代码改动在
+   [model/encoder/gaussian_encoder/spconv3d_module.py](model/encoder/gaussian_encoder/spconv3d_module.py)。
+   commit f4e6759。**已保留**。
+2. **Opt-spconv-2**（large_kernel_fast_algo=True）：把 algo 自动选择的 kv 上限从 32 提到 128。
+   我们 kernel_size=5 → kv=125，原本 fallback 到 `ConvAlgo.Native`（最慢）；
+   开启后会选 `ConvAlgo.MaskImplicitGemm`（融合算子，3D 大 kernel 理论更快）。
+   commit a419f8d。**已回滚**（commit dfb65f6）。
+
+#### 失败过程
+
+| 尝试 | 结果 |
+|------|------|
+| spconv-cu118 2.3.6 + `large_kernel_fast_algo=True` | ❌ NVRTC 编译 cutlass kernel 失败：`this arch isn't supported`。原因：cu118 prebuilt 不含 sm_90 cutlass kernel |
+| 升级 spconv-cu120 2.3.6 + cumm-cu120 0.4.11 | ✅ 安装成功；单 SubMConv 烟测 forward+backward OK，`conv.algo = MaskImplicitGemm` |
+| 启动 7 卡 DDP 训练 | ❌ 卡死：GPU 100% 占用 30+ 分钟无任何 iter 输出，全程刷"Can't find algo Simt_xxx in prebuilt. compile with nvrtc..." |
+
+#### 根因
+
+spconv-cu120 在 H20 (sm_90) 上的 prebuilt kernel **不含 cutlass**，会 fallback 到 **Simt**（CUDA Core，非 Tensor Core）+ nvrtc 即时编译。
+关键问题：
+- nvrtc 编译每个 kernel 5-30 秒，每个 SubMConv 形状要编译 24-32 个变体
+- 12 次 SubMConv × 多种 batch shape → 编译规模超过 1 小时
+- cumm cache 在 sm_90 上可能不持久化，重复刷"Can't find algo"
+
+**Simt 算法本质上是 CUDA Core 实现，跟 Native fallback 性能相当甚至更差。**
+即使编译完成，实测速度也不会比 Native 快。
+
+#### 回滚结果
+
+回滚到 spconv-cu118 2.3.6 + 移除 `large_kernel_fast_algo=True`，**保留 Opt-spconv-1**（indice_key 共享）。
+实测 Iter 0→50：155 秒 → **3.10 s/iter**，与原 baseline 完全一致（Opt-spconv-1 单独对总时间无可观测影响，因为 ms 级节省被 spconv backward 4400ms 淹没）。
+
+cu118 spconv wheel 备份：`/data/chenz/spconv_backup/spconv_cu118-2.3.6-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`。
+
+#### 经验教训
+
+1. **H20 (sm_90 Hopper) 是 spconv 的盲区**：spconv 团队目前对 sm_90 的预编译 kernel 不完整，cu118/cu120 都不能跑 cutlass 路径
+2. **不要再尝试 large_kernel_fast_algo=True**：除非 spconv 官方发布 sm_90 完整 cutlass kernel
+3. **真正可行的下一步**：换路径，不再纠结 spconv 本身（见下节）
+
+---
+
 ### 未来提速路线（已分析，按优先级排序）
 
-#### ❶ 升级 spconv（最高优先级，预期 -2000ms/iter，约 60% 提速）
+#### ❶ ~~升级 spconv~~（**2026-05-20 实测失败，已删除该项**）
 
-**瓶颈根因**：spconv 2.x 的 SubMConv backward 每次反向传播都通过 `cudaFree/cudaMalloc` 重新申请显存，
-11 次 SubMConv × ~400ms = **4400ms**，占 backward 总时间 63%。
-
-spconv 2.3+ 引入了 workspace 内存复用机制，同样规模下这部分开销可降低 ~50-70%。
-
-**方法**：在新 conda 环境中安装 spconv 2.3+，测试兼容性。
-
-```bash
-# 新建 conda 环境（不影响 faster 和 splatting）
-conda create -n faster_v2 python=3.9
-pip install spconv-cu118==2.3.6  # 按 CUDA 版本选
-# 验证兼容性：单卡跑 50 iter，对比输出
-```
-
-**风险**：spconv 2.3 API 与当前版本可能有小的接口变化（SparseConvTensor / submConv3d 参数），
-需要逐一适配测试。
 
 #### ❷ 升级 PyTorch（配合 ❶，支持 expandable_segments 内存分配策略）
 
@@ -1143,3 +1179,5 @@ spconv backbone 处理的点数正比于 anchor 数量（当前 3600）。减半
 | 2026-05-18 | **PKL 转换脚本 v6**：P0 修复（scene_token、num_lidar_pts 真值回填、velocity 坐标系重算）+ P1 质量改进（VAD 命令阈值、自适应匹配、ego_lcf_feat 全维度、map 线长过滤 2m）；新增体检脚本 `tools/stats_gaussianad_pkl.py` |
 | 2026-05-19 | **创建 faster 分支**：基于 splatting，克隆 conda 环境为 `faster`；实现 Opt-1（channels_last）、Opt-2（lidar2global float32 预转换）、Opt-3（nonzero→bool mask）三项 GPU 加速优化（commit c29ca34）；分析 Opt-4/5 风险，暂不实施 |
 | 2026-05-20 | **实测 A+B+C 方案**：with_cp=False（Opt-A）+ DDP bucket=200MB（Opt-B）+ max_split_size_mb（Opt-C）合计仅 ~3% 提速（3.17→3.10 s/iter）；确认真正瓶颈为 spconv SubMConv backward 的 cudaFree/cudaMalloc（4400ms/iter）；训练正在以 ~3.10 s/iter 运行；后续提速需升级 spconv 2.3+（commit 36c229c） |
+| 2026-05-20 | **spconv 提速实验失败**：尝试 Opt-spconv-2（`large_kernel_fast_algo=True` → MaskImplicitGemm）；cu118 nvrtc 编译 cutlass kernel 报 "this arch isn't supported"；升级到 spconv-cu120 2.3.6 仍只有 Simt fallback，7 卡训练卡死 30+ 分钟全在 nvrtc 编译。结论：**H20 sm_90 上 spconv 没有可行的提速路径**。回滚 spconv-cu118 + 移除 large_kernel_fast_algo，保留 Opt-spconv-1（indice_key 共享，纯 Python 改动）。训练恢复 3.10 s/iter（commit dfb65f6） |
+
