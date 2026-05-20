@@ -87,6 +87,11 @@ class SparseConv3DBlock(BaseModule):
         assert isinstance(kernel_size, (list, tuple))
         assert isinstance(padding, (list, tuple))
         assert len(kernel_size) == len(padding)
+        # [Opt-spconv-1] 同一个 SparseConv3DBlock 内的多个 SubMConv3d 共享 indice_key。
+        # SubMConv 不下采样、indices 不变，多次调用的 hash table（rulebook）可以复用，
+        # 避免 forward 重复构建、backward 重复申请显存。数值结果完全一致，不影响精度。
+        # 每个 block 实例使用唯一 key（基于对象 id），避免与其他 block 冲突。
+        _block_indice_key = f'subm3d_block_{id(self):x}'
         layers = []
         for k, s, p, d in zip(kernel_size, stride, padding, dilation):
             layers.append(spconv.SubMConv3d(
@@ -95,7 +100,8 @@ class SparseConv3DBlock(BaseModule):
                 kernel_size=k,
                 stride=s,
                 padding=p,
-                dilation=d))
+                dilation=d,
+                indice_key=_block_indice_key))
             layers.append(nn.LayerNorm(embed_channels))
             layers.append(nn.ReLU(True))
             in_channels = embed_channels
