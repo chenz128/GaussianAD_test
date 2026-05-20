@@ -32,3 +32,4 @@ tools/__pycache__/
 
 model/encoder/gaussian_encoder/ops/build/
 model/head/localagg/build/trace.json
+trace.json

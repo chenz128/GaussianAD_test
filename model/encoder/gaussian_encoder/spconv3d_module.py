@@ -92,11 +92,9 @@ class SparseConv3DBlock(BaseModule):
         # 避免 forward 重复构建、backward 重复申请显存。数值结果完全一致，不影响精度。
         # 每个 block 实例使用唯一 key（基于对象 id），避免与其他 block 冲突。
         _block_indice_key = f'subm3d_block_{id(self):x}'
-        # [Opt-spconv-2] large_kernel_fast_algo=True：把 algo 自动选择的 kv 上限从
-        # 32 提到 128。我们 kernel_size=5 → kv=125，原本会 fallback 到 ConvAlgo.Native
-        # (最慢)；现在升到 ConvAlgo.MaskImplicitGemm（融合算子，3D 大 kernel 下快很多）。
-        # 数学等价（同一个卷积运算的不同实现），仅浮点累加顺序略异。
-        # 注意：需 spconv-cu120 才能在 H20 (sm_90) 上工作；spconv-cu118 会 nvrtc 编译失败。
+        # 注意：曾尝试 large_kernel_fast_algo=True 切换到 MaskImplicitGemm，
+        # 但 spconv 在 H20 (sm_90) 上的预编译 kernel 不完整，回退到 Simt+nvrtc
+        # 即时编译反而比默认 Native 还慢，已移除。
         layers = []
         for k, s, p, d in zip(kernel_size, stride, padding, dilation):
             layers.append(spconv.SubMConv3d(
@@ -106,8 +104,7 @@ class SparseConv3DBlock(BaseModule):
                 stride=s,
                 padding=p,
                 dilation=d,
-                indice_key=_block_indice_key,
-                large_kernel_fast_algo=True))
+                indice_key=_block_indice_key))
             layers.append(nn.LayerNorm(embed_channels))
             layers.append(nn.ReLU(True))
             in_channels = embed_channels
