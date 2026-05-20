@@ -10,11 +10,13 @@
 |----------|----------|------------|------|
 | 原始监督（occ + det + map 等标准 loss） | `main` | `/data/chenz/conda_env/GaussianAD` | 当前正在跑的 noplan 训练 |
 | 伪标签监督（2D Gaussian Splatting + gsplat） | `splatting` | `/data/chenz/conda_env/splatting` | gsplat 只在 splatting 环境中安装 |
+| 训练速度优化 | `faster` | `/data/chenz/conda_env/faster` | 基于 splatting 分支，专注训练加速优化 |
 
 **规则：**
 - 代码修改后 push 到对应分支，远端 pull 对应分支再训练
 - ⚠️ `/data/chenz/conda_env/` 下的环境**没有** `activate` 脚本，**不能**用 `source activate` 或 `conda activate`
 - 必须用完整路径调用：`/data/chenz/conda_env/splatting/bin/python` 和 `/data/chenz/conda_env/splatting/bin/torchrun`
+- faster 分支同理：`/data/chenz/conda_env/faster/bin/python` 和 `/data/chenz/conda_env/faster/bin/torchrun`
 - 两套方案互不干扰：本地切分支不影响远端正在跑的训练
 
 ---
@@ -84,6 +86,8 @@ Loss 计算:
 
 ## 路线决策：2D 高斯泼溅监督（已确定）
 
+> **适用分支**：`splatting` / `faster`（faster 完整继承 splatting 功能）
+
 **放弃 3D Lifting，采用 2D Splatting 方案。**
 
 ### 决策理由
@@ -120,6 +124,8 @@ CE Loss vs grounded_sam      MSE Loss vs metric_3d
 
 ## Splatting 分支训练策略（已确定，2026-05-15 更新）
 
+> **适用分支**：`splatting` / `faster`
+
 ### Loss 配置（全量 loss）
 
 | Loss | 状态 | 理由 |
@@ -154,6 +160,8 @@ CE Loss vs grounded_sam      MSE Loss vs metric_3d
 ---
 
 ## 实现计划
+
+> **适用分支**：`splatting` / `faster`（记录 2D Splatting 监督的完整实现过程）
 
 ### Phase 1 — 确认 gsplat 环境
 
@@ -402,6 +410,8 @@ loss = dict(
 
 ## 关键文件
 
+> **适用分支**：`splatting` / `faster`
+
 | 文件 | 改动类型 | 说明 |
 |------|----------|------|
 | `dataset/dataset.py` | 修改 | 加载伪标签、下采样、提取 ego2cam/render_K |
@@ -416,6 +426,8 @@ loss = dict(
 
 ## 待确认细节
 
+> **适用分支**：`splatting` / `faster`
+
 - [x] H20 上 splatting 环境已安装 gsplat（训练已正常运行验证）
 - [x] `cam_intrinsic` 是 **(6, 4, 4)**，dataset 中读取后取 `[:, :3, :3]` 得到 3×3 内参
 - [x] `ego2cam` 在 **dataset.py** 里计算：`np.linalg.inv(cam2ego)`，保存为 `gs_extrins`
@@ -425,6 +437,8 @@ loss = dict(
 ---
 
 ## 待解决问题
+
+> **适用分支**：`splatting` / `faster`
 
 - [x] 确认伪标签文件命名/目录结构：`scene-{xxxx}/{sample_token}.npy`，每个 .npy 含 6 个相机
 - [x] 确认 GaussianAD 是否输出深度图：**无显式 depth render**，深度隐含在高斯协方差矩阵中
@@ -439,6 +453,8 @@ loss = dict(
 ---
 
 ## Loss 详解
+
+> **适用分支**：`splatting` / `faster`（DetectionLoss 三分支通用；RenderLoss 仅 splatting/faster）
 
 ### DetectionLoss
 
@@ -469,6 +485,8 @@ depth_lw=0.05  # 深度 MSE loss 内部权重（数值通常大，故小权重�
 ---
 
 ## GaussianAD 渲染系统详解
+
+> **适用分支**：`main` / `splatting` / `faster`（共享，记录 3D occupancy 渲染系统，与 2D Splatting 无关）
 
 ### 渲染模块位置
 - `model/head/gaussian_head.py` — `GaussianHead` 类，`forward()` 调用渲染
@@ -521,6 +539,8 @@ output[idx] = C[]
 
 ## 开发工作流
 
+> **适用分支**：`main` / `splatting` / `faster`（共享，注意推送到各自对应分支）
+
 ```bash
 # 本地修改后推送
 git add .
@@ -541,6 +561,8 @@ ssh -p 30300 root@8.130.174.55 "cd /data/chenz/GaussianAD && git pull origin spl
 ---
 
 ## RenderLoss 有效性诊断
+
+> **适用分支**：`splatting` / `faster`
 
 ### 当前训练状态（2026-05-18）
 
@@ -574,6 +596,8 @@ ssh -p 30300 root@8.130.174.55 "grep mIoU /data/chenz/GaussianAD/out/nuscenes_gs
 ---
 
 ## 调试记录（2026-05-11 Splatting 分支首次启动）
+
+> **适用分支**：`splatting`（首次启动 Bug 记录，faster 分支同样适用，因为继承了相同代码路径）
 
 ### Bug 1：conda 环境无 activate 脚本
 
@@ -821,6 +845,8 @@ pred_sem_rgb = np.where(
 
 ## PKL 数据转换脚本（tools/convert_nuscenes_infos_to_gaussianad.py）
 
+> **适用分支**：`main` / `splatting` / `faster`（共享工具脚本，三个分支共用同一套 PKL 数据）
+
 作者 GitHub 的 PKL 文件损坏，需要从标准 nuScenes infos PKL 自行转换。
 
 ### v6 改进（2026-05-18）
@@ -898,6 +924,209 @@ python tools/stats_gaussianad_pkl.py \
 
 ---
 
+## faster 分支：GPU 训练加速优化
+
+**创建时间**：2026-05-19  
+**基础分支**：`splatting`（完整继承 splatting 所有功能）  
+**Conda 环境**：`/data/chenz/conda_env/faster`（克隆自 splatting，7.1GB）  
+**目标**：在不改变模型结构和 loss 的前提下，通过消除 GPU idle 时间提升训练速度。
+
+### 性能瓶颈分析（来自 trace.json，单 iter ~10.5s profiler 时间）
+
+| 瓶颈 | 来源 | 估计浪费 |
+|------|------|---------|
+| SubMConv backward 的 cudaFree/cudaMalloc | spconv 11次反向各 400ms | ~4400ms |
+| backbone+encoder 历史帧重复 backward | with_cp 重算 + 3/4 帧无效梯度 | ~800ms |
+| NCHW↔NHWC 格式转换 | backbone 497 个转换 kernel | ~268ms |
+| lidar2global double→float 类型转换 | temporal encoder 每 iter | ~400ms |
+| nonzero() GPU→CPU 同步 | gaussian_head get_filtered_lidar × 6 | ~4ms |
+
+> **注**：trace 中 10.5s 是 profiler overhead（单卡、含仪器化开销），实际多卡训练时间更短。
+
+### 已实现优化（history_no_grad：commit 0a3e6be；Opt-1/2/3：commit c29ca34；Opt-A/B：commit 36c229c）
+
+#### history_no_grad：历史帧 backbone+encoder 不计算梯度（commit 0a3e6be，继承自 splatting）
+
+**文件**：`model/segmentor/bev_segmentor.py`，`config/nuscenes_gs25600.py`
+
+**Config**（line 229）：
+```python
+history_no_grad=True,
+```
+
+**原理**：GaussianAD 使用 **F=4 帧**时序输入，其中 3 帧是历史帧，只有最后 1 帧是当前帧。
+在原始实现中，4 帧全部走 backbone + encoder forward，backward 也全部存储激活值，其中 3/4 的梯度实际上对模型学习没有意义（历史帧的特征只作为时序上下文，不直接决定当前预测）。
+
+启用 `history_no_grad=True` 后：
+
+```
+backbone + encoder 的处理路径：
+  历史帧（F-1=3帧）→ torch.no_grad() → 不存储激活，不接受梯度
+  当前帧（最后1帧）→ 正常 autograd → 完整梯度回传
+
+temporal_encoder：仍然接收全部 4 帧的特征（合并后输入，维度不变）
+→ 时序信息完整保留，精度理论上不受影响
+```
+
+`_encoder_forward_split()` 方法将 anchor、ms_img_feats、metas 沿帧维度拆分，分别做 forward，再 merge 回 `(B*F, ...)` 格式，下游代码无需任何改动。
+
+**收益**：
+- **显存**：backbone+encoder 的激活存储量从 4 帧降为 1 帧（节省约 75%）
+- **Backward 速度**：历史帧 backbone+encoder 的反向传播完全省略，节省 3/4 × (backbone_bwd + encoder_bwd)
+- **精度影响**：理论上无影响，temporal_encoder 仍看到全部时序信息
+
+#### Opt-1：channels_last 内存格式（预期 -268ms/iter）
+
+**文件**：`model/segmentor/bev_segmentor.py`
+
+```python
+# _run_img_backbone_flat() 首行加入：
+imgs_flat = imgs_flat.to(memory_format=torch.channels_last)
+```
+
+**原理**：cuDNN 内部偏好 NHWC 算法，但 PyTorch 默认 NCHW 存储，每层 conv 前后都要做格式转换。
+改为 channels_last 后，转换消除。**DCNv2（stages 3,4）** 不支持 channels_last，PyTorch dispatcher
+自动 fallback 到 contiguous NCHW，不会出错，stages 1,2 和 FPN 完整受益。
+
+#### Opt-2：lidar2global 预转 float32（预期 -400ms/iter）
+
+**文件**：`model/encoder/temporal_encoder/gaussian_temporal_encoder.py`
+
+```python
+# 原代码（numpy float64 → GPU 路径上做类型转换 → 触发 cudaStreamSynchronize）：
+lidar2global = torch.tensor(metas['lidar2global'][0], dtype=anchors.dtype, device=anchors.device)
+
+# 修改后（在 numpy 端做 float64→float32，zero-copy 送 GPU）：
+lidar2global = torch.from_numpy(
+    np.asarray(metas['lidar2global'][0], dtype=np.float32)
+).to(anchors.device, non_blocking=True)
+```
+
+**原理**：`torch.tensor()` 在 GPU 路径上做 double→float 类型转换时，对 tiny tensor（如 [7,4,4]）
+会触发同步阻塞（`cudaStreamSynchronize`）。改为 numpy 端预转换 + `non_blocking=True` 后，
+类型转换在 CPU 完成，GPU 传输异步进行，消除同步点。
+
+#### Opt-3：nonzero → bool mask（预期 -4ms/iter）
+
+**文件**：`model/head/gaussian_head.py`
+
+```python
+# 原代码（nonzero 必须 GPU→CPU 同步确定输出大小）：
+mask = torch.nonzero(mask).squeeze()
+if len(mask) == 0: ...
+
+# 修改后（bool mask 直接索引，避免同步）：
+if not mask.any(): ...
+return lidar[mask].unsqueeze(0).contiguous(), mask, valid
+```
+
+**原理**：`torch.nonzero()` 在返回前必须 GPU→CPU 同步（因为 output size 未知）。
+换用 bool mask 后，下游 `tensor[bool_mask]` 索引方式完全兼容（调用处不需修改），
+消除 `get_filtered_lidar` 的 6 次/iter 同步。
+
+### 实测验证结果汇总（2026-05-20）
+
+| 优化 | commit | 预期收益 | 实测结果 | 原因分析 |
+|------|--------|---------|---------|---------|
+| Opt-1：channels_last | c29ca34 | -268ms | ≈0 | DCNv2 stages 3,4 不支持 channels_last，自动 fallback；stages 1,2 + FPN 受益但占比小 |
+| Opt-2：lidar2global float32 | f864379 | -400ms | ≈0 | Bug 修复 commit（isinstance 检查）引入一次额外 `.float()` 调用，收益被抵消 |
+| Opt-3：nonzero→bool mask | bd7cbf5 | -4ms | ≈0 | 4ms 本来就太小，在 3.17s/iter 中噪声级别 |
+| Opt-A：with_cp=False | 36c229c | -800ms（backbone 不重算） | 实测 ~3.10 s/iter（-2~3%） | 理论正确，但 spconv backward 4400ms 占主导，backbone 节省被掩盖 |
+| Opt-B：DDP bucket=200MB | 36c229c | 减少 all-reduce 次数 | 几乎无变化 | all-reduce 在 spconv backward 之后，不是瓶颈 |
+| Opt-C：max_split_size_mb | 启动命令 | 减少显存碎片 | 无可见提速 | 对 spconv 自管显存的行为影响有限 |
+
+**结论：A+B+C 三方案合计实测 ~3% 提速（3.17→3.10 s/iter），未达预期。**
+
+**根本原因**：真正的瓶颈是 **spconv 的 SubMConv backward 内部 cudaFree/cudaMalloc**（约 4400ms/iter，占 backward 63%）。这属于 spconv 库本身的实现问题，无法通过上层代码规避。
+
+---
+
+### 当前运行状态（2026-05-20）
+
+- **训练正在运行**，tmux `train_nograd`，7卡（GPU 1-7）
+- **速度**：~3.10 s/iter（稳态，iter 100+ 后）
+- **启动命令**（含方案 A+B+C）：
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 \
+CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7 /data/chenz/conda_env/faster/bin/torchrun \
+    --nproc_per_node 7 --master_port 12459 \
+    train.py --py-config config/nuscenes_gs25600.py \
+    --work-dir out/nuscenes_gs25600_faster --dataset nuscenes
+```
+
+> **注意**：faster 环境（Python 3.8 + 旧版 PyTorch）**不支持** `expandable_segments:True`，
+> 该选项会直接报错 `Unrecognized CachingAllocator option`，启动时已移除。
+
+---
+
+### 未来提速路线（已分析，按优先级排序）
+
+#### ❶ 升级 spconv（最高优先级，预期 -2000ms/iter，约 60% 提速）
+
+**瓶颈根因**：spconv 2.x 的 SubMConv backward 每次反向传播都通过 `cudaFree/cudaMalloc` 重新申请显存，
+11 次 SubMConv × ~400ms = **4400ms**，占 backward 总时间 63%。
+
+spconv 2.3+ 引入了 workspace 内存复用机制，同样规模下这部分开销可降低 ~50-70%。
+
+**方法**：在新 conda 环境中安装 spconv 2.3+，测试兼容性。
+
+```bash
+# 新建 conda 环境（不影响 faster 和 splatting）
+conda create -n faster_v2 python=3.9
+pip install spconv-cu118==2.3.6  # 按 CUDA 版本选
+# 验证兼容性：单卡跑 50 iter，对比输出
+```
+
+**风险**：spconv 2.3 API 与当前版本可能有小的接口变化（SparseConvTensor / submConv3d 参数），
+需要逐一适配测试。
+
+#### ❷ 升级 PyTorch（配合 ❶，支持 expandable_segments 内存分配策略）
+
+当前 faster 环境是 Python 3.8 + 旧版 PyTorch，**不支持** `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`。
+该选项在新版 PyTorch（≥2.0）中能显著减少 CUDA OOM 风险并提升显存复用率。
+
+配合 ❶ 换 spconv 同时升级 PyTorch 到 2.0+，一次性解决两个问题。
+
+#### ❸ torch.compile(backbone)（中等优先级，预期 5-15%）
+
+在 with_cp=False（方案 A 已关闭）的前提下，对 ResNet+FPN backbone 做 torch.compile。
+
+**方法**：
+```python
+# model/segmentor/bev_segmentor.py
+self.img_backbone = torch.compile(self.img_backbone, mode='reduce-overhead')
+self.img_neck = torch.compile(self.img_neck, mode='reduce-overhead')
+```
+
+**风险**：DCNv2 算子可能触发 graph break，导致 compile 收益打折；第一个 epoch 有编译开销（~5min）。
+建议先在单卡跑 5 iter 验证无误差后再开多卡。
+
+**前置条件**：需要 PyTorch ≥ 2.0（当前 Python 3.8 环境不满足，依赖 ❷）。
+
+#### ❹ 减少 anchor 数量（低侵入性，预期 10-20%）
+
+spconv backbone 处理的点数正比于 anchor 数量（当前 3600）。减半到 1800 可直接减少 spconv 计算量，
+同时内存申请次数也减少，对 cudaFree/cudaMalloc 瓶颈也有缓解。
+
+**代价**：精度可能下降，需要实验验证。
+
+#### ❺ 数据 prefetch 优化（低优先级，预期 5-10%）
+
+当前 DataLoader 在 CPU 预处理伪标签时可能存在等待，可通过：
+- 增大 `num_workers`（当前值需检查）
+- 对 pseudo_depth/pseudo_seg 的下采样用 GPU 做（移到 collate_fn 之后）
+
+| 方案 | 预期提速 | 需改 conda 环境 | 风险 |
+|------|---------|----------------|------|
+| ❶ 升级 spconv 2.3+ | ~60% | ✅ 新建环境 | 中（API 兼容） |
+| ❷ 升级 PyTorch ≥2.0 | 支撑 ❶❸ | ✅ 新建环境 | 低 |
+| ❸ torch.compile | ~10% | ✅（依赖 ❷） | 中（graph break） |
+| ❹ 减少 anchor 数量 | ~15% | ❌ 不需要 | 中（精度影响） |
+| ❺ DataLoader prefetch | ~5% | ❌ 不需要 | 低 |
+
+---
+
 ## 版本记录
 
 | 日期 | 更新内容 |
@@ -912,3 +1141,5 @@ python tools/stats_gaussianad_pkl.py \
 | 2026-05-15 | 训练扩展为 **8 卡**（GPU 0-7），3516 iters/epoch |
 | 2026-05-18 | **发现并修复 RenderLoss off-by-one 类别索引 bug**：CE target 错位导致所有类梯度方向错误，bicycle 18 epoch 全 0%；修复 commit eb138cf；同步修复可视化 palette 映射；max_epochs 延长至 30（commit b19c429），接续 epoch 18 继续训练 |
 | 2026-05-18 | **PKL 转换脚本 v6**：P0 修复（scene_token、num_lidar_pts 真值回填、velocity 坐标系重算）+ P1 质量改进（VAD 命令阈值、自适应匹配、ego_lcf_feat 全维度、map 线长过滤 2m）；新增体检脚本 `tools/stats_gaussianad_pkl.py` |
+| 2026-05-19 | **创建 faster 分支**：基于 splatting，克隆 conda 环境为 `faster`；实现 Opt-1（channels_last）、Opt-2（lidar2global float32 预转换）、Opt-3（nonzero→bool mask）三项 GPU 加速优化（commit c29ca34）；分析 Opt-4/5 风险，暂不实施 |
+| 2026-05-20 | **实测 A+B+C 方案**：with_cp=False（Opt-A）+ DDP bucket=200MB（Opt-B）+ max_split_size_mb（Opt-C）合计仅 ~3% 提速（3.17→3.10 s/iter）；确认真正瓶颈为 spconv SubMConv backward 的 cudaFree/cudaMalloc（4400ms/iter）；训练正在以 ~3.10 s/iter 运行；后续提速需升级 spconv 2.3+（commit 36c229c） |
