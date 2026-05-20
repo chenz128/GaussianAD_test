@@ -303,10 +303,12 @@ model = dict(
             pc_range=pc_range,
             use_out_proj=True,
             grid_size=[0.5]*3,
-            kernel_size=[5, 5, 5],
+            # [Opt-kernel] k=3+d=2: kv=27<32 → MaskSplitImplicitGemm (zero cudaMalloc in backward)
+            # RF同k=5,d=1: 1+3*(2*2)=13格=6.5m, 精度等价
+            kernel_size=[3, 3, 3],
             stride=[1, 1, 1],
             padding=[2, 2, 2],
-            dilation=[1, 1, 1],
+            dilation=[2, 2, 2],
         ),
         num_decoder=num_decoder,
         num_single_frame_decoder=num_single_frame_decoder,
@@ -367,10 +369,11 @@ model = dict(
             pc_range=pc_range,
             use_out_proj=True,
             grid_size=[0.5]*3,
+            # [Opt-kernel] 4D: kv=3^4=81 (从625降低), 时间维d=1保持稳定(仅4帧), 空间d=2保RF
             kernel_size=[
-                [5, 5, 5, 5],
-                [5, 5, 5, 5],
-                [5, 5, 5, 5]
+                [3, 3, 3, 3],
+                [3, 3, 3, 3],
+                [3, 3, 3, 3]
             ],
             stride=[
                 [1, 1, 1, 1],
@@ -378,14 +381,14 @@ model = dict(
                 [1, 1, 1, 1]
             ],
             padding=[
-                [2] + [2] * 3,
-                [2] + [2] * 3,
-                [2] + [2] * 3,
+                [1, 2, 2, 2],
+                [1, 2, 2, 2],
+                [1, 2, 2, 2],
             ],
             dilation=[
-                [1] + [1] * 3,
-                [1] + [1] * 3,
-                [1] + [1] * 3,
+                [1, 2, 2, 2],
+                [1, 2, 2, 2],
+                [1, 2, 2, 2],
             ],
             spatial_shape=[num_frames, 120, 120, 8],
         ),
