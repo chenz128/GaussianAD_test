@@ -80,7 +80,6 @@ class SparseConv3DBlock(BaseModule):
         padding=[0],
         dilation=[1],
         spatial_shape=[256, 256, 20],
-        spconv_fp16=False,
         init_cfg=None
     ):
         super().__init__(init_cfg)
@@ -116,7 +115,6 @@ class SparseConv3DBlock(BaseModule):
             self.output_proj = nn.Identity()
         self.get_xyz = partial(cartesian, pc_range=pc_range)
         self.spatial_shape = spatial_shape
-        self.spconv_fp16 = spconv_fp16
         self.register_buffer('pc_range', torch.tensor(pc_range, dtype=torch.float), False)
         self.register_buffer('grid_size', torch.tensor(grid_size, dtype=torch.float), False)
 
@@ -136,14 +134,8 @@ class SparseConv3DBlock(BaseModule):
                 bs, 1, 1).expand(-1, g, -1).flatten(0, 1),
             indices], dim=-1)
 
-        # [FP16 spconv] Cast features to half for faster GEMM + smaller temp buffers
-        features = instance_feature.flatten(0, 1)
-        use_fp16 = self.spconv_fp16 and features.is_cuda
-        if use_fp16:
-            features = features.half()
-
         x = spconv.SparseConvTensor(
-            features, # bg, c
+            instance_feature.flatten(0, 1), # bg, c
             indices=batched_indices, # bg, 4
             spatial_shape=self.spatial_shape,
             batch_size=bs)
@@ -151,21 +143,12 @@ class SparseConv3DBlock(BaseModule):
         for layer in self.layers:
             if isinstance(layer, spconv.SubMConv3d):
                 x = layer(x)
-            elif isinstance(layer, nn.LayerNorm):
-                # LayerNorm in fp32 for numerical stability
-                if use_fp16:
-                    x = x.replace_feature(layer(x.features.float()).half())
-                else:
-                    x = x.replace_feature(layer(x.features))
-            elif isinstance(layer, nn.ReLU):
+            elif isinstance(layer, (nn.LayerNorm, nn.ReLU)):
                 x = x.replace_feature(layer(x.features))
             else:
                 raise NotImplementedError
 
-        output = x.features
-        if use_fp16:
-            output = output.float()
-        output = output.unflatten(0, (bs, g)) # b, g, c
+        output = x.features.unflatten(0, (bs, g)) # b, g, c
 
         return self.output_proj(output)
 
@@ -184,7 +167,6 @@ class SparseConv4D(BaseModule):
         padding=[0],
         dilation=[1],
         spatial_shape=[3, 256, 256, 20],
-        spconv_fp16=False,
         init_cfg=None
     ):
         super().__init__(init_cfg)
@@ -214,7 +196,6 @@ class SparseConv4D(BaseModule):
 
         self.get_xyz = partial(cartesian, pc_range=pc_range)
         self.spatial_shape = spatial_shape
-        self.spconv_fp16 = spconv_fp16
         self.register_buffer('pc_range', torch.tensor(pc_range, dtype=torch.float), False)
         self.register_buffer('grid_size', torch.tensor(grid_size, dtype=torch.float), False)
 
@@ -229,14 +210,8 @@ class SparseConv4D(BaseModule):
 
         indices = torch.cat([batch_indices, xyz_indices], dim=-1) # bfg, 5
 
-        # [FP16 spconv] Cast features to half for faster GEMM + smaller temp buffers
-        features = instance_feature
-        use_fp16 = self.spconv_fp16 and features.is_cuda
-        if use_fp16:
-            features = features.half()
-
         x = spconv.SparseConvTensor(
-            features, # n, c
+            instance_feature, # n, c
             indices=indices, # n, 5
             spatial_shape=self.spatial_shape,
             batch_size=1)
@@ -244,19 +219,10 @@ class SparseConv4D(BaseModule):
         for layer in self.layers:
             if isinstance(layer, spconv.SubMConv4d):
                 x = layer(x)
-            elif isinstance(layer, nn.LayerNorm):
-                # LayerNorm in fp32 for numerical stability
-                if use_fp16:
-                    x = x.replace_feature(layer(x.features.float()).half())
-                else:
-                    x = x.replace_feature(layer(x.features))
-            elif isinstance(layer, nn.ReLU):
+            elif isinstance(layer, (nn.LayerNorm, nn.ReLU)):
                 x = x.replace_feature(layer(x.features))
             else:
                 raise NotImplementedError
 
-        output = x.features
-        if use_fp16:
-            output = output.float()
-        output = self.output_proj(output) # n, c
+        output = self.output_proj(x.features) # n, c
         return output

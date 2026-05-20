@@ -307,7 +307,6 @@ model = dict(
             stride=[1, 1, 1],
             padding=[2, 2, 2],
             dilation=[1, 1, 1],
-            spconv_fp16=True,
         ),
         num_decoder=num_decoder,
         num_single_frame_decoder=num_single_frame_decoder,
@@ -389,7 +388,6 @@ model = dict(
                 [1] + [1] * 3,
             ],
             spatial_shape=[num_frames, 120, 120, 8],
-            spconv_fp16=True,
         ),
         operation_order=[
             "spconv",
