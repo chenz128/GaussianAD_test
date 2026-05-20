@@ -96,6 +96,7 @@ class SparseConv3DBlock(BaseModule):
         # 32 提到 128。我们 kernel_size=5 → kv=125，原本会 fallback 到 ConvAlgo.Native
         # (最慢)；现在升到 ConvAlgo.MaskImplicitGemm（融合算子，3D 大 kernel 下快很多）。
         # 数学等价（同一个卷积运算的不同实现），仅浮点累加顺序略异。
+        # 注意：需 spconv-cu120 才能在 H20 (sm_90) 上工作；spconv-cu118 会 nvrtc 编译失败。
         layers = []
         for k, s, p, d in zip(kernel_size, stride, padding, dilation):
             layers.append(spconv.SubMConv3d(
