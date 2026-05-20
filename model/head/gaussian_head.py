@@ -140,10 +140,13 @@ class GaussianHead(BaseTaskHead):
                 mean_single = means
                 metas['flow_info'][0][i]['flow_valid_flag'] = 0
             else:
-                origi_opa = origi_opa.squeeze(0)[mask].unsqueeze(0)
-                opacities = opacities.squeeze(0)[mask].unsqueeze(0)
-                scales = scales.squeeze(0)[mask].unsqueeze(0)
-                CovInv = CovInv.squeeze(0)[mask].unsqueeze(0)
+                # mask 长度 = G（不含 empty），gs 中各 tensor 长度 = G+1（含 empty）
+                # 用 bool mask 索引时需先截取前 G 个元素
+                G = mask.shape[0]
+                origi_opa = origi_opa.squeeze(0)[:G][mask].unsqueeze(0)
+                opacities = opacities.squeeze(0)[:G][mask].unsqueeze(0)
+                scales = scales.squeeze(0)[:G][mask].unsqueeze(0)
+                CovInv = CovInv.squeeze(0)[:G][mask].unsqueeze(0)
 
             bs, g = mean_single.shape[:2]
             semantics = self.aggregator(
