@@ -133,7 +133,11 @@ def main(args):
             my_model.cuda(),
             device_ids=[torch.cuda.current_device()],
             broadcast_buffers=False,
-            find_unused_parameters=find_unused_parameters)
+            find_unused_parameters=find_unused_parameters,
+            # [Opt-B] 增大 bucket（默认 25MB→200MB）减少 all-reduce 次数；
+            # gradient_as_bucket_view 让 bucket 直接复用 grad 内存，省一次拷贝。
+            bucket_cap_mb=200,
+            gradient_as_bucket_view=True)
         raw_model = my_model.module
     else:
         my_model = my_model.cuda()

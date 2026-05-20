@@ -237,7 +237,7 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,#在训练过程中，冻结BatchNorm层的统计信息，即不更新其均值和方差。这通常在使用预训练模型时进行，以保持预训练权重的稳定性。
         style='caffe',
-        with_cp = True, # 这是一个布尔值，表示是否在ResNet的卷积层中使用checkpointing技术来节省内存。启用with_cp=True会在前向传播过程中保存一些中间激活值，并在反向传播时重新计算它们，以减少内存占用。这对于训练大型模型或使用较大批量大小时非常有用，但会增加一些计算开销。根据实际情况，可以选择是否启用这个选项来平衡内存使用和计算效率。
+        with_cp = False, # [Opt-A] 关闭 gradient checkpointing：避免 backward 时重算 backbone forward（约 800-1000ms/iter）。显存代价 ~15-20GB，7卡 H20 96GB 富余足够。
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False), # original DCNv2 will print log when perform load_state_dict
         stage_with_dcn=(False, False, True, True)),#这是一个元组，表示ResNet的每个阶段是否使用可变形卷积（Deformable Convolution）。在这个配置中，前两个阶段（stage 1和stage 2）不使用可变形卷积，而后两个阶段（stage 3和stage 4）使用可变形卷积。使用可变形卷积可以增强模型对几何变形的适应能力，从而提高特征提取的效果。根据实际需求，可以调整这个元组来选择在哪些阶段使用可变形卷积。
     img_neck=dict(
