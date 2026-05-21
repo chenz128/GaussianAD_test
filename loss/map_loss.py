@@ -133,7 +133,9 @@ class MapLoss(BaseLoss):
                  dir_interval=1,
                  **kwargs):
 
+        _weight = kwargs.pop('weight', 1.0)
         super().__init__()
+        self.weight = _weight
         self.loss_pts = MAPTR_LOSS.build(loss_pts)
         self.loss_dir = MAPTR_LOSS.build(loss_dir)
         self.loss_cls = MMDET_MODEL.build(loss_cls)
@@ -567,7 +569,8 @@ class MapLoss(BaseLoss):
         loss_inputs = [results['metas']['gt_bboxes_3d'], results['metas']['gt_labels_3d'], None, None, results]
         losses_pts = self.loss(*loss_inputs, img_metas=None)
         loss = sum([v for v in losses_pts.values()])
-        return loss if loss.dim()==0 else loss[0]
+        loss = loss if loss.dim()==0 else loss[0]
+        return self.weight * loss
 
 
 def reduce_loss(loss, reduction):

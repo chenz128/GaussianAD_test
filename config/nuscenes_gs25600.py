@@ -24,7 +24,8 @@ fixed_ptsnum_per_pred_line = 20
 
 
 # =========== misc config ==============
-lr = float(os.environ.get("LR", 4e-4))  # linear scaling: 2e-4 (4-card) × 2 = 4e-4 (8-card)
+lr = float(os.environ.get("LR", 4e-4))  # 8-card base lr
+max_epochs = 10  # baseline model: train 10 epochs, use as resume source
 optimizer = dict(
     optimizer = dict(
         type="AdamW", lr=lr, weight_decay=0.01,
@@ -84,9 +85,10 @@ loss = dict(
                 'loc_weight': 0.25,
                 'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2, 1.0, 1.0]
             }),
-        # [SPLATTING] MapLoss re-enabled with gradient checkpointing
+        # MapLoss: weight=0.3 to balance with render losses
         dict(
             type='MapLoss',
+            weight=0.3,
             loss_cls=dict(
                 type='FocalLoss',
                 use_sigmoid=True,
@@ -121,17 +123,17 @@ loss = dict(
             num_pts_per_gt_vec=fixed_ptsnum_per_gt_line,
             dir_interval=1,
             ),
-        # RenderLoss: pseudo-label supervision via 2D Gaussian splatting
+        # RenderSemLoss: semantic CE supervision (sem_lw=5.0)
         dict(
-            type='RenderLoss',
+            type='RenderSemLoss',
             weight=1.0,
-            sem_lw=2.0,
-            depth_lw=0.05,
+            sem_lw=5.0,
             ),
-        # PlanLoss re-enabled
+        # RenderDepthLoss: depth Huber supervision (depth_lw=0.5)
         dict(
-            type='PlanLoss',
-            weight=10.0,
+            type='RenderDepthLoss',
+            weight=1.0,
+            depth_lw=0.5,
             ),
         ])
 
@@ -148,11 +150,6 @@ loss_input_convertion = dict(
     target_dicts='target_dicts',
     batch_index='batch_index',
     voxel_indices='voxel_indices',
-    # plan inputs
-    ego_fut_preds='ego_fut_preds',
-    ego_fut_gt='ego_fut_trajs',
-    ego_fut_masks='ego_fut_masks',
-    ego_fut_cmd='ego_fut_cmd',
     # map inputs
     all_cls_scores="all_cls_scores",
     all_bbox_preds="all_bbox_preds",
@@ -165,7 +162,7 @@ loss_input_convertion = dict(
     pseudo_depth='pseudo_depth',
 )#这是一个字典，定义了不同损失函数所需的输入数据在模型输出或数据加载过程中对应的键名。通过这个字典，模型在计算损失时可以根据键名从输入数据中提取相应的张量。例如，RenderLoss需要的输入包括'rendered_sem'、'rendered_depth'、'pseudo_seg'和'pseudo_depth'，这些键名会被映射到实际的数据张量上，以便在计算损失时使用。
 # All modules trainable (map + plan + render all enabled)
-frozen_modules = []
+frozen_modules = ['planner_head']  # PlanLoss removed; freeze planner to avoid DDP unused param error
 find_unused_parameters = False  # with_cp=True conflicts with find_unused_parameters=True in DDP; frozen modules don't need it
 backbone_fp16 = True  # selective AMP: only backbone+neck run in fp16, rest stays fp32
 

@@ -124,3 +124,91 @@ class RenderLoss(BaseLoss):
             )
 
         return loss_sem + loss_depth
+
+
+@OPENOCC_LOSS.register_module()
+class RenderSemLoss(BaseLoss):
+    """Semantic-only render loss (separated from depth for independent tracking)."""
+
+    def __init__(self, weight=1.0, sem_lw=5.0, diag_every=500, input_dict=None, **kwargs):
+        if input_dict is None:
+            input_dict = {
+                'rendered_sem': 'rendered_sem',
+                'rendered_depth': 'rendered_depth',
+                'pseudo_seg': 'pseudo_seg',
+                'pseudo_depth': 'pseudo_depth',
+            }
+        super().__init__(weight=weight, input_dict=input_dict, **kwargs)
+        del self.loss_func
+        self.sem_lw = sem_lw
+        self.diag_every = diag_every
+
+        nusc_class_freq = torch.tensor([
+            944004, 1897170, 152386, 2391677, 16957802, 724139,
+            189027, 2074468, 413451, 2384460, 5916653, 175883646,
+            4275424, 51393615, 61411620, 105975596, 116424404
+        ], dtype=torch.float32)
+        log_w = torch.log(nusc_class_freq.sum() / nusc_class_freq)
+        self.register_buffer('class_weight', log_w / log_w.mean())
+        self.loss_fn_ce = nn.CrossEntropyLoss(reduction='none')
+
+    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
+        if rendered_sem is None or pseudo_seg is None:
+            return torch.tensor(0.0, requires_grad=False)
+        pred_sem = rendered_sem.flatten(0, -2)
+        target_sem = pseudo_seg.flatten().long()
+        valid_sem = target_sem > 0
+        if valid_sem.any():
+            pw = self.class_weight[target_sem[valid_sem]]
+            loss_sem = self.sem_lw * (
+                pw * self.loss_fn_ce(pred_sem[valid_sem], target_sem[valid_sem])
+            ).mean()
+        else:
+            loss_sem = pred_sem.sum() * 0.0
+
+        self._diag_counter = getattr(self, '_diag_counter', 0) + 1
+        if self._diag_counter % self.diag_every == 1:
+            with torch.no_grad():
+                prob = torch.softmax(pred_sem[valid_sem], dim=-1) if valid_sem.any() else None
+                ent = (-(prob * (prob + 1e-8).log()).sum(-1)).mean().item() if prob is not None else float('nan')
+            logger = logging.getLogger('mmengine')
+            logger.info(
+                f'[RenderSemLoss Diag] iter={self._diag_counter} | '
+                f'valid_sem={valid_sem.float().mean().item():.2%} | '
+                f'sem_entropy={ent:.3f} (rand={math.log(17):.3f}) | '
+                f'loss_sem={loss_sem.item():.4f}'
+            )
+        return loss_sem
+
+
+@OPENOCC_LOSS.register_module()
+class RenderDepthLoss(BaseLoss):
+    """Depth-only render loss (separated from semantic for independent tracking)."""
+
+    def __init__(self, weight=1.0, depth_lw=0.5, input_dict=None, **kwargs):
+        if input_dict is None:
+            input_dict = {
+                'rendered_sem': 'rendered_sem',
+                'rendered_depth': 'rendered_depth',
+                'pseudo_seg': 'pseudo_seg',
+                'pseudo_depth': 'pseudo_depth',
+            }
+        super().__init__(weight=weight, input_dict=input_dict, **kwargs)
+        del self.loss_func
+        self.depth_lw = depth_lw
+        self.dynamic_classes = torch.tensor([2, 3, 4, 5, 6, 7, 9, 10])
+        self.loss_fn_depth = nn.HuberLoss(delta=2.0, reduction='mean')
+
+    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
+        if rendered_depth is None or pseudo_depth is None or pseudo_seg is None:
+            return torch.tensor(0.0, requires_grad=False)
+        pred_d = rendered_depth.flatten()
+        target_d = pseudo_depth.flatten()
+        dyn_mask = torch.isin(
+            pseudo_seg.flatten(),
+            self.dynamic_classes.to(pseudo_seg.device)
+        )
+        valid_d = (target_d > 0.5) & (pred_d.detach() > 0) & ~dyn_mask
+        if valid_d.any():
+            return self.depth_lw * self.loss_fn_depth(pred_d[valid_d], target_d[valid_d])
+        return pred_d.sum() * 0.0
