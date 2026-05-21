@@ -199,15 +199,21 @@ def main(args):
         try:
             optimizer.load_state_dict(ckpt['optimizer'])
             # Override LR if config LR differs from checkpoint LR (e.g. linear scaling rule change)
-            new_base_lr = cfg.optimizer.optimizer.lr
-            old_base_lr = ckpt['optimizer']['param_groups'][0]['lr']
-            if abs(new_base_lr - old_base_lr) / max(old_base_lr, 1e-10) > 0.01:
+            try:
+                new_base_lr = cfg.optimizer.optimizer.lr
+            except Exception:
+                new_base_lr = None
+            old_base_lr = max(pg['lr'] for pg in optimizer.param_groups)
+            logger.info(f'[LR check] config new_base_lr={new_base_lr}, checkpoint old_base_lr={old_base_lr:.2e}')
+            if new_base_lr is not None and abs(new_base_lr - old_base_lr) / max(old_base_lr, 1e-10) > 0.01:
                 lr_scale = new_base_lr / old_base_lr
                 for pg in optimizer.param_groups:
                     pg['lr'] *= lr_scale
                     if 'initial_lr' in pg:
                         pg['initial_lr'] *= lr_scale
                 logger.info(f'LR overridden after resume: {old_base_lr:.2e} -> {new_base_lr:.2e} (x{lr_scale:.2f})')
+            else:
+                logger.info(f'LR unchanged after resume: {old_base_lr:.2e}')
         except (ValueError, KeyError) as e:
             logger.info(f'Optimizer state mismatch (frozen modules changed?), skipping optimizer resume: {e}')
         try:
