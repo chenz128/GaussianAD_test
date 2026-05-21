@@ -119,6 +119,16 @@ def _build_loader(cfg, split):
     cfg.val_loader["batch_size"] = 1
     cfg.val_loader["num_workers"] = 0
 
+    # Ensure pseudo label config is present in val_dataset_config
+    # (normally only train has it, but we need it for visualization)
+    _pseudo_keys = [
+        "metric3d_root", "grounded_sam_root",
+        "pseudo_label_scale", "max_pseudo_depth", "pseudo_label_crop_top",
+    ]
+    for k in _pseudo_keys:
+        if k not in cfg.val_dataset_config and k in cfg.train_dataset_config:
+            cfg.val_dataset_config[k] = cfg.train_dataset_config[k]
+
     if split == "train":
         train_loader, _ = get_dataloader(
             cfg.train_dataset_config, cfg.val_dataset_config,
