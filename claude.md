@@ -122,22 +122,25 @@ CE Loss vs grounded_sam      MSE Loss vs metric_3d
 
 ---
 
-## Splatting 分支训练策略（已确定，2026-05-15 更新）
+## Splatting 分支训练策略（已确定，2026-05-15 更新；baseline 配置 2026-05-21 更新）
 
 > **适用分支**：`splatting` / `faster`
 
-### Loss 配置（全量 loss）
+### Loss 配置（faster 分支 baseline 当前配置）
 
-| Loss | 状态 | 理由 |
-|------|------|------|
-| OccupancyLoss | ✅ 保留 | 核心 3D 占用语义监督 |
-| OccupancyFlowLoss | ✅ 保留 | 核心动态场景监督 |
-| DetectionLoss | ✅ 保留 | 核心 3D 检测监督 |
-| MapLoss | ✅ 保留 | 地图结构监督（显存允许，已加回） |
-| RenderLoss（伪标签语义+深度） | ✅ 新增 | gsplat 2D 渲染 vs 伪标签 |
-| PlanLoss | ✅ 保留 | 规划监督（显存允许，已加回） |
+| Loss | 状态 | 权重 | 理由 |
+|------|------|------|------|
+| OccupancyLoss | ✅ 保留 | weight=1.0 | 核心 3D 占用语义监督 |
+| OccupancyFlowLoss | ✅ 保留 | weight=1.0 | 核心动态场景监督 |
+| DetectionLoss | ✅ 保留 | weight=1.0 | 核心 3D 检测监督 |
+| MapLoss | ✅ 保留 | **weight=0.3** | 地图结构监督，降权平衡 render loss |
+| RenderSemLoss（语义 CE） | ✅ 新增 | weight=1.0, sem_lw=5.0 | gsplat 2D 渲染语义，与 occ 独立跟踪 |
+| RenderDepthLoss（深度 Huber） | ✅ 新增 | weight=1.0, depth_lw=0.5 | gsplat 2D 渲染深度，与语义独立跟踪 |
+| PlanLoss | ❌ **移除** | — | baseline 不做规划，planner_head 冻结 |
 
-> **历史变更**：Phase 1 最初去掉了 MapLoss 和 PlanLoss 以省显存。2026-05-15 实测发现全量 loss（6 个）在单卡 96GB 上仅占 67-76 GB，无需任何 gradient checkpointing，因此全部加回。
+> **历史变更**：
+> - 2026-05-15：最初去掉了 MapLoss 和 PlanLoss 以省显存，实测无需，加回全量 loss（6个）
+> - 2026-05-21：**baseline 配置**：移除 PlanLoss，RenderLoss 拆分为 RenderSemLoss + RenderDepthLoss，MapLoss weight=0.3
 
 ### 显存实测（2026-05-15）
 
@@ -472,15 +475,30 @@ loss = dict(
 
 底层使用 VoxelNeXt 稀疏检测头，在高斯点云的稀疏体素上运行。
 
-### RenderLoss 权重配置
+### RenderSemLoss / RenderDepthLoss 权重配置（2026-05-21 拆分后）
+
+> **注**：原 `RenderLoss` 已拆分为两个独立类，在训练 log 中分开显示。
 
 ```python
-weight=1.0     # 整体 loss 权重（乘在语义+深度总和之上）
-sem_lw=2.0     # 语义 CE loss 内部权重
-depth_lw=0.05  # 深度 MSE loss 内部权重（数值通常大，故小权重平衡）
+# RenderSemLoss
+weight=1.0     # BaseLoss 外层权重
+sem_lw=5.0     # 语义 CE loss 内部权重（从 2.0 提升到 5.0）
+
+# RenderDepthLoss
+weight=1.0     # BaseLoss 外层权重
+depth_lw=0.5   # 深度 Huber loss 内部权重（从 0.05 提升到 0.5）
+
+# MapLoss
+weight=0.3     # 通过 kwargs.pop('weight') + self.weight 正确传递
 ```
 
-实际语义 loss 数值约 2.0~4.0，深度 loss 数值约 0.01~0.05（乘 lw 后），两者相加即 RenderLoss。
+**实际数值参考（baseline epoch 0 iter 0）**：
+- RenderSemLoss ≈ 5.05，RenderDepthLoss ≈ 10.04，MapLoss ≈ 4.72（已乘 0.3）
+
+**代码修复记录**（`loss/map_loss.py`，commit ee80646）：
+- `MapLoss.__init__` 原本 `super().__init__()` 不传 weight → `self.weight` 永远=1.0
+- 修复：`_weight = kwargs.pop('weight', 1.0); super().__init__(); self.weight = _weight`
+- `MapLoss.forward()` 增加 `return self.weight * loss`
 
 ---
 
@@ -1041,22 +1059,46 @@ return lidar[mask].unsqueeze(0).contiguous(), mask, valid
 
 ---
 
-### 当前运行状态（2026-05-20）
+### 当前运行状态（2026-05-21）
 
-- **训练正在运行**，tmux `train_nograd`，7卡（GPU 1-7）
-- **速度**：~3.10 s/iter（稳态，iter 100+ 后）
-- **启动命令**（含方案 A+B+C）：
+- **训练正在运行**，tmux `train_nograd`，8卡（GPU 0-7）
+- **work-dir**：`out/nuscenes_gs25600_base`（从零开始，baseline 模型，max_epochs=10）
+- **速度**：~3.10 s/iter（稳态）
+- **启动命令**：
 
 ```bash
-PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 \
-CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7 /data/chenz/conda_env/faster/bin/torchrun \
-    --nproc_per_node 7 --master_port 12459 \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 /data/chenz/conda_env/faster/bin/torchrun \
+    --nproc_per_node 8 --master_port 12459 \
     train.py --py-config config/nuscenes_gs25600.py \
-    --work-dir out/nuscenes_gs25600_faster --dataset nuscenes
+    --work-dir out/nuscenes_gs25600_base --dataset nuscenes
 ```
+
+**epoch 0 iter 0 loss 参考**：OccupancyLoss=18.16, OccupancyFlowLoss=19.39, DetectionLoss=16.00, MapLoss=4.72, RenderSemLoss=5.05, RenderDepthLoss=10.04
 
 > **注意**：faster 环境（Python 3.8 + 旧版 PyTorch）**不支持** `expandable_segments:True`，
 > 该选项会直接报错 `Unrecognized CachingAllocator option`，启动时已移除。
+
+---
+
+### 2D 渲染可视化脚本（tools/visualize_render_2d.py）
+
+**用途**：按需检验 2D Gaussian splatting 渲染效果，随机采样，不依赖训练循环。
+
+**特性**：
+- `--seed` 控制随机采样（不同 seed 得到不同的 N 张图）
+- `--split train/val`：val 集无 pseudo label，请用 `train`
+- 输出文件名用全局 dataset index，便于溯源
+
+**启动命令**：
+```bash
+CUDA_VISIBLE_DEVICES=0 /data/chenz/conda_env/faster/bin/python tools/visualize_render_2d.py \
+    --py-config config/nuscenes_gs25600.py \
+    --work-dir out/nuscenes_gs25600_base \
+    --num-samples 10 --seed 42 --split train --device cuda:0
+```
+
+**输出**：`out/nuscenes_gs25600_base/render_2d_vis/sample_NNNNNN.jpg`  
+每张图 6 相机纵向排列，每行：`[pred_sem | gt_sem | pred_depth | gt_depth | input_img]`
 
 ---
 
@@ -1180,4 +1222,6 @@ spconv backbone 处理的点数正比于 anchor 数量（当前 3600）。减半
 | 2026-05-19 | **创建 faster 分支**：基于 splatting，克隆 conda 环境为 `faster`；实现 Opt-1（channels_last）、Opt-2（lidar2global float32 预转换）、Opt-3（nonzero→bool mask）三项 GPU 加速优化（commit c29ca34）；分析 Opt-4/5 风险，暂不实施 |
 | 2026-05-20 | **实测 A+B+C 方案**：with_cp=False（Opt-A）+ DDP bucket=200MB（Opt-B）+ max_split_size_mb（Opt-C）合计仅 ~3% 提速（3.17→3.10 s/iter）；确认真正瓶颈为 spconv SubMConv backward 的 cudaFree/cudaMalloc（4400ms/iter）；训练正在以 ~3.10 s/iter 运行；后续提速需升级 spconv 2.3+（commit 36c229c） |
 | 2026-05-20 | **spconv 提速实验失败**：尝试 Opt-spconv-2（`large_kernel_fast_algo=True` → MaskImplicitGemm）；cu118 nvrtc 编译 cutlass kernel 报 "this arch isn't supported"；升级到 spconv-cu120 2.3.6 仍只有 Simt fallback，7 卡训练卡死 30+ 分钟全在 nvrtc 编译。结论：**H20 sm_90 上 spconv 没有可行的提速路径**。回滚 spconv-cu118 + 移除 large_kernel_fast_algo，保留 Opt-spconv-1（indice_key 共享，纯 Python 改动）。训练恢复 3.10 s/iter（commit dfb65f6） |
+| 2026-05-21 | **独立 2D 渲染可视化脚本**：从 RenderLoss 中剥离内联可视化，新建 `tools/visualize_render_2d.py`，支持随机采样（`--seed`）、任意 work-dir 和 checkpoint。RenderLoss 仅保留 loss 计算 + 诊断打印（commit 260977a → f2214be） |
+| 2026-05-21 | **baseline 模型配置**（commit ee80646）：拆分 `RenderLoss` → `RenderSemLoss`(sem_lw=5.0) + `RenderDepthLoss`(depth_lw=0.5)，移除 PlanLoss（冻结 planner_head），MapLoss weight=0.3（修复 weight 传递），max_epochs=10，lr=4e-4(8卡)。开始训练 `out/nuscenes_gs25600_base` |
 
