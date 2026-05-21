@@ -21,6 +21,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from torch.utils.data.dataloader import DataLoader
 from mmengine import Config
 from mmseg.models import build_segmentor
 
@@ -111,7 +112,7 @@ def _load_model(cfg, checkpoint_path, device):
 
 
 def _build_loader(cfg, split):
-    from dataset import get_dataloader
+    from dataset.utils import custom_collate_fn_temporal
 
     cfg.train_loader["batch_size"] = 1
     cfg.train_loader["num_workers"] = 0
@@ -119,8 +120,20 @@ def _build_loader(cfg, split):
     cfg.val_loader["batch_size"] = 1
     cfg.val_loader["num_workers"] = 0
 
-    # Ensure pseudo label config is present in val_dataset_config
-    # (normally only train has it, but we need it for visualization)
+    if split == "train":
+        # Use val_only=True with train_dataset_config swapped in to avoid building val dataset
+        # (val scenes may not have pseudo label files)
+        train_loader = DataLoader(
+            dataset=_build_dataset(cfg.train_dataset_config),
+            batch_size=1,
+            collate_fn=custom_collate_fn_temporal,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=True,
+        )
+        return train_loader
+
+    # For val split: copy pseudo label config from train to val
     _pseudo_keys = [
         "metric3d_root", "grounded_sam_root",
         "pseudo_label_scale", "max_pseudo_depth", "pseudo_label_crop_top",
@@ -129,18 +142,20 @@ def _build_loader(cfg, split):
         if k not in cfg.val_dataset_config and k in cfg.train_dataset_config:
             cfg.val_dataset_config[k] = cfg.train_dataset_config[k]
 
-    if split == "train":
-        train_loader, _ = get_dataloader(
-            cfg.train_dataset_config, cfg.val_dataset_config,
-            cfg.train_loader, cfg.val_loader, dist=False, val_only=False,
-        )
-        return train_loader
-
-    _, val_loader = get_dataloader(
-        cfg.train_dataset_config, cfg.val_dataset_config,
-        cfg.train_loader, cfg.val_loader, dist=False, val_only=True,
+    val_loader = DataLoader(
+        dataset=_build_dataset(cfg.val_dataset_config),
+        batch_size=1,
+        collate_fn=custom_collate_fn_temporal,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True,
     )
     return val_loader
+
+
+def _build_dataset(dataset_config):
+    from dataset.dataset import OPENOCC_DATASET
+    return OPENOCC_DATASET.build(dataset_config)
 
 
 def _render_gaussians(model, gaussian, gs_extrins, gs_intrins):
