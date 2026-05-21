@@ -73,9 +73,9 @@ def parse_args():
     parser.add_argument("--work-dir", required=True, help="Experiment directory (contains latest.pth).")
     parser.add_argument("--resume-from", default="", help="Explicit checkpoint path.")
     parser.add_argument("--out-dir", default="", help="Output directory. Default: <work_dir>/render_2d_vis")
-    parser.add_argument("--split", choices=("val", "train"), default="val")
+    parser.add_argument("--split", choices=("val", "train"), default="train")
     parser.add_argument("--num-samples", type=int, default=10)
-    parser.add_argument("--start-index", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for sample selection.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dpi", type=int, default=1, help="Not used; kept for API compat.")
     return parser.parse_args()
@@ -111,51 +111,32 @@ def _load_model(cfg, checkpoint_path, device):
     return model_instance
 
 
-def _build_loader(cfg, split):
-    from dataset.utils import custom_collate_fn_temporal
-
-    cfg.train_loader["batch_size"] = 1
-    cfg.train_loader["num_workers"] = 0
-    cfg.train_loader["shuffle"] = False
-    cfg.val_loader["batch_size"] = 1
-    cfg.val_loader["num_workers"] = 0
-
+def _build_dataset(cfg, split):
+    from dataset.dataset import OPENOCC_DATASET
     if split == "train":
-        # Use val_only=True with train_dataset_config swapped in to avoid building val dataset
-        # (val scenes may not have pseudo label files)
-        train_loader = DataLoader(
-            dataset=_build_dataset(cfg.train_dataset_config),
-            batch_size=1,
-            collate_fn=custom_collate_fn_temporal,
-            shuffle=False,
-            num_workers=0,
-            pin_memory=True,
-        )
-        return train_loader
+        return OPENOCC_DATASET.build(cfg.train_dataset_config)
+    # val: copy pseudo label config from train (val scenes may not have files,
+    # but this path is only used if user explicitly passes --split val)
+    val_cfg = dict(cfg.val_dataset_config)
+    for k in ("metric3d_root", "grounded_sam_root",
+               "pseudo_label_scale", "max_pseudo_depth", "pseudo_label_crop_top"):
+        if k not in val_cfg and k in cfg.train_dataset_config:
+            val_cfg[k] = cfg.train_dataset_config[k]
+    return OPENOCC_DATASET.build(val_cfg)
 
-    # For val split: copy pseudo label config from train to val
-    _pseudo_keys = [
-        "metric3d_root", "grounded_sam_root",
-        "pseudo_label_scale", "max_pseudo_depth", "pseudo_label_crop_top",
-    ]
-    for k in _pseudo_keys:
-        if k not in cfg.val_dataset_config and k in cfg.train_dataset_config:
-            cfg.val_dataset_config[k] = cfg.train_dataset_config[k]
 
-    val_loader = DataLoader(
-        dataset=_build_dataset(cfg.val_dataset_config),
+def _make_loader(dataset, indices):
+    from dataset.utils import custom_collate_fn_temporal
+    from torch.utils.data import Subset
+    subset = Subset(dataset, indices)
+    return DataLoader(
+        dataset=subset,
         batch_size=1,
         collate_fn=custom_collate_fn_temporal,
         shuffle=False,
         num_workers=0,
         pin_memory=True,
     )
-    return val_loader
-
-
-def _build_dataset(dataset_config):
-    from dataset.dataset import OPENOCC_DATASET
-    return OPENOCC_DATASET.build(dataset_config)
 
 
 def _render_gaussians(model, gaussian, gs_extrins, gs_intrins):
@@ -256,24 +237,20 @@ def main():
     checkpoint_path = _checkpoint_path(args)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     model_instance = _load_model(cfg, checkpoint_path, device)
-    loader = _build_loader(cfg, args.split)
+
+    dataset = _build_dataset(cfg, args.split)
+    rng = np.random.RandomState(args.seed)
+    n = min(args.num_samples, len(dataset))
+    indices = rng.choice(len(dataset), size=n, replace=False).tolist()
+    print(f"[INFO] Randomly selected {n} samples (seed={args.seed}): {indices}")
+    loader = _make_loader(dataset, indices)
 
     saved = 0
     with torch.no_grad():
-        for batch_index, data in enumerate(loader):
-            if batch_index < args.start_index:
-                continue
-            if saved >= args.num_samples:
-                break
-
+        for sample_rank, (global_idx, data) in enumerate(zip(indices, loader)):
             # Check pseudo labels exist
-            pseudo_seg = data.get("pseudo_seg")
-            pseudo_depth = data.get("pseudo_depth")
-            gs_extrins = data.get("gs_extrins")
-            gs_intrins = data.get("gs_intrins")
-
-            if pseudo_seg is None or gs_extrins is None:
-                print(f"[SKIP] batch {batch_index}: no pseudo labels or gs params")
+            if data.get("pseudo_seg") is None or data.get("gs_extrins") is None:
+                print(f"[SKIP] idx {global_idx}: no pseudo labels or gs params")
                 continue
 
             # Move tensors to device
@@ -282,13 +259,11 @@ def main():
                     data[key] = data[key].to(device)
 
             input_imgs = data.pop("img")
-            # Forward pass to get gaussian representation
             result_dict = model_instance(imgs=input_imgs, metas=data)
 
-            # Get gaussian from result and force-render
             gaussian = result_dict.get("gaussian")
             if gaussian is None:
-                print(f"[SKIP] batch {batch_index}: model did not return gaussian")
+                print(f"[SKIP] idx {global_idx}: model did not return gaussian")
                 continue
 
             gs_ext = data["gs_extrins"].unsqueeze(0) if data["gs_extrins"].dim() == 3 else data["gs_extrins"]
@@ -297,20 +272,17 @@ def main():
                 model_instance, gaussian, gs_ext, gs_int
             )
 
-            # Pseudo labels
             ps = data["pseudo_seg"].unsqueeze(0) if data["pseudo_seg"].dim() == 3 else data["pseudo_seg"]
             pd = data["pseudo_depth"].unsqueeze(0) if data["pseudo_depth"].dim() == 3 else data["pseudo_depth"]
 
-            # Save
-            out_path = os.path.join(out_dir, f"sample_{batch_index:06d}.jpg")
-            # Keep data on CPU for img extraction, put img back
+            out_path = os.path.join(out_dir, f"sample_{global_idx:06d}.jpg")
             data["img"] = input_imgs
             _save_vis_image(rendered_sem, rendered_depth, ps, pd, data, out_path)
-            print(f"[OK] saved {out_path}")
+            print(f"[OK] ({sample_rank+1}/{n}) saved {out_path}")
             saved += 1
 
     if saved == 0:
-        raise SystemExit("No samples visualized. Check --start-index / pseudo label availability.")
+        raise SystemExit("No samples visualized. Check pseudo label availability.")
     print(f"[DONE] saved {saved} figure(s) under {out_dir}")
 
 
