@@ -196,6 +196,7 @@ def main(args):
         map_location = 'cpu'
         ckpt = torch.load(cfg.resume_from, map_location=map_location)
         print(raw_model.load_state_dict(ckpt['state_dict'], strict=False))
+        lr_scale = 1.0  # track scale for later scheduler fix
         try:
             optimizer.load_state_dict(ckpt['optimizer'])
             # Override LR if config LR differs from checkpoint LR (e.g. linear scaling rule change)
@@ -218,6 +219,16 @@ def main(args):
             logger.info(f'Optimizer state mismatch (frozen modules changed?), skipping optimizer resume: {e}')
         try:
             scheduler.load_state_dict(ckpt['scheduler'])
+            # Also scale scheduler base_lrs so it doesn't revert our LR override
+            if lr_scale != 1.0:
+                def _scale_scheduler_base_lrs(s, scale):
+                    if hasattr(s, 'base_lrs'):
+                        s.base_lrs = [lr * scale for lr in s.base_lrs]
+                    if hasattr(s, 'schedulers'):  # chained / sequential schedulers
+                        for sub in s.schedulers:
+                            _scale_scheduler_base_lrs(sub, scale)
+                _scale_scheduler_base_lrs(scheduler, lr_scale)
+                logger.info(f'Scheduler base_lrs scaled by x{lr_scale:.2f}')
         except (ValueError, KeyError) as e:
             logger.info(f'Scheduler state mismatch, skipping scheduler resume: {e}')
         epoch = ckpt['epoch']
