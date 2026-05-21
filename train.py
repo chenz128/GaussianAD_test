@@ -198,6 +198,16 @@ def main(args):
         print(raw_model.load_state_dict(ckpt['state_dict'], strict=False))
         try:
             optimizer.load_state_dict(ckpt['optimizer'])
+            # Override LR if config LR differs from checkpoint LR (e.g. linear scaling rule change)
+            new_base_lr = cfg.optimizer.optimizer.lr
+            old_base_lr = ckpt['optimizer']['param_groups'][0]['lr']
+            if abs(new_base_lr - old_base_lr) / max(old_base_lr, 1e-10) > 0.01:
+                lr_scale = new_base_lr / old_base_lr
+                for pg in optimizer.param_groups:
+                    pg['lr'] *= lr_scale
+                    if 'initial_lr' in pg:
+                        pg['initial_lr'] *= lr_scale
+                logger.info(f'LR overridden after resume: {old_base_lr:.2e} -> {new_base_lr:.2e} (x{lr_scale:.2f})')
         except (ValueError, KeyError) as e:
             logger.info(f'Optimizer state mismatch (frozen modules changed?), skipping optimizer resume: {e}')
         try:
