@@ -1,53 +1,10 @@
-import os
 import math
 import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 from . import OPENOCC_LOSS
 from .base_loss import BaseLoss
-
-# nuScenes occupancy 17类颜色表（0-indexed，对应 pseudo_seg 中 label 1~17 减1后的索引）
-_NUSC_PALETTE = np.array([
-    [112, 128, 144],  # 0: barrier
-    [220,  20,  60],  # 1: bicycle
-    [255, 127,  80],  # 2: bus
-    [255, 158,   0],  # 3: car
-    [233, 150,  70],  # 4: construction_vehicle
-    [255,  61,  99],  # 5: motorcycle
-    [  0,   0, 230],  # 6: pedestrian
-    [ 47,  79,  79],  # 7: traffic_cone
-    [255, 140,   0],  # 8: trailer
-    [255,  99,  71],  # 9: truck
-    [  0, 207, 191],  # 10: driveable_surface
-    [175,   0,  75],  # 11: other_flat
-    [ 75,   0,  75],  # 12: sidewalk
-    [112, 180,  60],  # 13: terrain
-    [222, 184, 135],  # 14: manmade
-    [  0, 175,   0],  # 15: vegetation
-    [  0,   0,   0],  # 16: free/empty
-], dtype=np.uint8)
-
-
-def _colorize_sem(cls_map_0indexed):
-    """cls_map_0indexed: (H, W) int, values 0-16 → RGB (H, W, 3)"""
-    cls = np.clip(cls_map_0indexed, 0, 16)
-    return _NUSC_PALETTE[cls]
-
-
-def _depth_to_rgb(depth_np, vmin=0.0, vmax=40.0):
-    """depth_np: (H, W) float → RGB (H, W, 3) using turbo-like colormap"""
-    norm = np.clip((depth_np - vmin) / (vmax - vmin + 1e-6), 0.0, 1.0)
-    # simple heat map: black→blue→cyan→green→yellow→red
-    r = np.clip(norm * 4 - 2, 0, 1)
-    g = np.clip(np.minimum(norm * 4, 4 - norm * 4), 0, 1)
-    b = np.clip(1 - norm * 4, 0, 1)
-    rgb = np.stack([r, g, b], axis=-1)
-    # invalid pixels (depth==0) → gray
-    invalid = depth_np <= 0
-    rgb[invalid] = 0.5
-    return (rgb * 255).astype(np.uint8)
 
 
 @OPENOCC_LOSS.register_module()
@@ -62,8 +19,7 @@ class RenderLoss(BaseLoss):
         weight=1.0,
         sem_lw=2.0,
         depth_lw=0.05,
-        vis_dir=None,
-        vis_every=500,
+        diag_every=500,
         input_dict=None,
         **kwargs,
     ):
@@ -73,8 +29,6 @@ class RenderLoss(BaseLoss):
                 'rendered_depth': 'rendered_depth',
                 'pseudo_seg': 'pseudo_seg',
                 'pseudo_depth': 'pseudo_depth',
-                'input_imgs': 'input_imgs',
-                'aug_flip': 'aug_flip',
             }
         super().__init__(weight=weight, input_dict=input_dict, **kwargs)
         # BaseLoss.__init__ sets self.loss_func = lambda: 0 as instance attr,
@@ -83,8 +37,7 @@ class RenderLoss(BaseLoss):
 
         self.sem_lw = sem_lw
         self.depth_lw = depth_lw
-        self.vis_dir = vis_dir
-        self.vis_every = vis_every
+        self.diag_every = diag_every
 
         # dynamic classes — depth loss unreliable for moving objects
         self.dynamic_classes = torch.tensor([2, 3, 4, 5, 6, 7, 9, 10])
@@ -103,15 +56,13 @@ class RenderLoss(BaseLoss):
         # linear for large errors. delta=2m is a reasonable threshold for outdoor scenes.
         self.loss_fn_depth = nn.HuberLoss(delta=2.0, reduction='mean')
 
-    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, input_imgs=None, aug_flip=None):
+    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
         """
         Args:
             rendered_sem:   (B, nC, H, W, 17) — rendered semantic logits
             rendered_depth: (B, nC, H, W)     — rendered depth
             pseudo_seg:     (B, nC, H, W)     — pseudo semantic labels (0=invalid)
             pseudo_depth:   (B, nC, H, W)     — pseudo depth (0=invalid)
-            input_imgs:     (B, F, N, C, H, W) — original camera images (optional, for vis)
-            aug_flip:       bool or None       — whether input image was horizontally flipped
         """
         # eval mode: rendering was skipped, or val dataset has no pseudo labels
         if rendered_sem is None or rendered_depth is None or pseudo_seg is None or pseudo_depth is None:
@@ -150,9 +101,9 @@ class RenderLoss(BaseLoss):
         else:
             loss_depth = pred_d.sum() * 0.0
 
-        # ── diagnostics（每 vis_every iter 打印一次，并保存渲染可视化图片）──
+        # ── diagnostics（每 diag_every iter 打印一次）──
         self._diag_counter = getattr(self, '_diag_counter', 0) + 1
-        if self._diag_counter % self.vis_every == 1:
+        if self._diag_counter % self.diag_every == 1:
             valid_sem_ratio = valid_sem.float().mean().item()
             valid_d_ratio   = valid_d.float().mean().item()
             pred_depth_mean = pred_d[valid_d].mean().item() if valid_d.any() else 0.0
@@ -171,103 +122,5 @@ class RenderLoss(BaseLoss):
                 f'sem_entropy={pred_entropy:.3f} (rand={rand_entropy:.3f}) | '
                 f'loss_sem={loss_sem.item():.4f} loss_depth={loss_depth.item():.4f}'
             )
-            # 保存渲染可视化图片
-            if self.vis_dir is not None:
-                self._save_vis(rendered_sem, rendered_depth, pseudo_seg, pseudo_depth,
-                               step=self._diag_counter, input_imgs=input_imgs, aug_flip=aug_flip)
 
         return loss_sem + loss_depth
-
-    def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step, input_imgs=None, aug_flip=None):
-        """
-        保存所有相机的渲染结果对比图（batch 0）。
-        每张图为横向拼接: [pred_sem | gt_sem | pred_depth | gt_depth | orig_img]
-        所有相机纵向堆叠，保存为 render_vis/step_{step:06d}.jpg
-
-        Alignment: rendered/pseudo are in ORIGINAL camera orientation (never flipped).
-        input_imgs may be flipped by augmentation — we un-flip it here for display.
-        input_imgs covers a different vertical region (top 36px crop) vs pseudo labels
-        (top ~318px crop in original space), so we crop input_imgs to match.
-        """
-        # DDP: only rank 0 saves to avoid 8 processes writing the same file concurrently
-        import torch.distributed as dist
-        if dist.is_initialized() and dist.get_rank() != 0:
-            return
-        try:
-            from PIL import Image
-        except ImportError:
-            return
-        try:
-            os.makedirs(self.vis_dir, exist_ok=True)
-            B, nC, H, W, _ = rendered_sem.shape
-            rows = []
-            for cam in range(nC):
-                # 语义：渲染预测 argmax — model class 0=noise, 1=barrier, ..., 16=vegetation
-                pred_cls = rendered_sem[0, cam].detach().cpu().argmax(dim=-1).numpy()  # (H, W)
-                pred_sem_rgb = np.where(
-                    (pred_cls[..., None] > 0),
-                    _NUSC_PALETTE[np.clip(pred_cls - 1, 0, 16)],
-                    np.array([128, 128, 128], dtype=np.uint8)   # class 0 (noise) → gray
-                ).astype(np.uint8)
-
-                # 语义：伪标签 GT — pseudo_seg 0=invalid, 1=barrier, ..., 16=vegetation
-                gt_cls_raw = pseudo_seg[0, cam].detach().cpu().numpy().astype(np.int32)  # (H, W)
-                gt_sem_rgb = np.where(
-                    (gt_cls_raw[..., None] > 0),
-                    _NUSC_PALETTE[np.clip(gt_cls_raw - 1, 0, 16)],
-                    np.array([128, 128, 128], dtype=np.uint8)   # invalid → gray
-                ).astype(np.uint8)
-
-                # 深度：渲染预测
-                pred_d_np = rendered_depth[0, cam].detach().cpu().numpy()  # (H, W)
-                pred_d_rgb = _depth_to_rgb(pred_d_np)  # (H, W, 3)
-
-                # 深度：伪标签 GT
-                gt_d_np = pseudo_depth[0, cam].detach().cpu().numpy()  # (H, W)
-                gt_d_rgb = _depth_to_rgb(gt_d_np)  # (H, W, 3)
-
-                # 原始相机图像（当前帧，batch 0）
-                orig_img_rgb = None
-                if input_imgs is not None:
-                    try:
-                        # input_imgs: (B, F, N, C, H_img, W_img) — augmented (may be flipped)
-                        img_t = input_imgs[0, -1, cam].detach().cpu().float().numpy()  # (C, H_img, W_img)
-                        img_t = img_t.transpose(1, 2, 0)  # (H_img, W_img, C)
-                        # un-normalize: ImageNet mean/std, RGB
-                        img_t = img_t * np.array([58.395, 57.12, 57.375], dtype=np.float32) \
-                                      + np.array([123.675, 116.28, 103.53], dtype=np.float32)
-                        img_t = np.clip(img_t, 0, 255).astype(np.uint8)
-                        # Un-flip: rendering/pseudo labels are in original orientation
-                        flip_val = False
-                        if aug_flip is not None:
-                            flip_val = aug_flip.item() if hasattr(aug_flip, 'item') else bool(aug_flip)
-                        if flip_val:
-                            img_t = img_t[:, ::-1, :].copy()
-                        # Crop to match pseudo label region:
-                        # input_imgs covers original rows 36-899 (H_img=864 pixels)
-                        # pseudo labels cover original rows ~318-899 (after 0.44x + crop_top=140)
-                        # Crop top portion of input_imgs to show same region
-                        H_img = img_t.shape[0]  # 864
-                        # original row 318 maps to input_imgs row (318-36) = 282
-                        crop_start = int((318 - 36) / (900 - 36) * H_img)  # ~282
-                        img_t = img_t[crop_start:, :, :]
-                        orig_img_pil = Image.fromarray(img_t).resize((W, H), Image.BILINEAR)
-                        orig_img_rgb = np.array(orig_img_pil)
-                    except Exception:
-                        pass
-
-                # 用黑色像素行分隔相机
-                n_cols = 5 if orig_img_rgb is not None else 4
-                separator = np.zeros((2, W * n_cols, 3), dtype=np.uint8)
-                cols = [pred_sem_rgb, gt_sem_rgb, pred_d_rgb, gt_d_rgb]
-                if orig_img_rgb is not None:
-                    cols.append(orig_img_rgb)
-                row = np.concatenate(cols, axis=1)
-                rows.append(separator)
-                rows.append(row)
-
-            combined = np.concatenate(rows, axis=0)
-            out_path = os.path.join(self.vis_dir, f'step_{step:06d}.jpg')
-            Image.fromarray(combined).save(out_path, quality=90)
-        except Exception as e:
-            logging.getLogger('mmengine').warning(f'[RenderLoss] vis save failed: {e}')

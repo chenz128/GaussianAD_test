@@ -272,8 +272,6 @@ def main(args):
                     else:
                         loss_input.update({
                             loss_input_key: result_dict[loss_input_val]})
-                loss_input['input_imgs'] = input_imgs
-                loss_input['aug_flip'] = data.get('aug_flip')
                 loss, loss_dict = loss_func(loss_input)
 
                 loss = loss / grad_accumulation
@@ -379,8 +377,6 @@ def main(args):
                         else:
                             loss_input.update({
                                 loss_input_key: result_dict[loss_input_val]})
-                    loss_input['input_imgs'] = input_imgs
-                    loss_input['aug_flip'] = data.get('aug_flip')
                     loss, loss_dict = loss_func(loss_input)
 
                 for idx, pred in enumerate(result_dict['pred_occ'][-1]):
