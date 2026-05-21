@@ -24,7 +24,7 @@ fixed_ptsnum_per_pred_line = 20
 
 
 # =========== misc config ==============
-lr = float(os.environ.get("LR", 2e-4))
+lr = float(os.environ.get("LR", 4e-4))  # linear scaling: 2e-4 (4-card) × 2 = 4e-4 (8-card)
 optimizer = dict(
     optimizer = dict(
         type="AdamW", lr=lr, weight_decay=0.01,
