@@ -10,8 +10,6 @@ class WrappedTBWriter(SummaryWriter, ManagerMixin):
         if use_swanlab:
             try:
                 import swanlab
-                from swanlab.integration.tensorboard import patch as swanlab_patch
-                swanlab_patch()  # must be called BEFORE SummaryWriter.__init__
                 init_kwargs = dict(
                     project=swanlab_project,
                     experiment_name=swanlab_experiment,
@@ -21,9 +19,12 @@ class WrappedTBWriter(SummaryWriter, ManagerMixin):
                 if swanlab_workspace:
                     init_kwargs['workspace'] = swanlab_workspace
                 swanlab.init(**init_kwargs)
+                swanlab.sync_tensorboard_torch()  # patch SummaryWriter after init (0.7.x API)
                 print('[SwanLab] initialized successfully.')
             except ImportError:
                 print('[WARNING] swanlab not installed, skipping SwanLab init.')
+            except Exception as e:
+                print(f'[WARNING] SwanLab init failed: {e}, skipping.')
         SummaryWriter.__init__(self, **kwargs)
         ManagerMixin.__init__(self, name)
 
