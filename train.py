@@ -96,7 +96,16 @@ def main(args):
         os.makedirs(args.work_dir, exist_ok=True)
         cfg.dump(osp.join(args.work_dir, osp.basename(args.py_config)))
         from misc.tb_wrapper import WrappedTBWriter
-        writer = WrappedTBWriter('selfocc', log_dir=osp.join(args.work_dir, 'tf'))
+        _sl_cfg = cfg.get('swanlab', {})
+        writer = WrappedTBWriter(
+            'selfocc',
+            log_dir=osp.join(args.work_dir, 'tf'),
+            use_swanlab=_sl_cfg.get('enabled', False),
+            swanlab_project=_sl_cfg.get('project', 'GaussianAD'),
+            swanlab_experiment=_sl_cfg.get('experiment', osp.basename(args.work_dir)),
+            swanlab_workspace=_sl_cfg.get('workspace', None),
+            swanlab_config=dict(cfg),
+        )
         WrappedTBWriter._instance_dict['selfocc'] = writer
     else:
         writer = None
@@ -337,6 +346,9 @@ def main(args):
                 detailed_loss = ', '.join(detailed_loss)
                 logger.info(detailed_loss)
                 loss_list = []
+                if writer is not None:
+                    writer.add_scalar('train/lr', lr, global_iter)
+                    writer.add_scalar('train/grad_norm', grad_norm, global_iter)
             data_time_s = time.time()
             time_s = time.time()
 
@@ -424,10 +436,13 @@ def main(args):
         miou, iou2 = miou_metric._after_epoch()
         logger.info(f'mIoU: {miou}, iou2: {iou2}')
         logger.info('Current val loss is %.3f' % (np.mean(val_loss_list)))
+        if writer is not None and local_rank == 0:
+            writer.add_scalar('val/mIoU', miou, epoch)
+            writer.add_scalar('val/loss', float(np.mean(val_loss_list)), epoch)
         miou_metric.reset()
 
     if writer is not None:
-        writer.close()
+        writer.finish()
 
 
 if __name__ == '__main__':

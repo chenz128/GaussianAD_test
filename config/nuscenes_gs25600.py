@@ -23,6 +23,13 @@ fixed_ptsnum_per_gt_line = 20 # now only support fixed_pts > 0这
 fixed_ptsnum_per_pred_line = 20
 
 
+# =========== swanlab config ==============
+swanlab = dict(
+    enabled=True,
+    project='GaussianAD',
+    # experiment 默认用 work_dir 的 basename（如 nuscenes_gs25600_base）
+)
+
 # =========== misc config ==============
 lr = float(os.environ.get("LR", 4e-4))  # 8-card base lr
 max_epochs = 10  # baseline model: train 10 epochs, use as resume source
