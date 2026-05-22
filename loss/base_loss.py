@@ -35,5 +35,7 @@ class BaseLoss(nn.Module):
         actual_inputs = {}
         for input_key, input_val in self.input_dict.items():
             actual_inputs.update({input_key: inputs[input_val]})
-        # return self.weight * self.calculate_loss(**actual_inputs)
-        return self.weight * self.loss_func(**actual_inputs)
+        result = self.loss_func(**actual_inputs)
+        if result is None:
+            return None
+        return self.weight * result

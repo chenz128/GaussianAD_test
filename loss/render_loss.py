@@ -154,7 +154,7 @@ class RenderSemLoss(BaseLoss):
 
     def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
         if rendered_sem is None or pseudo_seg is None:
-            return torch.tensor(0.0, requires_grad=False)
+            return None  # eval mode: rendering skipped, omit from log
         pred_sem = rendered_sem.flatten(0, -2)
         target_sem = pseudo_seg.flatten().long()
         valid_sem = target_sem > 0
@@ -201,7 +201,7 @@ class RenderDepthLoss(BaseLoss):
 
     def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
         if rendered_depth is None or pseudo_depth is None or pseudo_seg is None:
-            return torch.tensor(0.0, requires_grad=False)
+            return None  # eval mode: rendering skipped, omit from log
         pred_d = rendered_depth.flatten()
         target_d = pseudo_depth.flatten()
         dyn_mask = torch.isin(

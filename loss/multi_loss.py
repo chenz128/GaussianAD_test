@@ -27,6 +27,8 @@ class MultiLoss(nn.Module):
         tot_loss = 0.
         for loss_func in self.losses:
             loss = loss_func(inputs)
+            if loss is None:  # e.g. render losses during eval (rendering skipped)
+                continue
             tot_loss += loss
             loss_dict.update({
                 loss_func.__class__.__name__: \
