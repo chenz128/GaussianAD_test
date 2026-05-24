@@ -174,7 +174,7 @@ loss_input_convertion = dict(
     pseudo_depth='pseudo_depth',
     # plan loss inputs
     ego_fut_preds='ego_fut_preds',
-    ego_fut_gt='ego_fut_gt',
+    ego_fut_gt='ego_fut_trajs',
     ego_fut_masks='ego_fut_masks',
     ego_fut_cmd='ego_fut_cmd',
 )#这是一个字典，定义了不同损失函数所需的输入数据在模型输出或数据加载过程中对应的键名。通过这个字典，模型在计算损失时可以根据键名从输入数据中提取相应的张量。例如，RenderLoss需要的输入包括'rendered_sem'、'rendered_depth'、'pseudo_seg'和'pseudo_depth'，这些键名会被映射到实际的数据张量上，以便在计算损失时使用。
