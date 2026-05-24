@@ -142,6 +142,11 @@ loss = dict(
             weight=1.0,
             depth_lw=0.5,
             ),
+        # PlanLoss: planning supervision
+        dict(
+            type='PlanLoss',
+            weight=10.0,
+            ),
         ])
 
 loss_input_convertion = dict(
@@ -167,9 +172,14 @@ loss_input_convertion = dict(
     # render loss inputs (from metas/data)
     pseudo_seg='pseudo_seg',
     pseudo_depth='pseudo_depth',
+    # plan loss inputs
+    ego_fut_preds='ego_fut_preds',
+    ego_fut_gt='ego_fut_gt',
+    ego_fut_masks='ego_fut_masks',
+    ego_fut_cmd='ego_fut_cmd',
 )#这是一个字典，定义了不同损失函数所需的输入数据在模型输出或数据加载过程中对应的键名。通过这个字典，模型在计算损失时可以根据键名从输入数据中提取相应的张量。例如，RenderLoss需要的输入包括'rendered_sem'、'rendered_depth'、'pseudo_seg'和'pseudo_depth'，这些键名会被映射到实际的数据张量上，以便在计算损失时使用。
 # All modules trainable (map + plan + render all enabled)
-frozen_modules = ['planner_head']  # PlanLoss removed; freeze planner to avoid DDP unused param error
+frozen_modules = []  # all modules trainable (PlanLoss enabled)
 find_unused_parameters = False  # with_cp=True conflicts with find_unused_parameters=True in DDP; frozen modules don't need it
 backbone_fp16 = True  # selective AMP: only backbone+neck run in fp16, rest stays fp32
 
@@ -182,7 +192,7 @@ scale_range = [0.08, 0.64]
 xyz_coordinate = 'cartesian'#笛卡尔坐标系
 phi_activation = 'sigmoid'#激活函数使用sigmoid，这意味着高斯点的特征会被压缩到0和1之间，适合表示概率或权重等信息。
 include_opa = True#学习透明度信息
-load_from = 'ckpts/r101_dcn_fcos3d_pretrain.pth'
+load_from = 'out/nuscenes_gs25600_base/checkpoints/epoch_10.pth'
 semantics = True#学习语义信息
 semantic_dim = 17#这是语义特征的维度，通常对应于数据集中不同类别的数量。在nuScenes数据集中，semantic_dim=17表示有17个不同的语义类别（不包括背景或无效类别）。这个参数用于定义高斯点云中每个点的语义特征维度，以便模型能够学习和区分不同的语义类别。
 
