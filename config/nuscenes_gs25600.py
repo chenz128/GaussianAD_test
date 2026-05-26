@@ -32,7 +32,7 @@ swanlab = dict(
 
 # =========== misc config ==============
 lr = float(os.environ.get("LR", 4e-4))  # 8-card base lr
-max_epochs = 10  # baseline model: train 10 epochs, use as resume source
+max_epochs = 20  # first stage: continue from base epoch_10, train 10 more epochs
 optimizer = dict(
     optimizer = dict(
         type="AdamW", lr=lr, weight_decay=0.01,
