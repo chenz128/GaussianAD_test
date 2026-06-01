@@ -32,7 +32,7 @@ swanlab = dict(
 
 # =========== misc config ==============
 lr = float(os.environ.get("LR", 4e-4))  # 8-card base lr
-max_epochs = 20  # first stage: continue from base epoch_10, train 10 more epochs
+max_epochs = 20  # second stage: continue from base epoch_10, train 20 epochs (scale=0.55)
 optimizer = dict(
     optimizer = dict(
         type="AdamW", lr=lr, weight_decay=0.01,
@@ -228,9 +228,9 @@ train_dataset_config = dict(
     # pseudo label configs (splatting branch)
     metric3d_root='/data/chenz/Gaussianflowocc_test/data/metric_3d_nusc',
     grounded_sam_root='/data/chenz/Gaussianflowocc_test/data/grounded_sam_nusc',
-    pseudo_label_scale=0.44,#这是一个缩放因子，用于调整根据点云生成的伪标签的尺度。由于点云数据和图像数据之间存在一定的尺度差异，直接使用点云生成的伪标签可能会导致与图像上的实际物体位置不匹配。通过设置pseudo_label_scale，可以对伪标签进行适当的缩放，使其更好地对齐图像上的物体，从而提高渲染损失的监督效果。具体的缩放因子需要根据数据集和模型的特点进行调整，以获得最佳性能。
+    pseudo_label_scale=0.55,#这是一个缩放因子，用于调整根据点云生成的伪标签的尺度。由于点云数据和图像数据之间存在一定的尺度差异，直接使用点云生成的伪标签可能会导致与图像上的实际物体位置不匹配。通过设置pseudo_label_scale，可以对伪标签进行适当的缩放，使其更好地对齐图像上的物体，从而提高渲染损失的监督效果。具体的缩放因子需要根据数据集和模型的特点进行调整，以获得最佳性能。
     max_pseudo_depth=40.0,#这是一个阈值，用于过滤根据点云生成的伪标签中的深度值。由于点云数据中可能存在一些异常值或远距离的点，这些点在图像上可能对应于无效或不相关的区域。通过设置max_pseudo_depth，可以将伪标签中深度值超过该阈值的像素视为无效，从而在计算渲染损失时忽略这些像素。这有助于提高模型的训练稳定性和性能，特别是在处理具有较大深度范围的数据集时。
-    pseudo_label_crop_top=140,#这是一个参数，用于在计算渲染损失时裁剪伪标签的顶部区域。由于图像的顶部区域通常包含天空或其他不相关的背景信息，这些区域的伪标签可能对训练没有帮助，甚至可能引入噪声。通过设置pseudo_label_crop_top，可以在计算渲染损失时忽略图像顶部的指定像素行，从而提高模型的训练效果。
+    pseudo_label_crop_top=175,#这是一个参数，用于在计算渲染损失时裁剪伪标签的顶部区域（下采样后的行数）。由于图像的顶部区域通常包含天空或其他不相关的背景信息，这些区域的伪标签可能对训练没有帮助，甚至可能引入噪声。通过设置pseudo_label_crop_top，可以在计算渲染损失时忽略图像顶部的指定像素行，从而提高模型的训练效果。（0.55×下采样后高度=495行，裁剪175行后=320行=render_h）
 )
 
 model = dict(
@@ -427,8 +427,8 @@ model = dict(
             pc_min=[-30.0, -30.0, -2.0],
             grid_size=0.5),
         render_config=dict(
-            render_h=256,   # int(900 * 0.44) - 140 = ~256
-            render_w=704,   # int(1600 * 0.44) = 704
+            render_h=320,   # int(900 * 0.55) - 175 = 320
+            render_w=880,   # int(1600 * 0.55) = 880
             sem_lw=2.0,
             depth_lw=0.05,
         ),
