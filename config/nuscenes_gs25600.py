@@ -387,12 +387,6 @@ model = dict(
             H=120, W=120, D=8,
             pc_min=[-30.0, -30.0, -2.0],
             grid_size=0.5),
-        render_config=dict(
-            render_h=256,   # int(900 * 0.44) - 140 = ~256
-            render_w=704,   # int(1600 * 0.44) = 704
-            sem_lw=2.0,
-            depth_lw=0.05,
-        ),
     ),
     decoder=dict(
         type='VoxelNeXt',
