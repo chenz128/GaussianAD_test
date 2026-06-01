@@ -121,15 +121,6 @@ loss = dict(
             num_pts_per_gt_vec=fixed_ptsnum_per_gt_line,
             dir_interval=1,
             ),
-        # RenderLoss: pseudo-label supervision via 2D Gaussian splatting
-        dict(
-            type='RenderLoss',
-            weight=1.0,
-            sem_lw=2.0,#这是语义损失的权重，控制语义损失在总损失中的重要性。较大的sem_lw会使模型更关注语义分割的准确性，而较小的sem_lw则会降低语义损失的影响力。
-            depth_lw=0.05,#这是深度损失的权重，控制深度损失在总损失中的重要性。较大的depth_lw会使模型更关注深度预测的准确性，而较小的depth_lw则会降低深度损失的影响力。由于深度损失通常比语义损失更容易产生较大的数值，因此这里设置了一个较小的权重来平衡两者的影响。
-            vis_dir='out/nuscenes_gs25600_nograd/render_vis',  # 渲染可视化输出目录
-            vis_every=500,  # 每隔多少次 iter 保存一次可视化图片
-            ),
         # PlanLoss re-enabled
         dict(
             type='PlanLoss',
@@ -159,12 +150,6 @@ loss_input_convertion = dict(
     all_cls_scores="all_cls_scores",
     all_bbox_preds="all_bbox_preds",
     all_pts_preds="all_pts_preds",
-    # render loss inputs (from head output)
-    rendered_sem='rendered_sem',
-    rendered_depth='rendered_depth',
-    # render loss inputs (from metas/data)
-    pseudo_seg='pseudo_seg',
-    pseudo_depth='pseudo_depth',
 )#这是一个字典，定义了不同损失函数所需的输入数据在模型输出或数据加载过程中对应的键名。通过这个字典，模型在计算损失时可以根据键名从输入数据中提取相应的张量。例如，RenderLoss需要的输入包括'rendered_sem'、'rendered_depth'、'pseudo_seg'和'pseudo_depth'，这些键名会被映射到实际的数据张量上，以便在计算损失时使用。
 # All modules trainable (map + plan + render all enabled)
 frozen_modules = []
@@ -201,32 +186,23 @@ _dim_ = 256#这是高斯点云中每个点的特征维度，通常用于定义�
 _pos_dim_ = _dim_//2#这是位置特征的维度，通常是_dim_的一半，用于表示高斯点云中每个点的位置特征。
 
 val_dataset_config = dict(
-    imageset='data/nuscenes_cam/nuscenes_infos_val_gaussian_ad_v6.pkl',
+    imageset='data/nuscenes_cam/nuscenes_infos_val_gaussian_ad_v4.pkl',
     data_aug_conf=data_aug_conf,
     class_names=det_config['class_names'],
     pc_range=pc_range,
     num_frames=4
 )
 train_dataset_config = dict(
-    imageset='data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v6.pkl',
+    imageset='data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v4.pkl',
     data_aug_conf=data_aug_conf,
     class_names=det_config['class_names'],
     pc_range=pc_range,
     num_frames=4,
-    # pseudo label configs (splatting branch)
-    metric3d_root='/data/chenz/Gaussianflowocc_test/data/metric_3d_nusc',
-    grounded_sam_root='/data/chenz/Gaussianflowocc_test/data/grounded_sam_nusc',
-    pseudo_label_scale=0.44,#这是一个缩放因子，用于调整根据点云生成的伪标签的尺度。由于点云数据和图像数据之间存在一定的尺度差异，直接使用点云生成的伪标签可能会导致与图像上的实际物体位置不匹配。通过设置pseudo_label_scale，可以对伪标签进行适当的缩放，使其更好地对齐图像上的物体，从而提高渲染损失的监督效果。具体的缩放因子需要根据数据集和模型的特点进行调整，以获得最佳性能。
-    max_pseudo_depth=40.0,#这是一个阈值，用于过滤根据点云生成的伪标签中的深度值。由于点云数据中可能存在一些异常值或远距离的点，这些点在图像上可能对应于无效或不相关的区域。通过设置max_pseudo_depth，可以将伪标签中深度值超过该阈值的像素视为无效，从而在计算渲染损失时忽略这些像素。这有助于提高模型的训练稳定性和性能，特别是在处理具有较大深度范围的数据集时。
-    pseudo_label_crop_top=140,#这是一个参数，用于在计算渲染损失时裁剪伪标签的顶部区域。由于图像的顶部区域通常包含天空或其他不相关的背景信息，这些区域的伪标签可能对训练没有帮助，甚至可能引入噪声。通过设置pseudo_label_crop_top，可以在计算渲染损失时忽略图像顶部的指定像素行，从而提高模型的训练效果。
 )
 
 model = dict(
     img_backbone_out_indices=[0, 1, 2, 3],
-    # Run backbone + encoder for historical frames under torch.no_grad() to
-    # save activation memory and backward time. Only the current (last) frame
-    # contributes gradients. Temporal encoder still sees all frames.
-    history_no_grad=True,
+    history_no_grad=False,
     img_backbone=dict(
         _delete_=True,
         type='ResNet',
