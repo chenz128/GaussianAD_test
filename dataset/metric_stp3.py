@@ -33,7 +33,7 @@ def compute_planner_metric_stp3(
         'plan_obj_box_col_2s':0,
         'plan_obj_box_col_3s':0,
     }
-    metric_dict['fut_valid_flag'] = fut_valid_flag
+    metric_dict['fut_valid_flag'] = bool(fut_valid_flag)  # ensure Python bool, not CUDA tensor
     future_second = 3
     assert pred_ego_fut_trajs.shape[0] == 1, 'only support bs=1'
     planning_metric = PlanningMetric()
