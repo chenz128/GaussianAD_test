@@ -103,6 +103,18 @@ class RenderLoss(BaseLoss):
         # linear for large errors. delta=2m is a reasonable threshold for outdoor scenes.
         self.loss_fn_depth = nn.HuberLoss(delta=2.0, reduction='mean')
 
+    def forward(self, inputs):
+        """Override BaseLoss.forward to return (total, sub_dict) for separate logging."""
+        actual_inputs = {}
+        for input_key, input_val in self.input_dict.items():
+            actual_inputs.update({input_key: inputs[input_val]})
+        loss_sem, loss_depth = self.loss_func(**actual_inputs)
+        total = self.weight * (loss_sem + loss_depth)
+        return total, {
+            'RenderSemLoss': (self.weight * loss_sem).detach().item(),
+            'RenderDepthLoss': (self.weight * loss_depth).detach().item(),
+        }
+
     def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, input_imgs=None, aug_flip=None):
         """
         Args:
@@ -115,7 +127,8 @@ class RenderLoss(BaseLoss):
         """
         # eval mode: rendering was skipped, or val dataset has no pseudo labels
         if rendered_sem is None or rendered_depth is None or pseudo_seg is None or pseudo_depth is None:
-            return torch.tensor(0.0, requires_grad=False)
+            zero = torch.tensor(0.0, requires_grad=False)
+            return zero, zero
 
         # ── semantic loss ──semantic是指渲染结果的语义分割图，pseudo_seg是指根据点云生成的伪标签语义分割图。rendered_sem和pseudo_seg都是(B, nC, H, W)的形状，其中nC是相机数量，H和W是图像的高和宽。semantic loss是计算rendered_sem和pseudo_seg之间的交叉熵损失，注意pseudo_seg中的0表示无效像素，不参与损失计算。
         pred_sem = rendered_sem.flatten(0, -2)     # (N, 17)
@@ -176,7 +189,7 @@ class RenderLoss(BaseLoss):
                 self._save_vis(rendered_sem, rendered_depth, pseudo_seg, pseudo_depth,
                                step=self._diag_counter, input_imgs=input_imgs, aug_flip=aug_flip)
 
-        return loss_sem + loss_depth
+        return loss_sem, loss_depth
 
     def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step, input_imgs=None, aug_flip=None):
         """
