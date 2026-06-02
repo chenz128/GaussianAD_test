@@ -76,7 +76,7 @@ class RenderLoss(BaseLoss):
                 'input_imgs': 'input_imgs',
                 'aug_flip': 'aug_flip',
             }
-        super().__init__(weight=weight, input_dict=input_dict, **kwargs)
+        super().__init__(weight=weight, input_dict=input_dict, **kwargs)#这里调用了BaseLoss的__init__方法，设置了self.weight、self.input_dict、self.loss_func等属性。注意BaseLoss.__init__中将self.loss_func初始化为lambda: 0，这会覆盖我们下面定义的loss_func方法，因此我们需要删除这个实例属性来恢复方法的正常调用。
         # BaseLoss.__init__ sets self.loss_func = lambda: 0 as instance attr,
         # which shadows our loss_func method. Delete it to restore method lookup.
         del self.loss_func
@@ -86,26 +86,24 @@ class RenderLoss(BaseLoss):
         self.vis_dir = vis_dir
         self.vis_every = vis_every
 
-        # dynamic classes — depth loss unreliable for moving objects
-        self.dynamic_classes = torch.tensor([2, 3, 4, 5, 6, 7, 9, 10])
 
         # class frequency weights for balanced CE loss (nuScenes 17 classes)
         nusc_class_freq = torch.tensor([
             944004, 1897170, 152386, 2391677, 16957802, 724139,
             189027, 2074468, 413451, 2384460, 5916653, 175883646,
             4275424, 51393615, 61411620, 105975596, 116424404
-        ], dtype=torch.float32)
+        ], dtype=torch.float32)#这是根据nuScenes数据集的统计得到的每个类别的像素频率。我们使用这些频率来计算类别权重，以平衡交叉熵损失中不同类别的重要性。频率较低的类别会得到较高的权重，频率较高的类别会得到较低的权重，从而避免模型过度关注频率较高的类别。
         log_w = torch.log(nusc_class_freq.sum() / nusc_class_freq)
         self.register_buffer('class_weight', log_w / log_w.mean())
 
-        self.loss_fn_ce = nn.CrossEntropyLoss(reduction='none')
+        self.loss_fn_ce = nn.CrossEntropyLoss(reduction='none')#交叉熵损失函数，reduction='none'表示不对损失进行平均或求和，而是返回每个样本的损失值。这是因为我们需要对有效像素应用类别权重后再进行平均。
         # Huber loss is more robust than MSE for depth: quadratic for small errors,
         # linear for large errors. delta=2m is a reasonable threshold for outdoor scenes.
-        self.loss_fn_depth = nn.HuberLoss(delta=2.0, reduction='mean')
+        self.loss_fn_depth = nn.HuberLoss(delta=2.0, reduction='mean')#Huber损失函数，也称为平滑L1损失函数。对于小误差（绝对值小于delta），它与MSE相同，计算平方误差；对于大误差（绝对值大于delta），它计算线性误差，即绝对值减去delta。这使得Huber损失对异常值更鲁棒，因为它不会像MSE那样对大误差产生过大的梯度。delta=2.0表示我们认为2米以内的深度误差是合理的，而超过2米的误差可能是异常值，我们希望降低它们的影响。
 
     def forward(self, inputs):
         """Override BaseLoss.forward to return (total, sub_dict) for separate logging."""
-        actual_inputs = {}
+        actual_inputs = {}#这里我们根据self.input_dict中定义的键值对，从inputs字典中提取对应的输入张量，并存储在actual_inputs字典中。这样做的目的是为了将输入张量的名称与loss_func方法中的参数名称进行映射，使得我们可以灵活地指定输入张量的来源，而不需要在loss_func方法中硬编码输入张量的名称。
         for input_key, input_val in self.input_dict.items():
             actual_inputs.update({input_key: inputs[input_val]})
         loss_sem, loss_depth = self.loss_func(**actual_inputs)
@@ -134,7 +132,7 @@ class RenderLoss(BaseLoss):
         pred_sem = rendered_sem.flatten(0, -2)     # (N, 17)
         target_sem = pseudo_seg.flatten().long()    # (N,)
         valid_sem = target_sem > 0
-        if valid_sem.any():
+        if valid_sem.any():#如果存在有效的语义标签像素，我们首先根据target_sem中的类别索引，从self.class_weight中获取对应的类别权重pw。由于pseudo_seg中的标签是从1到17的，而self.class_weight是从0到16的，所以我们需要使用target_sem[valid_sem]作为索引来获取权重。然后，我们计算交叉熵损失self.loss_fn_ce(pred_sem[valid_sem], target_sem[valid_sem])，并乘以类别权重pw和语义损失权重self.sem_lw，最后对所有有效像素的损失进行平均，得到最终的语义损失loss_sem。
             pw = self.class_weight[target_sem[valid_sem]]
             # pseudo_seg labels 1-16 directly correspond to Gaussian semantic channels 1-16
             # (channel 0 = noise/others in OccupancyLoss, not supervised by RenderLoss)
@@ -148,14 +146,11 @@ class RenderLoss(BaseLoss):
         # ── depth loss ──depth是指渲染结果的深度图，pseudo_depth是指根据点云生成的伪标签深度图。rendered_depth和pseudo_depth都是(B, nC, H, W)的形状，其中nC是相机数量，H和W是图像的高和宽。depth loss是计算rendered_depth和pseudo_depth之间的均方误差损失，注意pseudo_depth中的0表示无效像素，不参与损失计算。
         pred_d = rendered_depth.flatten()
         target_d = pseudo_depth.flatten()
-        dyn_mask = torch.isin(
-            pseudo_seg.flatten(),
-            self.dynamic_classes.to(pseudo_seg.device)
-        )
-        # Also require pred_d > 0: pixels with no Gaussian coverage have rendered_depth=0.
-        # Computing loss against a valid target there (e.g. MSE(0, 15m)=225) creates
-        # spurious gradients. Only supervise pixels where Gaussians actually render.
-        valid_d = (target_d > 0.5) & (pred_d.detach() > 0) & ~dyn_mask
+        # Only exclude pixels with no valid GT depth and pixels where Gaussians
+        # haven't rendered anything (pred_d=0 → spurious MSE gradient).
+        # Dynamic classes are NOT excluded: Metric3D is single-frame so moving
+        # object depth is valid for the current frame. GaussianFlowOcc does the same.
+        valid_d = (target_d > 0.5) & (pred_d.detach() > 0)
         if valid_d.any():
             loss_depth = self.depth_lw * self.loss_fn_depth(
                 pred_d[valid_d], target_d[valid_d]
