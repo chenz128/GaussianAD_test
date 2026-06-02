@@ -1657,14 +1657,22 @@ class NuScenesDataset(Dataset):
             gs_intrins[:, 1, 2] *= scale  # cy
             gs_intrins[:, 1, 2] -= crop_top  # cy adjust for crop
 
-            # ego2cam extrinsics
-            cam2ego = input_dict['cam2ego']  # (6, 4, 4)
-            ego2cam = np.linalg.inv(cam2ego)  # (6, 4, 4)
+            # lidar2cam extrinsics — gaussians live in LIDAR frame (config uses
+            # use_ego=False → projection_mat=lidar2img; temporal encoder uses
+            # lidar2global). LIDAR_TOP is offset from ego (~+0.94m fwd, +1.84m up),
+            # so using ego2cam directly causes a systematic translation error in
+            # render. lidar2cam = ego2cam @ lidar2ego.
+            cam2ego = np.asarray(input_dict['cam2ego'])  # (6, 4, 4)
+            ego2cam = np.linalg.inv(cam2ego)             # (6, 4, 4)
+            lidar2ego = np.eye(4, dtype=np.float64)
+            lidar2ego[:3, :3] = Quaternion(info['lidar2ego_rotation']).rotation_matrix
+            lidar2ego[:3, 3] = np.asarray(info['lidar2ego_translation'])
+            lidar2cam = ego2cam @ lidar2ego[None]        # (6, 4, 4)
 
             return_dict['pseudo_seg'] = pseudo_seg           # (6, H', W')
             return_dict['pseudo_depth'] = pseudo_depth       # (6, H', W')
             return_dict['gs_intrins'] = torch.from_numpy(gs_intrins).float()  # (6, 3, 3)
-            return_dict['gs_extrins'] = torch.from_numpy(ego2cam).float()     # (6, 4, 4)
+            return_dict['gs_extrins'] = torch.from_numpy(lidar2cam).float()   # (6, 4, 4)
             return_dict['aug_flip'] = aug_flip               # bool
 
         return return_dict
