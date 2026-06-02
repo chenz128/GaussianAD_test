@@ -1324,13 +1324,21 @@ class NuScenesDataset(Dataset):
                 s['token']: s['name'] for s in self.nusc.scene
             }
             # pseudo label camera order (how npy files are saved)
-            self._pseudo_cam_order = [
+            # grounded_sam and metric_3d use DIFFERENT camera orders!
+            self._seg_cam_order = [
                 'CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_BACK_LEFT',
                 'CAM_BACK', 'CAM_BACK_RIGHT', 'CAM_FRONT_RIGHT'
             ]
-            # reorder indices: from pseudo_cam_order to sensor_types
-            self._pseudo_reorder = [
-                self._pseudo_cam_order.index(c) for c in self.sensor_types
+            self._depth_cam_order = [
+                'CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
+                'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT'
+            ]
+            # reorder indices: from each pseudo_cam_order to sensor_types
+            self._seg_reorder = [
+                self._seg_cam_order.index(c) for c in self.sensor_types
+            ]
+            self._depth_reorder = [
+                self._depth_cam_order.index(c) for c in self.sensor_types
             ]
 
         self.__getitem__(0)
@@ -1611,8 +1619,8 @@ class NuScenesDataset(Dataset):
             pseudo_depth = torch.from_numpy(np.load(depth_path).astype(np.float32)) # (6, 900, 1600)
 
             # reorder cameras to match sensor_types order
-            pseudo_seg = pseudo_seg[self._pseudo_reorder]
-            pseudo_depth = pseudo_depth[self._pseudo_reorder]
+            pseudo_seg = pseudo_seg[self._seg_reorder]
+            pseudo_depth = pseudo_depth[self._depth_reorder]
 
             # downsample
             if scale != 1.0:
