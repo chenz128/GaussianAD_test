@@ -48,6 +48,7 @@ optimizer = dict(
     )
 )
 grad_max_norm = 35
+max_epochs = 20
 
 # ========= loss config ================
 loss = dict(
