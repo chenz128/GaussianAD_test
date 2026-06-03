@@ -239,7 +239,9 @@ class RenderLoss(BaseLoss):
                 if input_imgs is not None:
                     try:
                         # input_imgs: (B, F, N, C, H_img, W_img) — augmented (may be flipped)
-                        img_t = input_imgs[0, -1, cam].detach().cpu().float().numpy()  # (C, H_img, W_img)
+                        # Frame ordering: imgs[:, 0] = current frame t, imgs[:, -1] = oldest t-(F-1).
+                        # Pseudo labels are for current frame t, so always use index 0.
+                        img_t = input_imgs[0, 0, cam].detach().cpu().float().numpy()  # (C, H_img, W_img)
                         img_t = img_t.transpose(1, 2, 0)  # (H_img, W_img, C)
                         # un-normalize: ImageNet mean/std, RGB
                         img_t = img_t * np.array([58.395, 57.12, 57.375], dtype=np.float32) \
