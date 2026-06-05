@@ -10,3 +10,4 @@ from .map_loss import PtsL1Loss, OrderedPtsL1Cost
 from .plan_loss import PlanLoss
 from .occupancy_loss_flow import OccupancyFlowLoss
 from .render_loss import RenderLoss
+from .gaussian_reg_loss import GaussianRegLoss
