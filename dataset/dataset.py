@@ -1239,6 +1239,7 @@ class NuScenesDataset(Dataset):
         pseudo_label_scale=0.44,
         max_pseudo_depth=40.0,
         pseudo_label_crop_top=140,
+        render_num_frames=1,
     ):
         self.data_path = data_root
         data = mmengine.load(imageset)
@@ -1317,6 +1318,10 @@ class NuScenesDataset(Dataset):
         self.pseudo_label_scale = pseudo_label_scale
         self.max_pseudo_depth = max_pseudo_depth
         self.pseudo_label_crop_top = pseudo_label_crop_top
+        # number of frames to render Gaussians into for multi-view temporal
+        # supervision (1 = current frame only, >1 adds t-1, t-2, ... history
+        # cameras to break single-view depth ambiguity via parallax).
+        self.render_num_frames = render_num_frames
         self.use_pseudo_label = (metric3d_root is not None and grounded_sam_root is not None)
         if self.use_pseudo_label:
             # build scene_token -> scene_name mapping
@@ -1340,6 +1345,13 @@ class NuScenesDataset(Dataset):
             self._depth_reorder = [
                 self._depth_cam_order.index(c) for c in self.sensor_types
             ]
+            # dynamic (movable) classes in pseudo_seg (1-indexed labels matching
+            # Gaussian channels): bicycle(2), bus(3), car(4), construction_veh(5),
+            # motorcycle(6), pedestrian(7), trailer(9), truck(10). On HISTORY render
+            # frames these objects have moved, so the current-frame Gaussians no
+            # longer project onto them — mask them out to keep multi-frame
+            # supervision geometrically consistent (static background only).
+            self._dynamic_classes = torch.tensor([2, 3, 4, 5, 6, 7, 9, 10])
 
         self.__getitem__(0)
         self.eval_version='detection_cvpr_2019'
@@ -1605,37 +1617,45 @@ class NuScenesDataset(Dataset):
             "lidar2ego_translation":info['lidar2ego_translation'],},
         })
 
-        # ── pseudo label loading ──
+        # ── pseudo label loading (multi-frame temporal rendering supervision) ──
         if self.use_pseudo_label:
-            sample_token = info['token']
-            scene_name = self._scene_token_to_name[info['scene_token']]
             scale = self.pseudo_label_scale
             crop_top = self.pseudo_label_crop_top
 
-            # load raw pseudo labels (6, 900, 1600) in pseudo_cam_order
-            seg_path = os.path.join(self.grounded_sam_root, scene_name, f'{sample_token}.npy')
-            depth_path = os.path.join(self.metric3d_root, scene_name, f'{sample_token}.npy')
-            pseudo_seg = torch.from_numpy(np.load(seg_path).astype(np.int64))      # (6, 900, 1600)
-            pseudo_depth = torch.from_numpy(np.load(depth_path).astype(np.float32)) # (6, 900, 1600)
+            # current frame's lidar2global — Gaussians live in the current LIDAR
+            # frame, so this is the reference world for the render extrinsics.
+            lidar2global_cur = np.asarray(input_dict['lidar2global'])  # (4, 4)
 
-            # reorder cameras to match sensor_types order
-            pseudo_seg = pseudo_seg[self._seg_reorder]
-            pseudo_depth = pseudo_depth[self._depth_reorder]
+            # raw scene infos: [current, t-1, t-2, ...] up to render_num_frames
+            render_frames = self._collect_render_frames(
+                scene_token, index, self.render_num_frames)
 
-            # downsample
-            if scale != 1.0:
-                pseudo_seg = F.interpolate(pseudo_seg[:, None].float(), scale_factor=scale, mode='nearest').squeeze(1).long()
-                pseudo_depth = F.interpolate(pseudo_depth[:, None], scale_factor=scale, mode='bilinear', align_corners=False).squeeze(1)
+            seg_list, depth_list, intr_list, extr_list = [], [], [], []
+            for fi, frame_info in enumerate(render_frames):
+                is_history = fi > 0
+                f_scene = self._scene_token_to_name[frame_info['scene_token']]
+                f_token = frame_info['token']
+                # load + process pseudo labels (mask dynamic classes on history
+                # frames where moving objects no longer align with the Gaussians)
+                pseg, pdep = self._process_pseudo_labels(
+                    f_scene, f_token, scale, crop_top, mask_dynamic=is_history)
+                # render intrinsics (sensor_types order) for this frame
+                gs_intr = self._build_render_intrins(frame_info, scale, crop_top)  # (6,3,3)
+                # render extrinsics: current-frame Gaussians (LIDAR) → this frame's cams
+                gs_extr = self._build_render_extrins(frame_info, lidar2global_cur)  # (6,4,4)
 
-            # crop top
-            if crop_top > 0:
-                pseudo_seg = pseudo_seg[:, crop_top:]
-                pseudo_depth = pseudo_depth[:, crop_top:]
+                seg_list.append(pseg)
+                depth_list.append(pdep)
+                intr_list.append(torch.from_numpy(gs_intr).float())
+                extr_list.append(torch.from_numpy(gs_extr).float())
 
-            # mask out far depth regions
-            far_mask = pseudo_depth > self.max_pseudo_depth
-            pseudo_seg[far_mask] = 0
-            pseudo_depth[far_mask] = 0.0
+            # stack along the camera dim → (T*6, ...). The rasterizer is
+            # camera-count agnostic and simply renders the same Gaussians into all
+            # T*6 views; the loss flattens over all of them.
+            pseudo_seg = torch.cat(seg_list, dim=0)        # (T*6, H', W')
+            pseudo_depth = torch.cat(depth_list, dim=0)    # (T*6, H', W')
+            gs_intrins = torch.cat(intr_list, dim=0)       # (T*6, 3, 3)
+            gs_extrins = torch.cat(extr_list, dim=0)       # (T*6, 4, 4)
 
             # NOTE: Do NOT flip pseudo_seg/pseudo_depth here.
             # gsplat rendering uses ORIGINAL (un-flipped) camera intrinsics/extrinsics,
@@ -1648,34 +1668,112 @@ class NuScenesDataset(Dataset):
             if aug_configs is not None:
                 _, _, _, aug_flip, _ = aug_configs
 
-            # compute render intrinsics from original cam_intrinsic (before aug)
-            # ori_intrinsic is (6, 4, 4) in sensor_types order
-            gs_intrins = input_dict['ori_intrinsic'][:, :3, :3].copy()  # (6, 3, 3)
-            gs_intrins[:, 0, 0] *= scale  # fx
-            gs_intrins[:, 1, 1] *= scale  # fy
-            gs_intrins[:, 0, 2] *= scale  # cx
-            gs_intrins[:, 1, 2] *= scale  # cy
-            gs_intrins[:, 1, 2] -= crop_top  # cy adjust for crop
-
-            # lidar2cam extrinsics — gaussians live in LIDAR frame (config uses
-            # use_ego=False → projection_mat=lidar2img; temporal encoder uses
-            # lidar2global). LIDAR_TOP is offset from ego (~+0.94m fwd, +1.84m up),
-            # so using ego2cam directly causes a systematic translation error in
-            # render. lidar2cam = ego2cam @ lidar2ego.
-            cam2ego = np.asarray(input_dict['cam2ego'])  # (6, 4, 4)
-            ego2cam = np.linalg.inv(cam2ego)             # (6, 4, 4)
-            lidar2ego = np.eye(4, dtype=np.float64)
-            lidar2ego[:3, :3] = Quaternion(info['lidar2ego_rotation']).rotation_matrix
-            lidar2ego[:3, 3] = np.asarray(info['lidar2ego_translation'])
-            lidar2cam = ego2cam @ lidar2ego[None]        # (6, 4, 4)
-
-            return_dict['pseudo_seg'] = pseudo_seg           # (6, H', W')
-            return_dict['pseudo_depth'] = pseudo_depth       # (6, H', W')
-            return_dict['gs_intrins'] = torch.from_numpy(gs_intrins).float()  # (6, 3, 3)
-            return_dict['gs_extrins'] = torch.from_numpy(lidar2cam).float()   # (6, 4, 4)
+            return_dict['pseudo_seg'] = pseudo_seg           # (T*6, H', W')
+            return_dict['pseudo_depth'] = pseudo_depth       # (T*6, H', W')
+            return_dict['gs_intrins'] = gs_intrins           # (T*6, 3, 3)
+            return_dict['gs_extrins'] = gs_extrins           # (T*6, 4, 4)
             return_dict['aug_flip'] = aug_flip               # bool
 
         return return_dict
+
+    # ── multi-frame rendering supervision helpers ──
+    def _collect_render_frames(self, scene_token, index, num_frames):
+        """Return raw scene infos [current, t-1, t-2, ...] for render supervision.
+
+        Mirrors collect_sweeps but returns the RAW scene_infos entries (which carry
+        token / scene_token / calib / pose), clamping at the scene start.
+        """
+        keyframes = self.keyframes_[scene_token]
+        sample_idx = keyframes.index((scene_token, index))
+        frames = []
+        for i in range(num_frames):
+            j = sample_idx - i
+            st, idx = keyframes[j] if j >= 0 else keyframes[0]
+            frames.append(self.scene_infos[st][idx])
+        return frames
+
+    def _process_pseudo_labels(self, scene_name, sample_token, scale, crop_top, mask_dynamic):
+        """Load + downsample + crop + far/dynamic-mask pseudo labels for one frame.
+
+        Returns (pseudo_seg (6,H',W') long, pseudo_depth (6,H',W') float), both in
+        sensor_types camera order. mask_dynamic zeros movable-object pixels (used on
+        history frames where moving objects no longer align with current Gaussians).
+        """
+        seg_path = os.path.join(self.grounded_sam_root, scene_name, f'{sample_token}.npy')
+        depth_path = os.path.join(self.metric3d_root, scene_name, f'{sample_token}.npy')
+        pseudo_seg = torch.from_numpy(np.load(seg_path).astype(np.int64))       # (6, 900, 1600)
+        pseudo_depth = torch.from_numpy(np.load(depth_path).astype(np.float32)) # (6, 900, 1600)
+
+        # reorder cameras to match sensor_types order
+        pseudo_seg = pseudo_seg[self._seg_reorder]
+        pseudo_depth = pseudo_depth[self._depth_reorder]
+
+        # downsample
+        if scale != 1.0:
+            pseudo_seg = F.interpolate(pseudo_seg[:, None].float(), scale_factor=scale, mode='nearest').squeeze(1).long()
+            pseudo_depth = F.interpolate(pseudo_depth[:, None], scale_factor=scale, mode='bilinear', align_corners=False).squeeze(1)
+
+        # crop top
+        if crop_top > 0:
+            pseudo_seg = pseudo_seg[:, crop_top:]
+            pseudo_depth = pseudo_depth[:, crop_top:]
+
+        # mask out far depth regions
+        far_mask = pseudo_depth > self.max_pseudo_depth
+        pseudo_seg[far_mask] = 0
+        pseudo_depth[far_mask] = 0.0
+
+        # mask out movable objects on history frames (geometric inconsistency)
+        if mask_dynamic:
+            dyn_mask = torch.isin(pseudo_seg, self._dynamic_classes)
+            pseudo_seg[dyn_mask] = 0
+            pseudo_depth[dyn_mask] = 0.0
+
+        return pseudo_seg, pseudo_depth
+
+    def _build_render_intrins(self, frame_info, scale, crop_top):
+        """Render intrinsics (6,3,3) for a frame, scaled + crop-adjusted, in
+        sensor_types camera order."""
+        intr = np.zeros((len(self.sensor_types), 3, 3), dtype=np.float64)
+        for ci, cam in enumerate(self.sensor_types):
+            intr[ci] = np.asarray(frame_info['data'][cam]['calib']['camera_intrinsic'], dtype=np.float64)
+        intr[:, 0, 0] *= scale  # fx
+        intr[:, 1, 1] *= scale  # fy
+        intr[:, 0, 2] *= scale  # cx
+        intr[:, 1, 2] *= scale  # cy
+        intr[:, 1, 2] -= crop_top  # cy adjust for crop
+        return intr
+
+    def _build_render_extrins(self, frame_info, lidar2global_cur):
+        """Render extrinsics (6,4,4) mapping current-frame Gaussians (in the current
+        LIDAR frame) into this frame's cameras:
+
+            gs_extrins = lidar2cam_f @ inv(lidar2global_f) @ lidar2global_cur
+
+        For the current frame this reduces to lidar2cam (inv(L2G)@L2G = I), matching
+        the original single-frame behavior. LIDAR_TOP is offset from ego, so we use
+        lidar2cam = ego2cam @ lidar2ego (not ego2cam alone).
+        """
+        # this frame's lidar2global and lidar2ego (from LIDAR_TOP calib/pose)
+        lidar2global_f = get_lidar2global(
+            frame_info['data']['LIDAR_TOP']['calib'],
+            frame_info['data']['LIDAR_TOP']['pose'])
+        lidar2ego = np.eye(4, dtype=np.float64)
+        lidar2ego[:3, :3] = Quaternion(frame_info['data']['LIDAR_TOP']['calib']['rotation']).rotation_matrix
+        lidar2ego[:3, 3] = np.asarray(frame_info['data']['LIDAR_TOP']['calib']['translation']).T
+
+        # current LIDAR → this frame's LIDAR
+        cur2frame_lidar = np.linalg.inv(lidar2global_f) @ lidar2global_cur  # (4,4)
+
+        extr = np.zeros((len(self.sensor_types), 4, 4), dtype=np.float64)
+        for ci, cam in enumerate(self.sensor_types):
+            cam2ego = np.eye(4, dtype=np.float64)
+            cam2ego[:3, :3] = Quaternion(frame_info['data'][cam]['calib']['rotation']).rotation_matrix
+            cam2ego[:3, 3] = np.asarray(frame_info['data'][cam]['calib']['translation']).T
+            ego2cam = np.linalg.inv(cam2ego)
+            lidar2cam = ego2cam @ lidar2ego               # frame LIDAR → frame cam
+            extr[ci] = lidar2cam @ cur2frame_lidar         # current LIDAR → frame cam
+        return extr
 
     def get_data_info(self, info):
         image_paths = []

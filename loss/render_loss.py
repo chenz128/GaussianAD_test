@@ -106,6 +106,12 @@ class RenderLoss(BaseLoss):
         actual_inputs = {}#这里我们根据self.input_dict中定义的键值对，从inputs字典中提取对应的输入张量，并存储在actual_inputs字典中。这样做的目的是为了将输入张量的名称与loss_func方法中的参数名称进行映射，使得我们可以灵活地指定输入张量的来源，而不需要在loss_func方法中硬编码输入张量的名称。
         for input_key, input_val in self.input_dict.items():
             actual_inputs.update({input_key: inputs[input_val]})
+        # eval mode: rendering skipped (rendered_sem=None) or val set has no pseudo
+        # labels. Return a Python float 0.0 so MultiLoss can sum it with other GPU
+        # losses (e.g. GaussianRegLoss) without a CPU/GPU device mismatch.
+        if actual_inputs.get('rendered_sem') is None or actual_inputs.get('rendered_depth') is None \
+                or actual_inputs.get('pseudo_seg') is None or actual_inputs.get('pseudo_depth') is None:
+            return 0.0, {'RenderSemLoss': 0.0, 'RenderDepthLoss': 0.0}
         loss_sem, loss_depth = self.loss_func(**actual_inputs)
         total = self.weight * (loss_sem + loss_depth)
         return total, {
@@ -208,8 +214,13 @@ class RenderLoss(BaseLoss):
         try:
             os.makedirs(self.vis_dir, exist_ok=True)
             B, nC, H, W, _ = rendered_sem.shape
+            # Multi-frame supervision stacks T*6 cameras as [current_6, t-1_6, ...].
+            # Only visualize the current frame's 6 cameras: they have matching
+            # input_imgs and keep a consistent 5-column layout (history rows have
+            # no input image, which would break the row-width concatenation).
+            n_vis_cams = min(nC, 6)
             rows = []
-            for cam in range(nC):
+            for cam in range(n_vis_cams):
                 # 语义：渲染预测 argmax — model class 0=noise, 1=barrier, ..., 16=vegetation
                 pred_cls = rendered_sem[0, cam].detach().cpu().argmax(dim=-1).numpy()  # (H, W)
                 pred_sem_rgb = np.where(
