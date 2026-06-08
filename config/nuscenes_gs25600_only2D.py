@@ -61,3 +61,24 @@ loss_input_convertion = dict(
 train_dataset_config = dict(
     render_num_frames=3,
 )
+
+# ========= 纯 2D 提速：跳过所有非 2D 渲染的下游计算 =========
+# 纯 2D 弱监督下，3D 检测 decoder（VoxelNeXt，含全流程最重的 spconv backbone）、
+# 地图 decoder（MapTRv2）、规划 planner，以及 GaussianHead 内的 3D occ aggregator
+# 和 6 步 forward_flow，其输出都不被 only2D 的 loss（RenderLoss + GaussianRegLoss）
+# 消费，是纯浪费的前向/反向计算。only_2d 开关把它们全部跳过，只保留
+# backbone→lifter→encoder→temporal→gsplat 2D 渲染这一条链路。
+model = dict(
+    only_2d=True,
+    head=dict(
+        only_2d=True,
+        # 关掉 empty gaussian：only_2d 路径不走 prepare_gaussian_args，
+        # empty_scalar 会变成 DDP 的 unused 可训练参数（多卡 find_unused=False 会报错），
+        # 这里直接不创建它。
+        with_empty=False,
+    ),
+)
+
+# decoder 未参与 only_2d 前向，需冻结以免成为 DDP unused 可训练参数。
+# map_decoder / planner_head 在 2D 基类里已冻结，这里补上 decoder。
+frozen_modules = ['decoder', 'map_decoder', 'planner_head']

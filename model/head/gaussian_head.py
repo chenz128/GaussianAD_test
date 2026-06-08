@@ -20,11 +20,15 @@ class GaussianHead(BaseTaskHead):
         dataset_type='nusc',
         empty_label=17,
         render_config=None,
+        only_2d=False,
         **kwargs,
     ):
         super().__init__(init_cfg)
 
         self.num_classes = num_classes
+        # Pure 2D pseudo-label supervision: skip the 3D occ LocalAggregator and
+        # the 6-step forward_flow (both produce outputs no only-2D loss reads).
+        self.only_2d = only_2d
         self.aggregator = LocalAggregator(**cuda_kwargs)
         if with_empty:
             self.empty_scalar = nn.Parameter(torch.ones(1, dtype=torch.float)*10)
@@ -163,6 +167,25 @@ class GaussianHead(BaseTaskHead):
         metas=None,
         **kwargs
     ):
+        gaussians = representation_temp['gaussian']
+
+        if self.only_2d:
+            # Pure 2D supervision: only run the gsplat 2D renderer; skip the 3D
+            # occ aggregator and the 6-step forward_flow entirely. ``gaussian``
+            # is still exposed for GaussianRegLoss.
+            output = {'gaussian': gaussians}
+            if self.rasterizer_2d is not None:
+                if self.training:
+                    gs_extrins = metas['gs_extrins'].to(self.zero_tensor.device)
+                    gs_intrins = metas['gs_intrins'].to(self.zero_tensor.device)
+                    rendered_sem, rendered_depth = self.rasterizer_2d(
+                        gaussians, gs_extrins, gs_intrins)
+                else:
+                    rendered_sem, rendered_depth = None, None
+                output['rendered_sem'] = rendered_sem
+                output['rendered_depth'] = rendered_depth
+            return output
+
         prediction = []
         occ_xyz = metas['occ_xyz'].to(self.zero_tensor.device)
         occ_label = metas['occ_label'].to(self.zero_tensor.device)

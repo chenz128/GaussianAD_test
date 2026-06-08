@@ -16,6 +16,7 @@ class BEVSegmentor(CustomBaseSegmentor):
         extra_img_backbone=None,
         backbone_fp16=False,
         history_no_grad=False,
+        only_2d=False,
         # use_post_fusion=False,
         **kwargs,
     ):
@@ -26,6 +27,12 @@ class BEVSegmentor(CustomBaseSegmentor):
         self.freeze_img_neck = freeze_img_neck
         self.img_backbone_out_indices = img_backbone_out_indices
         self.backbone_fp16 = backbone_fp16
+        # Pure 2D pseudo-label supervision: skip the 3D detection decoder,
+        # map decoder and planner head entirely. Their outputs are never
+        # consumed by the only-2D losses (RenderLoss + GaussianRegLoss), so
+        # running them is pure wasted compute (the detection spconv backbone
+        # is the heaviest part of the whole pipeline).
+        self.only_2d = only_2d
         # Optimization: when True, during training the backbone+encoder forward
         # for historical frames (all frames except the last/current one) runs
         # under torch.no_grad(), so they do not store activations nor receive
@@ -240,15 +247,16 @@ class BEVSegmentor(CustomBaseSegmentor):
             outs = self.temporal_encoder(**results)
             results.update(outs)
 
-        outs = self.decoder(results)
-        results.update(outs)
-        if hasattr(self, 'map_decoder'):
-            # TODO 需要直接传入gt数据，4个
-            outs = self.map_decoder(results)
+        if not self.only_2d:
+            outs = self.decoder(results)
             results.update(outs)
+            if hasattr(self, 'map_decoder'):
+                # TODO 需要直接传入gt数据，4个
+                outs = self.map_decoder(results)
+                results.update(outs)
 
-        outs = self.planner_head(results)
-        results.update(outs)
+            outs = self.planner_head(results)
+            results.update(outs)
 
         outs = self.head(**results)
         results.update(outs)
