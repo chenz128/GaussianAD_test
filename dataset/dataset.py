@@ -1727,11 +1727,15 @@ class NuScenesDataset(Dataset):
         pseudo_seg[far_mask] = 0
         pseudo_depth[far_mask] = 0.0
 
-        # mask out movable objects on history frames (geometric inconsistency)
+        # mask out movable objects' SEMANTICS on history frames (geometric
+        # inconsistency: current-frame Gaussians warped to a history viewpoint land
+        # at the wrong pixel for moving objects). Depth is intentionally NOT masked:
+        # Metric3D is a per-frame depth estimate, and keeping the history-frame depth
+        # supervision preserves the strongest multi-frame parallax signal (near, fast
+        # objects), which we want to constrain the degenerate ground-plane depth.
         if mask_dynamic:
             dyn_mask = torch.isin(pseudo_seg, self._dynamic_classes)
             pseudo_seg[dyn_mask] = 0
-            pseudo_depth[dyn_mask] = 0.0
 
         return pseudo_seg, pseudo_depth
 
