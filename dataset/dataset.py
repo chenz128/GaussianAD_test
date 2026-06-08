@@ -1622,13 +1622,17 @@ class NuScenesDataset(Dataset):
             scale = self.pseudo_label_scale
             crop_top = self.pseudo_label_crop_top
 
-            # current frame's lidar2global — Gaussians live in the current LIDAR
-            # frame, so this is the reference world for the render extrinsics.
-            lidar2global_cur = np.asarray(input_dict['lidar2global'])  # (4, 4)
-
             # raw scene infos: [current, t-1, t-2, ...] up to render_num_frames
             render_frames = self._collect_render_frames(
                 scene_token, index, self.render_num_frames)
+
+            # current frame's lidar2global — Gaussians live in the current LIDAR
+            # frame, so this is the reference world for the render extrinsics.
+            # Compute from the RAW current-frame info (render_frames[0]); do NOT use
+            # input_dict['lidar2global'], which the pipeline stacks to (num_frames,4,4).
+            lidar2global_cur = get_lidar2global(
+                render_frames[0]['data']['LIDAR_TOP']['calib'],
+                render_frames[0]['data']['LIDAR_TOP']['pose'])  # (4, 4)
 
             seg_list, depth_list, intr_list, extr_list = [], [], [], []
             for fi, frame_info in enumerate(render_frames):
