@@ -33,7 +33,8 @@ class GaussianRasterizer2D(nn.Module):
         self.loss_fn_ce = nn.CrossEntropyLoss(reduction='none')
         self.loss_fn_depth = nn.MSELoss()
 
-    def render(self, means, quats, scales, opacities, semantics, gs_extrins, gs_intrins):
+    def render(self, means, quats, scales, opacities, semantics, gs_extrins, gs_intrins,
+               dynamic=None):
         """
         Render 3D Gaussians to all cameras for one batch element.
 
@@ -45,28 +46,40 @@ class GaussianRasterizer2D(nn.Module):
             semantics:  (G, 17)
             gs_extrins: (nC, 4, 4)  ego2cam
             gs_intrins: (nC, 3, 3)  render intrinsics
+            dynamic:    (G, 1) or None  raw dynamic logit per gaussian
 
         Returns:
-            rendered_sem:   (nC, H, W, 17)
-            rendered_depth: (nC, H, W)
+            rendered_sem:     (nC, H, W, 17)
+            rendered_depth:   (nC, H, W)
+            rendered_dynamic: (nC, H, W) or None
         """
+        n_sem = semantics.shape[-1]
+        if dynamic is not None:
+            colors = torch.cat([semantics, dynamic], dim=-1)  # (G, 17+1)
+        else:
+            colors = semantics
         # rasterize all cameras at once
         rendered, _, _ = rasterization(
             means=means,
             quats=quats,
             scales=scales,
             opacities=opacities,
-            colors=semantics,
+            colors=colors,
             viewmats=gs_extrins,
             Ks=gs_intrins,
             width=self.width,
             height=self.height,
             render_mode='RGB+D',
         )
-        # rendered: (nC, H, W, 18) — first 17 channels are semantics, last is depth
-        rendered_sem = rendered[..., :17]    # (nC, H, W, 17)
-        rendered_depth = rendered[..., 17]   # (nC, H, W)
-        return rendered_sem, rendered_depth
+        # rendered: (nC, H, W, C+1) — first n_sem channels semantics, then optional
+        # dynamic channel, last channel is depth
+        rendered_sem = rendered[..., :n_sem]            # (nC, H, W, 17)
+        rendered_depth = rendered[..., -1]              # (nC, H, W)
+        if dynamic is not None:
+            rendered_dynamic = rendered[..., n_sem]     # (nC, H, W)
+        else:
+            rendered_dynamic = None
+        return rendered_sem, rendered_depth, rendered_dynamic
 
     def forward(self, gaussian, gs_extrins, gs_intrins):
         """
@@ -75,13 +88,16 @@ class GaussianRasterizer2D(nn.Module):
             gs_extrins:  (B, nC, 4, 4)
             gs_intrins:  (B, nC, 3, 3)
         Returns:
-            rendered_sem:   (B, nC, H, W, 17)
-            rendered_depth: (B, nC, H, W)
+            rendered_sem:     (B, nC, H, W, 17)
+            rendered_depth:   (B, nC, H, W)
+            rendered_dynamic: (B, nC, H, W) or None
         """
         B = gaussian.means.shape[0]
-        all_sem, all_depth = [], []
+        has_dyn = getattr(gaussian, 'dynamic_logits', None) is not None
+        all_sem, all_depth, all_dyn = [], [], []
         for b in range(B):
-            sem_b, depth_b = self.render(
+            dyn_b = gaussian.dynamic_logits[b] if has_dyn else None
+            sem_b, depth_b, rdyn_b = self.render(
                 gaussian.means[b],
                 gaussian.rotations[b],
                 gaussian.scales[b],
@@ -89,10 +105,14 @@ class GaussianRasterizer2D(nn.Module):
                 gaussian.semantics_logits[b],  # use raw logits for proper CE loss
                 gs_extrins[b],
                 gs_intrins[b],
+                dynamic=dyn_b,
             )
             all_sem.append(sem_b)
             all_depth.append(depth_b)
-        return torch.stack(all_sem), torch.stack(all_depth)
+            if rdyn_b is not None:
+                all_dyn.append(rdyn_b)
+        rendered_dynamic = torch.stack(all_dyn) if all_dyn else None
+        return torch.stack(all_sem), torch.stack(all_depth), rendered_dynamic
 
     def compute_loss(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
         """

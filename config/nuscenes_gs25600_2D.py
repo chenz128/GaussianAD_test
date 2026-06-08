@@ -107,6 +107,12 @@ loss = dict(
             vis_dir='out/nuscenes_gs25600_2D/render_vis',
             vis_every=500,
         ),
+        dict(
+            type='DynamicLoss',
+            weight=1.0,
+            pos_weight=5.0,
+            vis_every=500,
+        ),
     ])
 
 loss_input_convertion = dict(
@@ -129,10 +135,15 @@ loss_input_convertion = dict(
     pseudo_depth='pseudo_depth',
     input_imgs='input_imgs',
     aug_flip='aug_flip',
+    # dynamic loss inputs
+    rendered_dynamic='rendered_dynamic',
+    pseudo_dyn='pseudo_dyn',
 )
 
 frozen_modules = ['map_decoder', 'planner_head']
-find_unused_parameters = False
+# temporal_encoder builds 3 refine modules but only the last one's dynamic head
+# is rendered/supervised → the other 2 dynamic heads are unused → need True.
+find_unused_parameters = True
 backbone_fp16 = True
 
 # ========= model config ===============
@@ -184,6 +195,7 @@ train_dataset_config = dict(
     pseudo_label_scale=0.44,
     max_pseudo_depth=40.0,
     pseudo_label_crop_top=140,
+    dynamic_gt_root='data/dynamic_gt_nusc',
 )
 
 model = dict(
@@ -321,6 +333,7 @@ model = dict(
             include_opa=include_opa,
             xyz_coordinate=xyz_coordinate,
             semantics_activation='softplus',
+            use_dynamic=True,
         ),
         spconv_layer=dict(
             type='SparseConv4D',

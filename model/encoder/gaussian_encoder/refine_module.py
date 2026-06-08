@@ -24,10 +24,12 @@ class SparseGaussian3DRefinementModule(BaseModule):
         xyz_coordinate='polar',
         semantics_activation='softmax',
         offset_dim=2*6,
+        use_dynamic=False,
     ):
         super(SparseGaussian3DRefinementModule, self).__init__()
         self.embed_dims = embed_dims
         self.xyz_coordinate = xyz_coordinate
+        self.use_dynamic = use_dynamic
 
         if semantics:
             assert semantic_dim is not None
@@ -64,6 +66,14 @@ class SparseGaussian3DRefinementModule(BaseModule):
             nn.Linear(self.embed_dims, self.output_dim),
             Scale([1.0] * self.output_dim))
 
+        # dynamic/static head: predicts a single raw logit per gaussian (independent
+        # branch, does not touch anchor/output_dim). Rendered to 2D for pseudo-label
+        # dynamic supervision; not used by the 3D occupancy path.
+        if self.use_dynamic:
+            self.dynamic_layers = nn.Sequential(
+                *linear_relu_ln(embed_dims, 1, 1),
+                nn.Linear(self.embed_dims, 1))
+
     def forward(
         self,
         instance_feature: torch.Tensor,
@@ -71,7 +81,9 @@ class SparseGaussian3DRefinementModule(BaseModule):
         anchor_embed: torch.Tensor,
         mask=None
     ):
-        output = self.layers(instance_feature + anchor_embed)
+        feat = instance_feature + anchor_embed
+        output = self.layers(feat)
+        dynamic_logits = self.dynamic_layers(feat) if self.use_dynamic else None
 
         if self.restrict_xyz:
             delta_xyz_sigmoid = output[..., :3]
@@ -126,6 +138,8 @@ class SparseGaussian3DRefinementModule(BaseModule):
         else:
             semantics = semantics_logits
 
+        if dynamic_logits is not None and mask is not None:
+            dynamic_logits = dynamic_logits[mask].unsqueeze(0)
         gaussian = GaussianPrediction(
             means=xyz,
             scales=gs_scales,
@@ -133,6 +147,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
             opacities=safe_sigmoid(output[..., 10: (10 + int(self.include_opa))]),
             semantics=semantics,
             semantics_logits=semantics_logits,
+            dynamic_logits=dynamic_logits,
         )
         offset = output[..., -self.offset_dim:]
         return output, gaussian, offset

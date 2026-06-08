@@ -1239,6 +1239,7 @@ class NuScenesDataset(Dataset):
         pseudo_label_scale=0.44,
         max_pseudo_depth=40.0,
         pseudo_label_crop_top=140,
+        dynamic_gt_root=None,
     ):
         self.data_path = data_root
         data = mmengine.load(imageset)
@@ -1317,6 +1318,7 @@ class NuScenesDataset(Dataset):
         self.pseudo_label_scale = pseudo_label_scale
         self.max_pseudo_depth = max_pseudo_depth
         self.pseudo_label_crop_top = pseudo_label_crop_top
+        self.dynamic_gt_root = dynamic_gt_root
         self.use_pseudo_label = (metric3d_root is not None and grounded_sam_root is not None)
         if self.use_pseudo_label:
             # build scene_token -> scene_name mapping
@@ -1674,6 +1676,17 @@ class NuScenesDataset(Dataset):
             return_dict['gs_intrins'] = torch.from_numpy(gs_intrins).float()  # (6, 3, 3)
             return_dict['gs_extrins'] = torch.from_numpy(lidar2cam).float()   # (6, 4, 4)
             return_dict['aug_flip'] = aug_flip               # bool
+
+            # dynamic/static GT (already at render resolution + sensor_types order)
+            if self.dynamic_gt_root is not None:
+                dyn_path = os.path.join(self.dynamic_gt_root, f'{sample_token}.npy')
+                if os.path.exists(dyn_path):
+                    pseudo_dyn = torch.from_numpy(np.load(dyn_path).astype(np.int64))  # (6, H', W')
+                else:
+                    pseudo_dyn = torch.zeros_like(pseudo_seg)  # missing → all ignore
+                # align: far/invalid pseudo regions also ignored for dynamic
+                pseudo_dyn[far_mask] = 0
+                return_dict['pseudo_dyn'] = pseudo_dyn       # (6, H', W')
 
         return return_dict
 
