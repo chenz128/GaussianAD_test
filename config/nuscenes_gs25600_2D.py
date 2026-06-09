@@ -104,14 +104,14 @@ loss = dict(
             weight=1.0,
             sem_lw=5.0,
             depth_lw=0.5,
-            vis_dir='out/nuscenes_gs25600_2D/render_vis',
+            vis_dir='out/nuscenes_gs25600_dynamic/render_vis',
             vis_every=500,
         ),
         dict(
             type='DynamicLoss',
             weight=1.0,
             pos_weight=30.0,
-            vis_dir='out/nuscenes_gs25600_2D/dynamic_vis',
+            vis_dir='out/nuscenes_gs25600_dynamic/dynamic_vis',
             vis_every=500,
         ),
     ])
