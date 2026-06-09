@@ -40,6 +40,86 @@ SENSOR_TYPES = ['CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_FRONT_LEFT',
                 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
 
 
+def _mat_from_rt(rotation, translation):
+    """四元数 + 平移 → 4x4 齐次变换。"""
+    M = np.eye(4)
+    M[:3, :3] = Quaternion(rotation).rotation_matrix
+    M[:3, 3] = np.asarray(translation)
+    return M
+
+
+def load_sweep_lidar(sweep):
+    """读 sweep（非关键帧）LiDAR 点云 (N,3)，lidar 系。"""
+    p = sweep['data_path']
+    if p.startswith('./'):
+        p = p[2:]
+    pc = np.fromfile(p, dtype=np.float32).reshape(-1, 5)
+    return pc[:, :3]
+
+
+def sweep_l2g(sweep):
+    """sweep lidar → global = ego2global @ sensor2ego，与关键帧 lidar2global 一致。"""
+    e2g = _mat_from_rt(sweep['ego2global_rotation'], sweep['ego2global_translation'])
+    s2e = _mat_from_rt(sweep['sensor2ego_rotation'], sweep['sensor2ego_translation'])
+    return e2g @ s2e
+
+
+def collect_adaptive_neighbors(scene, idx, data_root, target_dt, max_dt=0.5):
+    """按目标时间间隔 target_dt（秒）自适应选邻帧。
+
+    候选池 = 关键帧 ±1/±2 + 当前关键帧的 prev sweeps（过去侧）
+            + 下一关键帧的 prev sweeps（未来侧）。
+    在 past/future 两侧各选最接近 target_dt 与 2*target_dt 的候选（共最多 4 个）。
+    target_dt 由 ego 速度决定：高速 → 小 dt → sweep（压低 radial 视差假阳）；
+    低速 → 大 dt（0.5s）→ 关键帧（保留真动态物位移、检出灵敏）。
+
+    返回 list[(off, (pts_lidar, l2g))]，off=1 标记最近邻（overlay 用）。
+    """
+    t0 = scene[idx]['timestamp']
+    cands = []  # (signed_dt, kind, payload)
+    for off in (-2, -1, 1, 2):
+        j = idx + off
+        if 0 <= j < len(scene):
+            nj = scene[j]
+            dt = (nj['timestamp'] - t0) / 1e6
+            cands.append((dt, 'kf', nj))
+    for sw in scene[idx].get('sweeps', []):
+        dt = (sw['timestamp'] - t0) / 1e6
+        if 1e-3 < abs(dt) <= max_dt + 1e-6:
+            cands.append((dt, 'sw', sw))
+    if idx + 1 < len(scene):
+        for sw in scene[idx + 1].get('sweeps', []):
+            dt = (sw['timestamp'] - t0) / 1e6
+            if 1e-3 < dt <= max_dt + 1e-6:
+                cands.append((dt, 'sw', sw))
+
+    # 两侧各选最接近 target_dt 与 2*target_dt 的候选（按候选索引去重，避免 dict 比较）
+    chosen_idx = []
+    for sign in (-1, 1):
+        side = [(i, c) for i, c in enumerate(cands) if np.sign(c[0]) == sign]
+        if not side:
+            continue
+        for mult in (1.0, 2.0):
+            tgt = min(target_dt * mult, max_dt)
+            i_best = min(side, key=lambda ic: abs(abs(ic[1][0]) - tgt))[0]
+            if i_best not in chosen_idx:
+                chosen_idx.append(i_best)
+
+    chosen = sorted((cands[i] for i in chosen_idx), key=lambda c: abs(c[0]))
+    neighbors = []
+    for rank, (dt, kind, payload) in enumerate(chosen):
+        if kind == 'kf':
+            pts = load_lidar(data_root, payload)
+            l2g = lidar2global_mat(payload['data']['LIDAR_TOP']['calib'],
+                                   payload['data']['LIDAR_TOP']['pose'])
+        else:
+            pts = load_sweep_lidar(payload)
+            l2g = sweep_l2g(payload)
+        off = 1 if rank == 0 else rank + 1   # 最近邻 off=1，供 overlay 选取
+        neighbors.append((off, (pts, l2g)))
+    return neighbors
+
+
 def lidar2cam_mat(cam_calib, lidar_calib):
     """lidar2cam = inv(cam2ego) @ lidar2ego，与 dataset.py pseudo 分支一致。"""
     cam2ego = np.eye(4)
@@ -116,28 +196,20 @@ def gen_one(scene, idx, data_root, args):
     H, W = args.render_h, args.render_w
     out = np.zeros((6, H, W), dtype=np.uint8)
 
-    # 边界帧无邻居 → 整帧 ignore
-    if idx <= 0 or idx >= len(scene) - 1:
+    # 单帧场景无法做时序残差 → 整帧 ignore
+    if len(scene) < 2:
         return out, 'edge'
 
+    # ego 速度自适应时间基线：高速 → 小 dt（sweep，压 radial 视差）；低速 → 0.5s 关键帧
     spd = ego_speed(scene, idx)
-    if spd > args.speed_thresh:
-        return out, f'fast({spd:.1f}m/s)'   # 高速帧整帧 ignore
+    target_dt = float(np.clip(args.dt_budget / max(spd, 0.5), args.min_dt, args.max_dt))
+    neighbors = collect_adaptive_neighbors(scene, idx, data_root, target_dt, args.max_dt)
+    if len(neighbors) == 0:
+        return out, 'edge'
 
     pts_t = load_lidar(data_root, info)
     l2g_t = lidar2global_mat(info['data']['LIDAR_TOP']['calib'],
                              info['data']['LIDAR_TOP']['pose'])
-    neighbors = []
-    for off in range(-args.n_neighbor, args.n_neighbor + 1):
-        if off == 0:
-            continue
-        j = idx + off
-        if 0 <= j < len(scene):
-            ni = scene[j]
-            pts_n = load_lidar(data_root, ni)
-            l2g_n = lidar2global_mat(ni['data']['LIDAR_TOP']['calib'],
-                                     ni['data']['LIDAR_TOP']['pose'])
-            neighbors.append((off, (pts_n, l2g_n)))
 
     is_dyn, score, ground_mask, overlay, pts_t_g, fitness, rmse = generate_dynamic_labels(
         pts_t, l2g_t, neighbors, args.dist_thresh,
@@ -155,7 +227,7 @@ def gen_one(scene, idx, data_root, args):
         out[ci] = project_and_paint(pts_t, is_dyn, l2c, K, H, W,
                                     args.static_radius, args.dyn_radius)
     n_dyn = int((out == 2).sum())
-    return out, f'ok(dyn_px={n_dyn},rmse={rmse:.2f},spd={spd:.1f})'
+    return out, f'ok(dyn_px={n_dyn},rmse={rmse:.2f},spd={spd:.1f},dt={target_dt:.2f})'
 
 
 def main():
@@ -170,10 +242,17 @@ def main():
     parser.add_argument('--dist-thresh', type=float, default=0.3)
     parser.add_argument('--rmse-thresh', type=float, default=0.35,
                         help='ICP inlier_rmse 超此判配准失败 → 整帧 ignore')
+    parser.add_argument('--dt-budget', type=float, default=1.5,
+                        help='位移预算(m)：target_dt = clip(budget/v_ego, min_dt, max_dt)')
+    parser.add_argument('--min-dt', type=float, default=0.15,
+                        help='自适应时间基线下限(s)，约 3 个 sweep')
+    parser.add_argument('--max-dt', type=float, default=0.5,
+                        help='自适应时间基线上限(s)，关键帧间隔')
     parser.add_argument('--speed-thresh', type=float, default=3.0,
-                        help='ego 速度超此判高速帧（径向视差假阳）→ 整帧 ignore')
+                        help='[已弃用] 旧整帧高速门控，自适应基线后不再使用')
     parser.add_argument('--vote-ratio', type=float, default=0.3)
-    parser.add_argument('--n-neighbor', type=int, default=2)
+    parser.add_argument('--n-neighbor', type=int, default=2,
+                        help='[已弃用] 旧固定关键帧邻帧数，改用自适应 sweep 选取')
     parser.add_argument('--static-radius', type=int, default=2)
     parser.add_argument('--dyn-radius', type=int, default=3)
     parser.add_argument('--num-shards', type=int, default=1,
