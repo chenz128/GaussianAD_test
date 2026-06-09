@@ -153,8 +153,12 @@ def paint_disk(mask, u, v, val, radius):
 
 
 def project_and_paint(pts_lidar, is_dyn, lidar2cam, K, H, W,
-                      static_radius, dyn_radius):
-    """投影 lidar 点到 render 平面，画动静圆盘。返回 (H,W) uint8。"""
+                      static_radius, dyn_radius, is_uncertain=None):
+    """投影 lidar 点到 render 平面，画动静圆盘。返回 (H,W) uint8。
+
+    绘制顺序（后画覆盖先画）：静态(1) → 不确定(0,挖 ignore 洞) → 动态(2,最高优先)。
+    is_uncertain：方案1 中被置信度过滤退回的低置信曾动态点，投影成 ignore(0)，不监督。
+    """
     mask = np.zeros((H, W), dtype=np.uint8)
     pts_h = np.concatenate([pts_lidar, np.ones((pts_lidar.shape[0], 1))], axis=1)
     cam = (lidar2cam @ pts_h.T).T            # (N,4)
@@ -164,10 +168,17 @@ def project_and_paint(pts_lidar, is_dyn, lidar2cam, K, H, W,
     uv = uv[:, :2] / np.clip(uv[:, 2:3], 1e-3, None)
     inimg = (uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)
     vis = front & inimg
-    # 先画静态(1)，再画动态(2)覆盖，保证动态优先
-    sta = vis & (~is_dyn)
+    if is_uncertain is None:
+        is_uncertain = np.zeros(pts_lidar.shape[0], dtype=bool)
+    # 1) 静态(1) 铺底（排除动态与不确定点）
+    sta = vis & (~is_dyn) & (~is_uncertain)
     for u, v in uv[sta]:
         paint_disk(mask, u, v, 1, static_radius)
+    # 2) 不确定点 → 画 ignore(0) 盘，挖空该区域（既不教动态也不教静态）
+    unc = vis & is_uncertain
+    for u, v in uv[unc]:
+        paint_disk(mask, u, v, 0, dyn_radius)
+    # 3) 动态(2) 最高优先，覆盖一切
     dyn = vis & is_dyn
     for u, v in uv[dyn]:
         paint_disk(mask, u, v, 2, dyn_radius)
@@ -211,9 +222,11 @@ def gen_one(scene, idx, data_root, args):
     l2g_t = lidar2global_mat(info['data']['LIDAR_TOP']['calib'],
                              info['data']['LIDAR_TOP']['pose'])
 
-    is_dyn, score, ground_mask, overlay, pts_t_g, fitness, rmse = generate_dynamic_labels(
+    is_dyn, score, ground_mask, overlay, pts_t_g, fitness, rmse, is_uncertain = generate_dynamic_labels(
         pts_t, l2g_t, neighbors, args.dist_thresh,
-        use_icp=True, vote_ratio=args.vote_ratio)
+        use_icp=True, vote_ratio=args.vote_ratio,
+        min_dyn_cluster=args.min_dyn_cluster, strong_abs=args.strong_abs,
+        max_dyn_range=args.max_dyn_range)
 
     # 配准失败帧 → 整帧 ignore（rmse 与车速无关，是可靠门控）
     if rmse > args.rmse_thresh:
@@ -225,9 +238,10 @@ def gen_one(scene, idx, data_root, args):
         l2c = lidar2cam_mat(cam['calib'], lidar_calib)
         K = render_intrinsic(cam['calib'], args.scale, args.crop_top)
         out[ci] = project_and_paint(pts_t, is_dyn, l2c, K, H, W,
-                                    args.static_radius, args.dyn_radius)
+                                    args.static_radius, args.dyn_radius, is_uncertain)
     n_dyn = int((out == 2).sum())
-    return out, f'ok(dyn_px={n_dyn},rmse={rmse:.2f},spd={spd:.1f},dt={target_dt:.2f})'
+    n_unc = int((is_uncertain).sum())
+    return out, f'ok(dyn_px={n_dyn},unc_pts={n_unc},rmse={rmse:.2f},spd={spd:.1f},dt={target_dt:.2f})'
 
 
 def main():
@@ -251,6 +265,12 @@ def main():
     parser.add_argument('--speed-thresh', type=float, default=3.0,
                         help='[已弃用] 旧整帧高速门控，自适应基线后不再使用')
     parser.add_argument('--vote-ratio', type=float, default=0.3)
+    parser.add_argument('--min-dyn-cluster', type=int, default=15,
+                        help='方案1：动态簇最小点数，小于此退回 ignore')
+    parser.add_argument('--strong-abs', type=float, default=0.45,
+                        help='方案1：动态簇中位残差(m)下限，弱残差退回 ignore')
+    parser.add_argument('--max-dyn-range', type=float, default=40.0,
+                        help='方案1：动态簇质心最大水平距离(m)，更远退回 ignore')
     parser.add_argument('--n-neighbor', type=int, default=2,
                         help='[已弃用] 旧固定关键帧邻帧数，改用自适应 sweep 选取')
     parser.add_argument('--static-radius', type=int, default=2)
