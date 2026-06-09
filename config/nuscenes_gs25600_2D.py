@@ -145,6 +145,10 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
+# dynamic render path reuses last refine module's dynamic head inside the
+# with_cp (checkpoint) region → a param is marked ready twice under DDP.
+# graph is identical every train iter (vis/diag are outside autograd) → static OK.
+static_graph = True
 backbone_fp16 = True
 
 # ========= model config ===============
