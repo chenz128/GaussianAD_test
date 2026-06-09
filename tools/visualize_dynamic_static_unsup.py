@@ -289,9 +289,50 @@ def cluster_vote(pts_lidar, raw_dyn, ground_mask, eps=0.7, min_samples=5, vote_r
     return is_dyn
 
 
+def confidence_filter(pts_lidar, is_dyn, score,
+                      min_cluster=15, strong_abs=0.45, max_range=40.0,
+                      eps=0.7, min_samples=5):
+    """方案1：对动态点按簇做置信度分级，低置信簇退回 ignore（不监督）。
+
+    纯 LiDAR 两帧残差 precision 偏低（慢速帧约 24%），噪声多为孤立点/小簇/弱残差/远处稀疏点。
+    动态簇需 **同时** 满足三条才判高置信动态：
+      - 点数 ≥ min_cluster      （真车/人在 LiDAR 上是连续点片；噪声多为零散小簇）
+      - 簇内中位残差 ≥ strong_abs（真动态 0.5s 位移残差强；噪声刚擦过阈值）
+      - 簇质心水平距离 ≤ max_range（远处点稀疏、残差噪声大，不可靠）
+    其余动态点判为"不确定"，下游投影成 ignore(0)，既不教动态也不教静态——
+    宁可不监督，也不引入假阳/假阴。用 precision 换掉脏标签。
+
+    返回: is_dyn_hi(bool 高置信动态), is_uncertain(bool 低置信曾动态)
+    """
+    is_dyn_hi = np.zeros_like(is_dyn)
+    is_uncertain = np.zeros_like(is_dyn)
+    idx = np.where(is_dyn)[0]
+    if idx.shape[0] == 0:
+        return is_dyn_hi, is_uncertain
+    labels = DBSCAN(eps=eps, min_samples=min_samples).fit_predict(pts_lidar[idx])
+    rng = np.linalg.norm(pts_lidar[idx][:, :2], axis=1)
+    sc = score[idx]
+    for cl in np.unique(labels):
+        cm = labels == cl
+        members = idx[cm]
+        if cl == -1:
+            # DBSCAN 噪声（孤立动态点）→ 不确定
+            is_uncertain[members] = True
+            continue
+        n = int(cm.sum())
+        med_res = float(np.median(sc[cm]))
+        med_rng = float(np.median(rng[cm]))
+        if (n >= min_cluster) and (med_res >= strong_abs) and (med_rng <= max_range):
+            is_dyn_hi[members] = True
+        else:
+            is_uncertain[members] = True
+    return is_dyn_hi, is_uncertain
+
+
 def generate_dynamic_labels(pts_t, l2g_t, neighbors, base_thresh,
                             use_icp=True, voxel=0.2, vote_ratio=0.3,
-                            dbscan_eps=0.7, dbscan_min=5, cover_chord=0.012):
+                            dbscan_eps=0.7, dbscan_min=5, cover_chord=0.012,
+                            min_dyn_cluster=15, strong_abs=0.45, max_dyn_range=40.0):
     """高质量无标注动静伪真值生成。
 
     pipeline: RANSAC 地面分割 → 邻帧 ICP 精配准 → 最近邻残差(min, 抗遮挡)
@@ -344,7 +385,12 @@ def generate_dynamic_labels(pts_t, l2g_t, neighbors, base_thresh,
     thr = range_adaptive_thresh(pts_t, base_thresh, rmse=mean_rmse)
     raw_dyn = (score > thr) & (~ground_mask)
     is_dyn = cluster_vote(pts_t, raw_dyn, ground_mask, dbscan_eps, dbscan_min, vote_ratio)
-    return is_dyn, score, ground_mask, overlay, pts_t_g, mean_fitness, mean_rmse
+    # 方案1：置信度分级，低置信动态点退回 ignore（提 precision）
+    is_dyn, is_uncertain = confidence_filter(
+        pts_t, is_dyn, score,
+        min_cluster=min_dyn_cluster, strong_abs=strong_abs, max_range=max_dyn_range,
+        eps=dbscan_eps, min_samples=dbscan_min)
+    return is_dyn, score, ground_mask, overlay, pts_t_g, mean_fitness, mean_rmse, is_uncertain
 
 
 def draw_overlay_bev(ax, pts_t_g, pts_next_g, center, rng=50):
@@ -445,7 +491,7 @@ def visualize_sample(scene, idx, data_root, dist_thresh, out_path,
             neighbors.append((off, (pts_n, l2g_n)))
             offsets.append(off)
 
-    is_dyn, score, ground_mask, overlay, pts_t_g, fitness, rmse = generate_dynamic_labels(
+    is_dyn, score, ground_mask, overlay, pts_t_g, fitness, rmse, is_uncertain = generate_dynamic_labels(
         pts_t, l2g_t, neighbors, dist_thresh,
         use_icp=use_icp, vote_ratio=vote_ratio)
 
