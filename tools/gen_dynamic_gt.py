@@ -1,11 +1,17 @@
 """离线生成动静分离 2D 真值（render 分辨率，喂给 DynamicLoss）。
 
-方案 2：纯 LiDAR 时序残差 + ego 速度门控。
+LiDAR 主分支（方案 2）：纯 LiDAR 时序残差 + ego 速度门控。
   - 复用 visualize_dynamic_static_unsup.py 的逐点动静标签生成
     （RANSAC 地面 + 邻帧 ICP 配准 + 最近邻残差 + DBSCAN 簇投票）
   - ego 速度门控：高速帧（径向视差导致假阳）整帧标为 ignore
   - 把逐点标签投影到 6 个相机的 render 平面（与 gsplat 渲染同分辨率/内参），
     画小圆盘得到稠密 2D mask
+
+光流融合分支（--use-flow，默认关）：RAFT 实际光流 - Metric3D 深度刚性流残差。
+  - 见 tools/flow_dynamic.py：对 GroundedSAM 可移动连通域用残差中位数判动
+  - 与 LiDAR 动态做像素级 union（动优先级最高），几何互补：
+    光流强于径向/迫近运动，LiDAR 强于切向/同向运动
+  - LiDAR 配准失败（高速帧）整帧 ignore 时，光流仍可补上径向运动车辆
 
 输出（每个 sample 一个 .npy，扁平按 token 命名）：
   dynamic_gt_root/{token}.npy   shape (6, H, W) uint8
@@ -18,11 +24,16 @@
     lidar2cam = inv(cam2ego) @ lidar2ego），保证与 rendered_dynamic 像素对齐。
 
 用法（远端 tmux，可分片并行）：
+  # 纯 LiDAR（原行为）
   /data/chenz/conda_env/splatting/bin/python tools/gen_dynamic_gt.py \
       --pkl data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v4.pkl \
       --data-root data/nuscenes \
       --out-dir data/dynamic_gt_nusc \
       --num-shards 8 --shard-id 0
+  # LiDAR + 光流融合（加 --use-flow，需占一块 GPU 跑 RAFT）
+  CUDA_VISIBLE_DEVICES=3 /data/chenz/conda_env/splatting/bin/python tools/gen_dynamic_gt.py \
+      --pkl data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v4.pkl \
+      --data-root data/nuscenes --out-dir data/dynamic_gt_nusc --use-flow
 """
 import os
 import argparse
@@ -202,46 +213,68 @@ def ego_speed(scene, idx):
     return float(np.linalg.norm(c1 - c0) / 0.5)
 
 
-def gen_one(scene, idx, data_root, args):
+def gen_one(scene, idx, data_root, args, detector=None):
+    """生成单帧 (6,H,W) 动静 GT。
+
+    LiDAR 分支：时序残差 + ego 速度门控（主分支）。
+    光流分支（detector 不为 None 时）：RAFT 光流-刚性流残差 union。
+    二者几何互补：光流强于径向/迫近运动，LiDAR 强于切向/同向运动。
+    关键：LiDAR 配准失败（高速帧）或单帧/无邻帧时 LiDAR 整帧 ignore，
+    但光流仍能补上径向运动车辆（不依赖 LiDAR 邻帧，只靠相机 sweep）。
+    """
     info = scene[idx]
     H, W = args.render_h, args.render_w
     out = np.zeros((6, H, W), dtype=np.uint8)
 
-    # 单帧场景无法做时序残差 → 整帧 ignore
+    # ---- LiDAR 主分支 ----
+    lidar_status = 'ok'
     if len(scene) < 2:
-        return out, 'edge'
+        lidar_status = 'edge'
+    else:
+        # ego 速度自适应时间基线：高速 → 小 dt（sweep，压 radial 视差）；低速 → 0.5s 关键帧
+        spd = ego_speed(scene, idx)
+        target_dt = float(np.clip(args.dt_budget / max(spd, 0.5), args.min_dt, args.max_dt))
+        neighbors = collect_adaptive_neighbors(scene, idx, data_root, target_dt, args.max_dt)
+        if len(neighbors) == 0:
+            lidar_status = 'edge'
+        else:
+            pts_t = load_lidar(data_root, info)
+            l2g_t = lidar2global_mat(info['data']['LIDAR_TOP']['calib'],
+                                     info['data']['LIDAR_TOP']['pose'])
+            is_dyn, score, ground_mask, overlay, pts_t_g, fitness, rmse, is_uncertain = generate_dynamic_labels(
+                pts_t, l2g_t, neighbors, args.dist_thresh,
+                use_icp=True, vote_ratio=args.vote_ratio,
+                min_dyn_cluster=args.min_dyn_cluster, strong_abs=args.strong_abs,
+                max_dyn_range=args.max_dyn_range)
+            # 配准失败帧 → LiDAR 整帧 ignore（rmse 与车速无关，是可靠门控），交由光流补
+            if rmse > args.rmse_thresh:
+                lidar_status = f'badrmse({rmse:.2f},spd={spd:.1f})'
+            else:
+                lidar_calib = info['data']['LIDAR_TOP']['calib']
+                for ci, cam_type in enumerate(SENSOR_TYPES):
+                    cam = info['data'][cam_type]
+                    l2c = lidar2cam_mat(cam['calib'], lidar_calib)
+                    K = render_intrinsic(cam['calib'], args.scale, args.crop_top)
+                    out[ci] = project_and_paint(pts_t, is_dyn, l2c, K, H, W,
+                                                args.static_radius, args.dyn_radius, is_uncertain)
+                n_unc = int(is_uncertain.sum())
+                lidar_status = f'ok(unc_pts={n_unc},rmse={rmse:.2f},spd={spd:.1f},dt={target_dt:.2f})'
 
-    # ego 速度自适应时间基线：高速 → 小 dt（sweep，压 radial 视差）；低速 → 0.5s 关键帧
-    spd = ego_speed(scene, idx)
-    target_dt = float(np.clip(args.dt_budget / max(spd, 0.5), args.min_dt, args.max_dt))
-    neighbors = collect_adaptive_neighbors(scene, idx, data_root, target_dt, args.max_dt)
-    if len(neighbors) == 0:
-        return out, 'edge'
+    # ---- 光流分支 union（动优先级最高，覆盖 LiDAR 的 static/ignore）----
+    flow_px = 0
+    if detector is not None:
+        try:
+            # LiDAR 判动像素(render空间) → 给光流近距超大守卫做互证仲裁
+            lidar_dyn = np.stack([(out[ci] == 2) for ci in range(6)], axis=0)
+            flow_dyn = detector.detect(info['token'], SENSOR_TYPES, lidar_dyn=lidar_dyn)
+            for ci in range(6):
+                out[ci][flow_dyn[ci]] = 2
+            flow_px = int(flow_dyn.sum())
+        except Exception as e:
+            return out, f'lidar={lidar_status} flow_err:{e}'
 
-    pts_t = load_lidar(data_root, info)
-    l2g_t = lidar2global_mat(info['data']['LIDAR_TOP']['calib'],
-                             info['data']['LIDAR_TOP']['pose'])
-
-    is_dyn, score, ground_mask, overlay, pts_t_g, fitness, rmse, is_uncertain = generate_dynamic_labels(
-        pts_t, l2g_t, neighbors, args.dist_thresh,
-        use_icp=True, vote_ratio=args.vote_ratio,
-        min_dyn_cluster=args.min_dyn_cluster, strong_abs=args.strong_abs,
-        max_dyn_range=args.max_dyn_range)
-
-    # 配准失败帧 → 整帧 ignore（rmse 与车速无关，是可靠门控）
-    if rmse > args.rmse_thresh:
-        return out, f'badrmse({rmse:.2f})'
-
-    lidar_calib = info['data']['LIDAR_TOP']['calib']
-    for ci, cam_type in enumerate(SENSOR_TYPES):
-        cam = info['data'][cam_type]
-        l2c = lidar2cam_mat(cam['calib'], lidar_calib)
-        K = render_intrinsic(cam['calib'], args.scale, args.crop_top)
-        out[ci] = project_and_paint(pts_t, is_dyn, l2c, K, H, W,
-                                    args.static_radius, args.dyn_radius, is_uncertain)
     n_dyn = int((out == 2).sum())
-    n_unc = int((is_uncertain).sum())
-    return out, f'ok(dyn_px={n_dyn},unc_pts={n_unc},rmse={rmse:.2f},spd={spd:.1f},dt={target_dt:.2f})'
+    return out, f'lidar={lidar_status} dyn_px={n_dyn} flow_px={flow_px}'
 
 
 def main():
@@ -281,9 +314,36 @@ def main():
                         help='本进程负责的分片 id（0..num_shards-1）')
     parser.add_argument('--overwrite', action='store_true',
                         help='已存在的 .npy 也重新生成')
+    # —— 光流融合分支（与 LiDAR 动态做 union，默认关，向后兼容）——
+    parser.add_argument('--use-flow', action='store_true',
+                        help='开启光流-刚性流残差分支，与 LiDAR 动态做像素级 union')
+    parser.add_argument('--nusc-version', default='v1.0-trainval',
+                        help='光流分支需加载 nuScenes devkit（取相机 sweep 与位姿）')
+    parser.add_argument('--m3d-root', default='/data/chenz/Gaussianflowocc_test/data/metric_3d_nusc',
+                        help='Metric3D 单目深度根目录')
+    parser.add_argument('--sam-root', default='/data/chenz/Gaussianflowocc_test/data/grounded_sam_nusc',
+                        help='GroundedSAM 语义 mask 根目录')
+    parser.add_argument('--flow-res-thresh', type=float, default=3.0,
+                        help='光流残差阈值（render 分辨率下像素），调高提 precision')
+    parser.add_argument('--device', default='cuda', help='光流 RAFT 推理设备')
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
+
+    # 光流检测器（可选）：加载 nuScenes devkit + RAFT，与 LiDAR 动态 union
+    detector = None
+    if args.use_flow:
+        from nuscenes.nuscenes import NuScenes
+        from tools.flow_dynamic import FlowDynamicDetector
+        print(f'loading NuScenes {args.nusc_version} for optical-flow branch ...')
+        nusc = NuScenes(version=args.nusc_version, dataroot=args.data_root, verbose=False)
+        detector = FlowDynamicDetector(
+            nusc, args.data_root, args.m3d_root, args.sam_root, device=args.device,
+            scale=args.scale, crop_top=args.crop_top,
+            render_h=args.render_h, render_w=args.render_w,
+            res_thresh=args.flow_res_thresh)
+        print('optical-flow detector ready')
+
     print(f'loading {args.pkl} ...')
     data = mmengine.load(args.pkl)
     scene_infos = data['infos']
@@ -304,7 +364,7 @@ def main():
             n_skip += 1
             continue
         try:
-            gt, status = gen_one(scene, frame_idx, args.data_root, args)
+            gt, status = gen_one(scene, frame_idx, args.data_root, args, detector=detector)
         except Exception as e:
             print(f'  [ERR] {token[:12]} idx{frame_idx}: {e}')
             gt = np.zeros((6, args.render_h, args.render_w), dtype=np.uint8)

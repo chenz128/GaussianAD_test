@@ -291,14 +291,20 @@ def cluster_vote(pts_lidar, raw_dyn, ground_mask, eps=0.7, min_samples=5, vote_r
 
 def confidence_filter(pts_lidar, is_dyn, score,
                       min_cluster=15, strong_abs=0.45, max_range=40.0,
-                      eps=0.7, min_samples=5):
+                      eps=0.7, min_samples=5, min_z_extent=0.4,
+                      near_big_range=6.0, near_big_extent=7.0, near_big_thin=1.2):
     """方案1：对动态点按簇做置信度分级，低置信簇退回 ignore（不监督）。
 
     纯 LiDAR 两帧残差 precision 偏低（慢速帧约 24%），噪声多为孤立点/小簇/弱残差/远处稀疏点。
-    动态簇需 **同时** 满足三条才判高置信动态：
+    动态簇需 **同时** 满足四条才判高置信动态：
       - 点数 ≥ min_cluster      （真车/人在 LiDAR 上是连续点片；噪声多为零散小簇）
       - 簇内中位残差 ≥ strong_abs（真动态 0.5s 位移残差强；噪声刚擦过阈值）
       - 簇质心水平距离 ≤ max_range（远处点稀疏、残差噪声大，不可靠）
+      - 簇垂直跨度 ≥ min_z_extent（真车/人有高度；逃过RANSAC的远处/斜坡地面是水平薄片）
+      - 非"近距大平面"：自车贴身驶过的静止大型平面物(挂车/集装箱/墙)在 LiDAR 上
+        是又近(<near_big_range)、水平主轴超长(>near_big_extent)、垂直主轴方向很薄
+        (<near_big_thin)的平面；ICP 在光滑平面上滑动匹配产生整片伪残差。真实近距
+        车辆能看到车身厚度/车轮，次轴不会那么薄。
     其余动态点判为"不确定"，下游投影成 ignore(0)，既不教动态也不教静态——
     宁可不监督，也不引入假阳/假阴。用 precision 换掉脏标签。
 
@@ -312,6 +318,7 @@ def confidence_filter(pts_lidar, is_dyn, score,
     labels = DBSCAN(eps=eps, min_samples=min_samples).fit_predict(pts_lidar[idx])
     rng = np.linalg.norm(pts_lidar[idx][:, :2], axis=1)
     sc = score[idx]
+    zc = pts_lidar[idx][:, 2]
     for cl in np.unique(labels):
         cm = labels == cl
         members = idx[cm]
@@ -322,7 +329,25 @@ def confidence_filter(pts_lidar, is_dyn, score,
         n = int(cm.sum())
         med_res = float(np.median(sc[cm]))
         med_rng = float(np.median(rng[cm]))
-        if (n >= min_cluster) and (med_res >= strong_abs) and (med_rng <= max_range):
+        # 垂直跨度用 p95-p5 抗离群点：地面薄片≈0，真车/人≥0.5m
+        z_cl = zc[cm]
+        z_ext = float(np.percentile(z_cl, 95) - np.percentile(z_cl, 5))
+        if (n >= min_cluster) and (med_res >= strong_abs) and \
+           (med_rng <= max_range) and (z_ext >= min_z_extent):
+            # 近距大平面守卫：PCA 求 xy 主/次轴长，极近+主轴超长+次轴极薄 → 静止大平面
+            xy = pts_lidar[idx][cm][:, :2]
+            xyc = xy - xy.mean(0)
+            try:
+                vt = np.linalg.svd(xyc, full_matrices=False)[2]
+                proj = xyc @ vt.T
+                l_major = float(np.percentile(proj[:, 0], 95) - np.percentile(proj[:, 0], 5))
+                l_minor = float(np.percentile(proj[:, 1], 95) - np.percentile(proj[:, 1], 5))
+            except np.linalg.LinAlgError:
+                l_major, l_minor = 0.0, 0.0
+            if (med_rng < near_big_range) and (l_major > near_big_extent) \
+               and (l_minor < near_big_thin):
+                is_uncertain[members] = True
+                continue
             is_dyn_hi[members] = True
         else:
             is_uncertain[members] = True

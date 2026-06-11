@@ -88,7 +88,7 @@ class DynamicLoss(BaseLoss):
             return torch.tensor(0.0, requires_grad=False)
 
         pred = rendered_dynamic.flatten()            # (N,)
-        gt = pseudo_dyn.flatten().long()             # (N,)
+        gt = pseudo_dyn.flatten().long()             # (N,) 
         valid = gt > 0
         if not valid.any():
             return pred.sum() * 0.0
