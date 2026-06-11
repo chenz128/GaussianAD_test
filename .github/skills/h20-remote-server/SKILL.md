@@ -1,6 +1,6 @@
 ---
 name: h20-remote-server
-description: "H20远程服务器开发工作流。Use when: 连接远程服务器、在远端编译/运行/测试代码、同步代码提交、管理远端工作空间 /data/chenz、SSH连接H20服务器、远端执行命令、代码同步。SSH地址: ssh -p 30300 root@8.130.174.55，NAS盘: /data，主工作空间: /data/chenz。"
+description: "H20远程服务器开发工作流。Use when: 连接远程服务器、在远端编译/运行/测试代码、同步代码提交、管理远端工作空间 /data/chenz、SSH连接H20服务器、远端执行命令、代码同步。两台服务器同IP不同端口：老机 ssh -p 30300 root@8.130.174.55（别名 h20-old），新机 ssh -p 32344 root@8.130.174.55（别名 h20-new）。NAS盘: /data，主工作空间: /data/chenz。"
 argument-hint: "可选：指定要执行的具体任务（如：编译、测试、同步代码）"
 ---
 
@@ -8,11 +8,41 @@ argument-hint: "可选：指定要执行的具体任务（如：编译、测试�
 
 ## 服务器信息
 
+两台服务器**同一个公网入口 IP（`8.130.174.55`），通过不同端口转发到两台不同的物理机**。SSH 用 `[IP]:端口` 组合区分主机，端口不同即为两台独立机器，可同时连接、互不影响。
+
+| 别名 | SSH 连接命令 | 说明 |
+|------|-------------|------|
+| **h20-old** | `ssh -p 30300 root@8.130.174.55` | 老机（默认/训练所在机） |
+| **h20-new** | `ssh -p 32344 root@8.130.174.55` | 新机（如用于 GT 生成等离线任务） |
+
 | 项目 | 值 |
 |------|-----|
-| SSH 连接命令 | `ssh -p 30300 root@8.130.174.55` |
 | NAS 盘路径 | `/data` |
-| **主工作空间** | `/data/chenz`（**唯一允许的工作空间**） |
+| **主工作空间** | `/data/chenz`（**两台机器均使用此路径**） |
+
+> ⚠️ 两台 IP 相同，执行命令时务必通过端口（30300=old / 32344=new）确认目标机器，避免在错误的机器上操作。
+
+### SSH 别名配置（已在本地配好）
+
+本地 `~/.ssh/config`（WSL）与 Windows `C:\Users\10970\.ssh\config` 均已写入：
+
+```ssh-config
+Host h20-old
+    HostName 8.130.174.55
+    Port 30300
+    User root
+    IdentityFile ~/.ssh/id_rsa
+
+Host h20-new
+    HostName 8.130.174.55
+    Port 32344
+    User root
+    IdentityFile ~/.ssh/id_rsa
+```
+
+配好后可直接用别名连接：`ssh h20-old` / `ssh h20-new`。
+
+**VS Code 同时查看两台代码**：`F1` → `Remote-SSH: Connect to Host...` 选 `h20-old`；再 `F1` → `Remote-SSH: Connect to Host in New Window...` 选 `h20-new`，两个窗口并排即可同时查看。私钥已从 WSL 拷贝到 Windows 用户目录，Windows 端 VS Code 可直接连两台。
 
 ## 核心原则
 
@@ -28,7 +58,9 @@ argument-hint: "可选：指定要执行的具体任务（如：编译、测试�
 ### 1. 连接远端服务器
 
 ```bash
-ssh -p 30300 root@8.130.174.55
+ssh h20-old      # 老机（30300，训练所在机）
+ssh h20-new      # 新机（32344，离线任务机）
+# 等价于 ssh -p 30300 / -p 32344 root@8.130.174.55
 ```
 
 连接后确认工作目录：
@@ -46,11 +78,11 @@ cd /data/chenz/<项目名>
 3. 在远端执行编译/运行/测试命令：
 
 ```bash
-# 示例：编译
-ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && <编译命令>"
+# 示例：编译（按目标机选择 h20-old / h20-new）
+ssh h20-old "cd /data/chenz/<项目名> && <编译命令>"
 
 # 示例：运行训练/测试
-ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && <运行命令>"
+ssh h20-new "cd /data/chenz/<项目名> && <运行命令>"
 ```
 
 4. 查看远端输出结果，在本地分析日志和错误。
@@ -66,13 +98,13 @@ git commit -m "提交信息"
 git push origin <branch>
 
 # 远端：拉取最新代码，保持干净状态
-ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <branch>"
+ssh h20-old "cd /data/chenz/<项目名> && git pull origin <branch>"
 ```
 
 **验证远端状态干净：**
 
 ```bash
-ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git status"
+ssh h20-old "cd /data/chenz/<项目名> && git status"
 # 期望输出：nothing to commit, working tree clean
 ```
 
@@ -83,7 +115,7 @@ ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git status"
 **检查远端未跟踪文件：**
 
 ```bash
-ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git status --short"
+ssh h20-old "cd /data/chenz/<项目名> && git status --short"
 ```
 
 **将临时文件夹加入 `.gitignore`（在本地操作后同步）：**
@@ -100,7 +132,7 @@ git commit -m "chore: ignore temp files on remote"
 git push origin <branch>
 
 # 远端拉取
-ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <branch>"
+ssh h20-old "cd /data/chenz/<项目名> && git pull origin <branch>"
 ```
 
 ---
@@ -122,21 +154,22 @@ ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <b
 ## 常用命令速查
 
 ```bash
-# 连接服务器
-ssh -p 30300 root@8.130.174.55
+# 连接服务器（按目标机选别名）
+ssh h20-old      # 老机 30300
+ssh h20-new      # 新机 32344
 
 # 在远端执行单条命令
-ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && <命令>"
+ssh h20-old "cd /data/chenz/<项目名> && <命令>"
 
 # 查看远端 GPU 状态
-ssh -p 30300 root@8.130.174.55 "nvidia-smi"
+ssh h20-old "nvidia-smi"
 
 # 查看远端磁盘使用
-ssh -p 30300 root@8.130.174.55 "df -h /data"
+ssh h20-old "df -h /data"
 
 # 查看远端工作空间
-ssh -p 30300 root@8.130.174.55 "ls /data/chenz"
+ssh h20-old "ls /data/chenz"
 
 # 同步代码到远端
-ssh -p 30300 root@8.130.174.55 "cd /data/chenz/<项目名> && git pull origin <branch> && git status"
+ssh h20-old "cd /data/chenz/<项目名> && git pull origin <branch> && git status"
 ```
