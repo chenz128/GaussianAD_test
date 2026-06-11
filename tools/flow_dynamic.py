@@ -29,6 +29,11 @@ SAM_CAMS = ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_BACK_LEFT',
             'CAM_BACK', 'CAM_BACK_RIGHT', 'CAM_FRONT_RIGHT']
 # nuScenes occ 16+1 类中"可移动且会动"的类别 id（GroundedSAM 同一套）
 MOVABLE = {2, 3, 4, 5, 6, 7, 9, 10}
+# 背景静态类：物理上不会自己动，语义先验即可可靠判静（不依赖光流残差）。
+# barrier(1), traffic_cone(8), driveable_surface(11), other_flat(12),
+# sidewalk(13), terrain(14), manmade(15), vegetation(16)。
+# 故意排除所有 MOVABLE 类——同向/同速车的低残差是光流盲区，不可信，留 ignore。
+STATIC_BG = {1, 8, 11, 12, 13, 14, 15, 16}
 
 
 def _pose_to_mat(translation, rotation):
@@ -154,6 +159,28 @@ class FlowDynamicDetector:
         for oi, cam in enumerate(sensor_types):
             ld = lidar_dyn[oi] if lidar_dyn is not None else None
             out[oi] = self._detect_cam(sample, cam, depth_all, seg_all, ld)
+        return out
+
+    def static_bg(self, token, sensor_types):
+        """返回 (6, H, W) bool，True = 背景静态类像素（render 空间，顺序同 sensor_types）。
+
+        仅用 GroundedSAM 语义先验判定（STATIC_BG），不依赖光流残差——背景类物理上
+        不会自己动，低残差可信；可移动类（同向/同速车的低残差是光流盲区）被排除在外，
+        留作 ignore 不监督。用于 LiDAR 配准失败整帧 ignore 时补回 static(1) 背景层。
+        缺 SAM 文件则全 False。
+        """
+        out = np.zeros((6, self.H, self.W), dtype=bool)
+        sample = self.nusc.get('sample', token)
+        scene_name = self.nusc.get('scene', sample['scene_token'])['name']
+        sam_f = os.path.join(self.sam_root, scene_name, token + '.npy')
+        if not os.path.exists(sam_f):
+            return out
+        seg_all = np.load(sam_f).astype(np.int32)        # (6,900,1600) SAM_CAMS 顺序
+        bg_list = list(STATIC_BG)
+        for oi, cam in enumerate(sensor_types):
+            seg = seg_all[SAM_CAMS.index(cam)]
+            seg_r = self._to_render(seg, cv2.INTER_NEAREST)
+            out[oi] = np.isin(seg_r, bg_list)
         return out
 
     def _detect_cam(self, sample, cam, depth_all, seg_all, lidar_dyn_cam=None):

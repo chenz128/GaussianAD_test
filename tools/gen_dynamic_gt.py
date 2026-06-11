@@ -262,8 +262,18 @@ def gen_one(scene, idx, data_root, args, detector=None):
 
     # ---- 光流分支 union（动优先级最高，覆盖 LiDAR 的 static/ignore）----
     flow_px = 0
+    rescue_px = 0
     if detector is not None:
         try:
+            # 救回整帧 ignore：LiDAR 配准失败/无邻帧时，用语义先验补背景 static(1)。
+            # 背景类物理不会动，低残差可信；可移动类(同向车的光流盲区)不在 STATIC_BG，
+            # 留 ignore，绝不把停车/同向车误标静止。仅在 LiDAR 整帧 ignore 时触发。
+            lidar_failed = (lidar_status == 'edge') or lidar_status.startswith('badrmse')
+            if lidar_failed and getattr(args, 'flow_rescue_static', False):
+                static_bg = detector.static_bg(info['token'], SENSOR_TYPES)
+                for ci in range(6):
+                    out[ci][static_bg[ci]] = 1
+                rescue_px = int(static_bg.sum())
             # LiDAR 判动像素(render空间) → 给光流近距超大守卫做互证仲裁
             lidar_dyn = np.stack([(out[ci] == 2) for ci in range(6)], axis=0)
             flow_dyn = detector.detect(info['token'], SENSOR_TYPES, lidar_dyn=lidar_dyn)
@@ -274,7 +284,7 @@ def gen_one(scene, idx, data_root, args, detector=None):
             return out, f'lidar={lidar_status} flow_err:{e}'
 
     n_dyn = int((out == 2).sum())
-    return out, f'lidar={lidar_status} dyn_px={n_dyn} flow_px={flow_px}'
+    return out, f'lidar={lidar_status} dyn_px={n_dyn} flow_px={flow_px} rescue_px={rescue_px}'
 
 
 def main():
@@ -325,6 +335,12 @@ def main():
                         help='GroundedSAM 语义 mask 根目录')
     parser.add_argument('--flow-res-thresh', type=float, default=3.0,
                         help='光流残差阈值（render 分辨率下像素），调高提 precision')
+    parser.add_argument('--flow-rescue-static', action='store_true', default=True,
+                        help='LiDAR 配准失败整帧 ignore 时，用语义先验补背景 static(1)，'
+                             '光流高残差补 dynamic(2)，救回原本全 ignore 的帧')
+    parser.add_argument('--no-flow-rescue-static', dest='flow_rescue_static',
+                        action='store_false',
+                        help='关闭整帧 ignore 救回，LiDAR 失败帧保持全 ignore')
     parser.add_argument('--device', default='cuda', help='光流 RAFT 推理设备')
     args = parser.parse_args()
 
