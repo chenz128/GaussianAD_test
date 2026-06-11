@@ -37,7 +37,13 @@ fixed_ptsnum_per_gt_line = 20
 fixed_ptsnum_per_pred_line = 20
 
 # =========== misc config ==============
-lr = float(os.environ.get("LR", 2e-4))
+# Stage-2 fine-tune (resume epoch_20 via load_from, new work-dir):
+#   - 6-GPU bs=1 → 4688 iters/epoch; 10 more epochs ≈ 46880 iters.
+#     Stage-1 (20 ep × 4688 = 93760) + 46880 = 140640 = v4 (4-GPU × 20 ep)
+#     total iterations, so gradient-update count matches v4.
+#   - lr peak 6.5e-5 ≈ value of a full 30-epoch cosine (peak 2e-4) at epoch 20,
+#     i.e. we continue v4's lr trajectory rather than re-spiking.
+lr = float(os.environ.get("LR", 6.5e-5))
 optimizer = dict(
     optimizer = dict(
         type="AdamW", lr=lr, weight_decay=0.01,
@@ -48,7 +54,7 @@ optimizer = dict(
     )
 )
 grad_max_norm = 35
-max_epochs = 20
+max_epochs = 10
 
 # ========= loss config ================
 loss = dict(
@@ -102,9 +108,9 @@ loss = dict(
         dict(
             type='RenderLoss',
             weight=1.0,
-            sem_lw=5.0,
-            depth_lw=0.5,
-            vis_dir='out/nuscenes_gs25600_2D/render_vis',
+            sem_lw=0.0,    # disable 2D semantic supervision in stage-2
+            depth_lw=2.5,  # strengthen 2D depth supervision (was 0.5)
+            vis_dir='out/nuscenes_gs25600_2D_depth/render_vis',
             vis_every=500,
         ),
     ])
@@ -144,7 +150,7 @@ scale_range = [0.08, 0.64]
 xyz_coordinate = 'cartesian'
 phi_activation = 'sigmoid'
 include_opa = True
-load_from = 'ckpts/r101_dcn_fcos3d_pretrain.pth'
+load_from = 'out/nuscenes_gs25600_2D/checkpoints/epoch_20.pth'
 semantics = True
 semantic_dim = 17
 
