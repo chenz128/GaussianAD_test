@@ -261,19 +261,26 @@ def gen_one(scene, idx, data_root, args, detector=None):
                 lidar_status = f'ok(unc_pts={n_unc},rmse={rmse:.2f},spd={spd:.1f},dt={target_dt:.2f})'
 
     # ---- 光流分支 union（动优先级最高，覆盖 LiDAR 的 static/ignore）----
-    flow_px = 0
-    rescue_px = 0
+    flow_px = 0# LiDAR 判动像素(render空间) → 给光流近距超大守卫做互证仲裁；rescue_px=0 先占位，后面可能被光流补上
+    rescue_px = 0# LiDAR 配准失败（高速帧）整帧 ignore 时，光流仍可补上径向运动车辆
     if detector is not None:
         try:
-            # 救回整帧 ignore：LiDAR 配准失败/无邻帧时，用语义先验补背景 static(1)。
-            # 背景类物理不会动，低残差可信；可移动类(同向车的光流盲区)不在 STATIC_BG，
-            # 留 ignore，绝不把停车/同向车误标静止。仅在 LiDAR 整帧 ignore 时触发。
+            # SAM 背景静态类补 static(1)：用 GroundedSAM 语义先验把 STATIC_BG
+            # (barrier/traffic_cone/driveable/other_flat/sidewalk/terrain/manmade/
+            # vegetation —— 物理上不会动) 填进 LiDAR 未覆盖的 ignore 区域。
+            #   - sam_static_fill=True：所有帧都补（把背景静止物从 ignore 救成 static）
+            #   - flow_rescue_static=True：仅 LiDAR 整帧失败帧补（兜底，向后兼容）
+            # 只在 out==0(ignore) 处填，绝不覆盖 LiDAR 判定的 static/dynamic；
+            # 可移动类(同向/停车的光流盲区)不在 STATIC_BG，留 ignore，绝不误标静止。
             lidar_failed = (lidar_status == 'edge') or lidar_status.startswith('badrmse')
-            if lidar_failed and getattr(args, 'flow_rescue_static', False):
+            do_sam_fill = getattr(args, 'sam_static_fill', False) or \
+                (lidar_failed and getattr(args, 'flow_rescue_static', False))
+            if do_sam_fill:
                 static_bg = detector.static_bg(info['token'], SENSOR_TYPES)
                 for ci in range(6):
-                    out[ci][static_bg[ci]] = 1
-                rescue_px = int(static_bg.sum())
+                    fill = static_bg[ci] & (out[ci] == 0)
+                    out[ci][fill] = 1
+                    rescue_px += int(fill.sum())
             # LiDAR 判动像素(render空间) → 给光流近距超大守卫做互证仲裁
             lidar_dyn = np.stack([(out[ci] == 2) for ci in range(6)], axis=0)
             flow_dyn = detector.detect(info['token'], SENSOR_TYPES, lidar_dyn=lidar_dyn)
@@ -341,6 +348,10 @@ def main():
     parser.add_argument('--no-flow-rescue-static', dest='flow_rescue_static',
                         action='store_false',
                         help='关闭整帧 ignore 救回，LiDAR 失败帧保持全 ignore')
+    parser.add_argument('--sam-static-fill', action='store_true', default=False,
+                        help='所有帧用 GroundedSAM STATIC_BG 语义先验把背景静止物'
+                             '(driveable/sidewalk/manmade/vegetation 等)从 ignore '
+                             '补成 static(1)，仅填 LiDAR 未覆盖区，不碰可移动类')
     parser.add_argument('--device', default='cuda', help='光流 RAFT 推理设备')
     args = parser.parse_args()
 
