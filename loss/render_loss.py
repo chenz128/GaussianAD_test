@@ -36,17 +36,26 @@ def _colorize_sem(cls_map_0indexed):
     return _NUSC_PALETTE[cls]
 
 
-def _depth_to_rgb(depth_np, vmin=0.0, vmax=40.0):
-    """depth_np: (H, W) float → RGB (H, W, 3) using turbo-like colormap"""
+def _depth_to_rgb(depth_np, vmin=0.0, vmax=30.0):
+    """depth_np: (H, W) float → RGB (H, W, 3) using a jet colormap.
+
+    vmax=30 matches the Gaussian geometric range (pc_range ±30m): rendered
+    depth physically cannot exceed ~30m, so anchoring the warm end at 30m
+    spreads the full color gradient over the depth range actually present.
+
+    The previous map flattened 10-30m to a single saturated green (g==1 for
+    norm in [0.25, 0.75]) — no gradient where most rendered pixels live, hence
+    the "all green" look. jet keeps a continuous blue→cyan→green→yellow→red
+    ramp across the whole range. invalid pixels (depth<=0, e.g. sky / no
+    Gaussian coverage) → gray.
+    """
     norm = np.clip((depth_np - vmin) / (vmax - vmin + 1e-6), 0.0, 1.0)
-    # simple heat map: black→blue→cyan→green→yellow→red
-    r = np.clip(norm * 4 - 2, 0, 1)
-    g = np.clip(np.minimum(norm * 4, 4 - norm * 4), 0, 1)
-    b = np.clip(1 - norm * 4, 0, 1)
+    r = np.clip(1.5 - np.abs(4.0 * norm - 3.0), 0.0, 1.0)
+    g = np.clip(1.5 - np.abs(4.0 * norm - 2.0), 0.0, 1.0)
+    b = np.clip(1.5 - np.abs(4.0 * norm - 1.0), 0.0, 1.0)
     rgb = np.stack([r, g, b], axis=-1)
     # invalid pixels (depth==0) → gray
-    invalid = depth_np <= 0
-    rgb[invalid] = 0.5
+    rgb[depth_np <= 0] = 0.5
     return (rgb * 255).astype(np.uint8)
 
 
