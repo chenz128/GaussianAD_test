@@ -137,15 +137,27 @@ def main(local_rank, args):
 
     print_freq = cfg.print_freq
     from misc.metric_util import MeanIoU, DetMetric
+    occ_label_str = ['barrier', 'bicycle', 'bus', 'car', 'construction_vehicle',
+         'motorcycle', 'pedestrian', 'traffic_cone', 'trailer', 'truck',
+         'driveable_surface', 'other_flat', 'sidewalk', 'terrain', 'manmade',
+         'vegetation']
     miou_metric = MeanIoU(
         list(range(1, 17)),
         17, #17,
-        ['barrier', 'bicycle', 'bus', 'car', 'construction_vehicle',
-         'motorcycle', 'pedestrian', 'traffic_cone', 'trailer', 'truck',
-         'driveable_surface', 'other_flat', 'sidewalk', 'terrain', 'manmade',
-         'vegetation'],
+        occ_label_str,
          True, 17, filter_minmax=False)
     miou_metric.reset()
+
+    # ---- future occ (occ_flow) evaluation: 6 frames x 0.5s = 3s ----
+    num_future = 6
+    flow_miou_metrics = []
+    for fi in range(num_future):
+        m = MeanIoU(
+            list(range(1, 17)), 17, occ_label_str,
+            True, 17, filter_minmax=False,
+            name='future_%.1fs' % ((fi + 1) * 0.5))
+        m.reset()
+        flow_miou_metrics.append(m)
 
     det_metric = DetMetric(
         cfg,
@@ -210,12 +222,38 @@ def main(local_rank, args):
                 gt_occ = result_dict['sampled_label'][idx]
                 miou_metric._after_step(pred_occ, gt_occ)
 
+            # future occ (occ_flow): evaluate each of the 6 future frames (0.5~3.0s)
+            occ_flow = result_dict.get('occ_flow', None)
+            if occ_flow is not None:
+                for fi in range(min(num_future, len(occ_flow))):
+                    fdict = occ_flow[fi][0]
+                    if not fdict['flow_valid_flag']:
+                        continue
+                    pred_f = fdict['pred_flow'][0].argmax(0)
+                    gt_f = fdict['sampled_label']
+                    if isinstance(gt_f, np.ndarray):
+                        gt_f = torch.from_numpy(gt_f)
+                    gt_f = gt_f.to(pred_f.device).reshape(-1)
+                    flow_miou_metrics[fi]._after_step(pred_f, gt_f)
+
             if i_iter_val % print_freq == 0 and local_rank == 0:
                 logger.info('[EVAL] Iter %5d'%(i_iter_val))
 
     miou, iou2 = miou_metric._after_epoch()
     logger.info(f'mIoU: {miou}, iou2: {iou2}')
     miou_metric.reset()
+
+    # ---- future occ mIoU summary (0.5~3.0s) ----
+    logger.info('-------------- Future Occupancy (occ_flow) --------------')
+    future_mious = []
+    for fi in range(num_future):
+        f_miou, f_iou2 = flow_miou_metrics[fi]._after_epoch()
+        logger.info('[Future %.1fs] mIoU: %.2f, iou(geo): %.2f' % (
+            (fi + 1) * 0.5, f_miou, f_iou2))
+        future_mious.append(f_miou)
+        flow_miou_metrics[fi].reset()
+    if len(future_mious) > 0:
+        logger.info('[Future avg 0.5~3.0s] mIoU: %.2f' % np.mean(future_mious))
 
     results_total_single  = {
             # "det_results": det_result,
