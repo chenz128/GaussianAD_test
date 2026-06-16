@@ -3,7 +3,7 @@ nuscenes_gs25600_mf_depth 实验配置（多帧深度监督）
 目标：验证“当前帧 + 历史 2 帧 + 未来 2 帧”的 2D 深度渲染监督是否能减少漂浮高斯。
 轻量验证（从零训，3000 个子采样 keyframe，15 epoch）。
 差异于 nuscenes_gs25600_2D.py：
-  - 从零训（无 load_from），lr peak=2e-4
+  - 从零训（仅 backbone+neck 加载 FCOS3D 预训，loss/head 随机初始），lr peak=2e-4
   - num_samples=3000 子采样 + subsample_seed 固定以保证可复现
   - max_epochs=15
   - RenderLoss：sem_lw=0（不做语义监督，语义仍渲染供可视化），depth_lw=2.5（当前帧），extra_depth_lw=0.5（多帧）
@@ -36,7 +36,7 @@ fixed_ptsnum_per_gt_line = 20
 fixed_ptsnum_per_pred_line = 20
 
 # =========== misc config ==============
-# 从零训（无 load_from），标准 cosine，peak lr=2e-4
+# 从零训（仅 backbone+neck 加载 FCOS3D 预训权重），标准 cosine，peak lr=2e-4
 lr = float(os.environ.get("LR", 2e-4))
 optimizer = dict(
     optimizer = dict(
@@ -149,7 +149,7 @@ scale_range = [0.08, 0.64]
 xyz_coordinate = 'cartesian'
 phi_activation = 'sigmoid'
 include_opa = True
-load_from = None  # 从零训
+load_from = 'ckpts/r101_dcn_fcos3d_pretrain.pth'  # backbone+neck FCOS3D 预训暑启动（strict=False）
 semantics = True
 semantic_dim = 17
 
