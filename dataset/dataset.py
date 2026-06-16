@@ -1239,6 +1239,10 @@ class NuScenesDataset(Dataset):
         pseudo_label_scale=0.44,
         max_pseudo_depth=40.0,
         pseudo_label_crop_top=140,
+        # multi-frame depth supervision
+        num_hist_depth_frames=0,
+        num_fut_depth_frames=0,
+        subsample_seed=None,
     ):
         self.data_path = data_root
         data = mmengine.load(imageset)
@@ -1271,15 +1275,19 @@ class NuScenesDataset(Dataset):
 
         self.sensor_types = ['CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_FRONT_LEFT',
             'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
+        # reproducible subsampling: a fixed seed makes baseline vs experiment
+        # runs use the IDENTICAL keyframe subset so results are comparable.
+        _subsample_rng = (np.random.RandomState(subsample_seed)
+                          if subsample_seed is not None else np.random)
         if vis_indices is not None:
             if len(vis_indices) > 0:
                 vis_indices = [i % len(self.keyframes) for i in vis_indices]
                 self.keyframes = [self.keyframes[idx] for idx in vis_indices]
             elif num_samples > 0:
-                vis_indices = np.random.choice(len(self.keyframes), num_samples, False)
+                vis_indices = _subsample_rng.choice(len(self.keyframes), num_samples, False)
                 self.keyframes = [self.keyframes[idx] for idx in vis_indices]
         elif num_samples > 0:
-            vis_indices = np.random.choice(len(self.keyframes), num_samples, False)
+            vis_indices = _subsample_rng.choice(len(self.keyframes), num_samples, False)
             self.keyframes = [self.keyframes[idx] for idx in vis_indices]
 
         self.aux_seg = aux_seg
@@ -1317,6 +1325,13 @@ class NuScenesDataset(Dataset):
         self.pseudo_label_scale = pseudo_label_scale
         self.max_pseudo_depth = max_pseudo_depth
         self.pseudo_label_crop_top = pseudo_label_crop_top
+        # multi-frame depth supervision (history + future frames, depth only)
+        self.num_hist_depth_frames = num_hist_depth_frames
+        self.num_fut_depth_frames = num_fut_depth_frames
+        # dynamic classes (nuScenes occ labels): masked out for HISTORY frames
+        # because gaussians have no backward motion model. Future frames keep
+        # them (offset moves the gaussians).
+        self.dynamic_pseudo_classes = [2, 3, 4, 5, 6, 7, 9, 10]
         self.use_pseudo_label = (metric3d_root is not None and grounded_sam_root is not None)
         if self.use_pseudo_label:
             # build scene_token -> scene_name mapping
@@ -1573,6 +1588,95 @@ class NuScenesDataset(Dataset):
 
         return all_sweeps_prev
 
+    def _load_frame_depth(self, sample_token, scene_name, mask_dynamic):
+        """Load + process one frame's metric3d pseudo depth (6, H', W').
+
+        Same downsample/crop/far-mask pipeline as the current-frame pseudo
+        depth. If mask_dynamic=True, also zero-out dynamic-class pixels (used
+        for HISTORY frames where gaussians have no backward motion model).
+        """
+        scale = self.pseudo_label_scale
+        crop_top = self.pseudo_label_crop_top
+        depth_path = os.path.join(self.metric3d_root, scene_name, f'{sample_token}.npy')
+        pseudo_depth = torch.from_numpy(np.load(depth_path).astype(np.float32))  # (6, 900, 1600)
+        pseudo_depth = pseudo_depth[self._depth_reorder]
+        pseudo_seg = None
+        if mask_dynamic:
+            seg_path = os.path.join(self.grounded_sam_root, scene_name, f'{sample_token}.npy')
+            pseudo_seg = torch.from_numpy(np.load(seg_path).astype(np.int64))
+            pseudo_seg = pseudo_seg[self._seg_reorder]
+        if scale != 1.0:
+            pseudo_depth = F.interpolate(pseudo_depth[:, None], scale_factor=scale,
+                                         mode='bilinear', align_corners=False).squeeze(1)
+            if mask_dynamic:
+                pseudo_seg = F.interpolate(pseudo_seg[:, None].float(), scale_factor=scale,
+                                           mode='nearest').squeeze(1).long()
+        if crop_top > 0:
+            pseudo_depth = pseudo_depth[:, crop_top:]
+            if mask_dynamic:
+                pseudo_seg = pseudo_seg[:, crop_top:]
+        pseudo_depth[pseudo_depth > self.max_pseudo_depth] = 0.0
+        if mask_dynamic:
+            dyn = torch.zeros_like(pseudo_seg, dtype=torch.bool)
+            for c in self.dynamic_pseudo_classes:
+                dyn |= (pseudo_seg == c)
+            pseudo_depth[dyn] = 0.0
+        return pseudo_depth  # (6, H', W')
+
+    def _build_multiframe_depth(self, scene_token, index, lidar2global_t, gs_intrins, ref_hw):
+        """Assemble history + future depth supervision for one sample.
+
+        Frame order: [hist t-1, t-2, ...] then [fut t+1, t+2, ...].
+        - History frames: gaussians rendered at original means, dynamic masked.
+        - Future frames : gaussians moved by offset[idx], dynamic NOT masked.
+
+        viewmat_k = ego2cam_k @ inv(ego2global_k) @ lidar2global_t  maps current
+        LIDAR-frame gaussians to frame-k camera (exact SE3 ego compensation).
+        """
+        keyframes = self.keyframes_[scene_token]
+        sample_idx = keyframes.index((scene_token, index))
+        frames = []  # (raw_info, offset_idx, valid)
+        for i in range(1, self.num_hist_depth_frames + 1):
+            valid = (sample_idx - i >= 0)
+            st, ix = keyframes[sample_idx - i] if valid else keyframes[0]
+            frames.append((self.scene_infos[st][ix], -1, valid))
+        for i in range(1, self.num_fut_depth_frames + 1):
+            valid = (sample_idx + i <= len(keyframes) - 1)
+            st, ix = keyframes[sample_idx + i] if valid else keyframes[0]
+            frames.append((self.scene_infos[st][ix], i - 1, valid))
+
+        gs_intrins_t = torch.from_numpy(np.asarray(gs_intrins)).float()  # (6, 3, 3)
+        H, W = ref_hw
+        extrins, depths, offset_idx, valids = [], [], [], []
+        for raw_info, off_idx, valid in frames:
+            finfo = self.get_data_info(raw_info)
+            ego2global_k = np.asarray(finfo['ego2global'])               # (4, 4)
+            cam2ego_k = np.asarray(finfo['cam2ego'])                     # (6, 4, 4)
+            ego2cam_k = np.linalg.inv(cam2ego_k)                         # (6, 4, 4)
+            world2lidar_t = np.linalg.inv(ego2global_k) @ lidar2global_t  # (4, 4)
+            viewmat_k = ego2cam_k @ world2lidar_t[None]                  # (6, 4, 4)
+            extrins.append(torch.from_numpy(viewmat_k).float())
+            if valid:
+                d = self._load_frame_depth(
+                    finfo['sample_idx'],
+                    self._scene_token_to_name[raw_info['scene_token']],
+                    mask_dynamic=(off_idx < 0),
+                )
+            else:
+                d = torch.zeros(6, H, W, dtype=torch.float32)
+            depths.append(d)
+            offset_idx.append(off_idx)
+            valids.append(valid)
+
+        K = len(frames)
+        return {
+            'extra_gs_extrins': torch.stack(extrins),                     # (K, 6, 4, 4)
+            'extra_gs_intrins': gs_intrins_t[None].repeat(K, 1, 1, 1),    # (K, 6, 3, 3)
+            'extra_pseudo_depth': torch.stack(depths),                    # (K, 6, H', W')
+            'extra_offset_idx': torch.tensor(offset_idx, dtype=torch.long),  # (K,)
+            'extra_valid': torch.tensor(valids, dtype=torch.bool),        # (K,)
+        }
+
     def __getitem__(self, index):
         scene_token, index = self.keyframes[index]
         info = deepcopy(self.scene_infos[scene_token][index])
@@ -1674,6 +1778,15 @@ class NuScenesDataset(Dataset):
             return_dict['gs_intrins'] = torch.from_numpy(gs_intrins).float()  # (6, 3, 3)
             return_dict['gs_extrins'] = torch.from_numpy(lidar2cam).float()   # (6, 4, 4)
             return_dict['aug_flip'] = aug_flip               # bool
+
+            # ── multi-frame depth supervision (history + future) ──
+            if self.num_hist_depth_frames > 0 or self.num_fut_depth_frames > 0:
+                lidar2global_t = get_lidar2global(
+                    info['data']['LIDAR_TOP']['calib'], info['data']['LIDAR_TOP']['pose'])
+                mf = self._build_multiframe_depth(
+                    scene_token, index, lidar2global_t, gs_intrins,
+                    ref_hw=pseudo_depth.shape[-2:])
+                return_dict.update(mf)
 
         return return_dict
 

@@ -71,6 +71,7 @@ class RenderLoss(BaseLoss):
         weight=1.0,
         sem_lw=2.0,
         depth_lw=0.05,
+        extra_depth_lw=0.1,
         vis_dir=None,
         vis_every=500,
         input_dict=None,
@@ -82,6 +83,9 @@ class RenderLoss(BaseLoss):
                 'rendered_depth': 'rendered_depth',
                 'pseudo_seg': 'pseudo_seg',
                 'pseudo_depth': 'pseudo_depth',
+                'rendered_extra_depth': 'rendered_extra_depth',
+                'extra_pseudo_depth': 'extra_pseudo_depth',
+                'extra_valid': 'extra_valid',
                 'input_imgs': 'input_imgs',
                 'aug_flip': 'aug_flip',
             }
@@ -92,6 +96,7 @@ class RenderLoss(BaseLoss):
 
         self.sem_lw = sem_lw
         self.depth_lw = depth_lw
+        self.extra_depth_lw = extra_depth_lw
         self.vis_dir = vis_dir
         self.vis_every = vis_every
 
@@ -114,15 +119,40 @@ class RenderLoss(BaseLoss):
         """Override BaseLoss.forward to return (total, sub_dict) for separate logging."""
         actual_inputs = {}#这里我们根据self.input_dict中定义的键值对，从inputs字典中提取对应的输入张量，并存储在actual_inputs字典中。这样做的目的是为了将输入张量的名称与loss_func方法中的参数名称进行映射，使得我们可以灵活地指定输入张量的来源，而不需要在loss_func方法中硬编码输入张量的名称。
         for input_key, input_val in self.input_dict.items():
-            actual_inputs.update({input_key: inputs[input_val]})
-        loss_sem, loss_depth = self.loss_func(**actual_inputs)
-        total = self.weight * (loss_sem + loss_depth)
+            actual_inputs.update({input_key: inputs.get(input_val)})
+        loss_sem, loss_depth, loss_extra_depth = self.loss_func(**actual_inputs)
+        total = self.weight * (loss_sem + loss_depth + loss_extra_depth)
         return total, {
             'RenderSemLoss': (self.weight * loss_sem).detach().item(),
             'RenderDepthLoss': (self.weight * loss_depth).detach().item(),
+            'RenderExtraDepthLoss': (self.weight * loss_extra_depth).detach().item(),
         }
 
-    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, input_imgs=None, aug_flip=None):
+    def _extra_depth_loss(self, rendered_extra_depth, extra_pseudo_depth, extra_valid):
+        """Multi-frame (history + future) depth Huber loss.
+
+        rendered_extra_depth: (B, K, nC, H, W)  — rendered depth per extra frame
+        extra_pseudo_depth:   (B, K, nC, H, W)  — pseudo depth (0=invalid; for
+                                                  history frames dynamic pixels
+                                                  are already zeroed)
+        extra_valid:          (B, K) bool       — frame existence flag
+        """
+        if rendered_extra_depth is None or extra_pseudo_depth is None:
+            return None
+        pred = rendered_extra_depth
+        tgt = extra_pseudo_depth.to(pred.device).float()
+        valid_d = (tgt > 0.5) & (pred.detach() > 0)
+        if extra_valid is not None:
+            vmask = extra_valid.to(pred.device).bool().view(
+                extra_valid.shape[0], extra_valid.shape[1], 1, 1, 1)
+            valid_d = valid_d & vmask
+        if valid_d.any():
+            return self.extra_depth_lw * self.loss_fn_depth(pred[valid_d], tgt[valid_d])
+        return pred.sum() * 0.0
+
+    def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth,
+                  rendered_extra_depth=None, extra_pseudo_depth=None, extra_valid=None,
+                  input_imgs=None, aug_flip=None):
         """
         Args:
             rendered_sem:   (B, nC, H, W, 17) — rendered semantic logits
@@ -135,7 +165,7 @@ class RenderLoss(BaseLoss):
         # eval mode: rendering was skipped, or val dataset has no pseudo labels
         if rendered_sem is None or rendered_depth is None or pseudo_seg is None or pseudo_depth is None:
             zero = torch.tensor(0.0, requires_grad=False)
-            return zero, zero
+            return zero, zero, zero
 
         # ── semantic loss ──semantic是指渲染结果的语义分割图，pseudo_seg是指根据点云生成的伪标签语义分割图。rendered_sem和pseudo_seg都是(B, nC, H, W)的形状，其中nC是相机数量，H和W是图像的高和宽。semantic loss是计算rendered_sem和pseudo_seg之间的交叉熵损失，注意pseudo_seg中的0表示无效像素，不参与损失计算。
         pred_sem = rendered_sem.flatten(0, -2)     # (N, 17)
@@ -167,6 +197,12 @@ class RenderLoss(BaseLoss):
         else:
             loss_depth = pred_d.sum() * 0.0
 
+        # ── multi-frame (history + future) depth loss ──
+        loss_extra_depth = self._extra_depth_loss(
+            rendered_extra_depth, extra_pseudo_depth, extra_valid)
+        if loss_extra_depth is None:
+            loss_extra_depth = loss_depth.new_zeros(())
+
         # ── diagnostics（每 vis_every iter 打印一次，并保存渲染可视化图片）──
         self._diag_counter = getattr(self, '_diag_counter', 0) + 1
         if self._diag_counter % self.vis_every == 1:
@@ -186,14 +222,19 @@ class RenderLoss(BaseLoss):
                 f'pred_depth: mean={pred_depth_mean:.2f}m std={pred_depth_std:.2f}m  '
                 f'gt_depth_mean={gt_depth_mean:.2f}m | '
                 f'sem_entropy={pred_entropy:.3f} (rand={rand_entropy:.3f}) | '
-                f'loss_sem={loss_sem.item():.4f} loss_depth={loss_depth.item():.4f}'
+                f'loss_sem={loss_sem.item():.4f} loss_depth={loss_depth.item():.4f} '
+                f'loss_extra_depth={loss_extra_depth.item():.4f}'
             )
             # 保存渲染可视化图片
             if self.vis_dir is not None:
                 self._save_vis(rendered_sem, rendered_depth, pseudo_seg, pseudo_depth,
                                step=self._diag_counter, input_imgs=input_imgs, aug_flip=aug_flip)
+                # 多帧（历史+未来）深度可视化
+                if rendered_extra_depth is not None and extra_pseudo_depth is not None:
+                    self._save_extra_vis(rendered_extra_depth, extra_pseudo_depth,
+                                         extra_valid, step=self._diag_counter)
 
-        return loss_sem, loss_depth
+        return loss_sem, loss_depth, loss_extra_depth
 
     def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step, input_imgs=None, aug_flip=None):
         """
@@ -290,3 +331,50 @@ class RenderLoss(BaseLoss):
             Image.fromarray(combined).save(out_path, quality=90)
         except Exception as e:
             logging.getLogger('mmengine').warning(f'[RenderLoss] vis save failed: {e}')
+
+    def _save_extra_vis(self, rendered_extra_depth, extra_pseudo_depth, extra_valid, step):
+        """保存多帧（历史+未来）深度渲染对比图（batch 0）。
+
+        rendered_extra_depth: (B, K, nC, H, W)
+        extra_pseudo_depth:   (B, K, nC, H, W)
+        extra_valid:          (B, K) bool 或 None
+
+        帧顺序由 dataset 固定：[hist t-1, t-2, ..., fut t+1, t+2, ...]。
+        每相机一行，横向拼接 K 帧 × [pred_depth | gt_depth]，
+        所有相机纵向堆叠，保存为 render_vis/step_{step:06d}_extra.jpg。
+        无效帧（extra_valid=False）深度全 0 → 显示全灰。
+        """
+        import torch.distributed as dist
+        if dist.is_initialized() and dist.get_rank() != 0:
+            return
+        try:
+            from PIL import Image
+        except ImportError:
+            return
+        try:
+            os.makedirs(self.vis_dir, exist_ok=True)
+            B, K, nC, H, W = rendered_extra_depth.shape
+            valid_cpu = extra_valid[0].detach().cpu().bool().numpy() if extra_valid is not None \
+                else np.ones(K, dtype=bool)
+            rows = []
+            for cam in range(nC):
+                cols = []
+                for k in range(K):
+                    pred_d_np = rendered_extra_depth[0, k, cam].detach().cpu().numpy()  # (H, W)
+                    gt_d_np   = extra_pseudo_depth[0, k, cam].detach().cpu().numpy()    # (H, W)
+                    if not bool(valid_cpu[k]):
+                        # 无效帧：置 0 → _depth_to_rgb 显示为灰色
+                        pred_d_np = np.zeros_like(pred_d_np)
+                        gt_d_np   = np.zeros_like(gt_d_np)
+                    cols.append(_depth_to_rgb(pred_d_np))
+                    cols.append(_depth_to_rgb(gt_d_np))
+                separator = np.zeros((2, W * len(cols), 3), dtype=np.uint8)
+                row = np.concatenate(cols, axis=1)
+                rows.append(separator)
+                rows.append(row)
+
+            combined = np.concatenate(rows, axis=0)
+            out_path = os.path.join(self.vis_dir, f'step_{step:06d}_extra.jpg')
+            Image.fromarray(combined).save(out_path, quality=90)
+        except Exception as e:
+            logging.getLogger('mmengine').warning(f'[RenderLoss] extra vis save failed: {e}')

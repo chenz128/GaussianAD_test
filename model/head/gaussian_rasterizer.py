@@ -68,6 +68,32 @@ class GaussianRasterizer2D(nn.Module):
         rendered_depth = rendered[..., 17]   # (nC, H, W)
         return rendered_sem, rendered_depth
 
+    def render_depth_only(self, means, quats, scales, opacities, gs_extrins, gs_intrins):
+        """Render ONLY depth for all cameras of one batch element.
+
+        Uses a single dummy color channel (depth is color-independent in
+        alpha-blending), much cheaper than the 17-channel semantic render.
+        Used for multi-frame (history/future) depth supervision.
+
+        Returns:
+            rendered_depth: (nC, H, W)
+        """
+        dummy = means.new_zeros((means.shape[0], 1))  # (G, 1)
+        rendered, _, _ = rasterization(
+            means=means,
+            quats=quats,
+            scales=scales,
+            opacities=opacities,
+            colors=dummy,
+            viewmats=gs_extrins,
+            Ks=gs_intrins,
+            width=self.width,
+            height=self.height,
+            render_mode='RGB+D',
+        )
+        # rendered: (nC, H, W, 2) — channel 0 dummy color, channel 1 depth
+        return rendered[..., 1]  # (nC, H, W)
+
     def forward(self, gaussian, gs_extrins, gs_intrins):
         """
         Args:

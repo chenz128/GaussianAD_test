@@ -205,11 +205,57 @@ class GaussianHead(BaseTaskHead):
                 gs_extrins = metas['gs_extrins'].to(self.zero_tensor.device)  # (B, nC, 4, 4)
                 gs_intrins = metas['gs_intrins'].to(self.zero_tensor.device)  # (B, nC, 3, 3)
                 rendered_sem, rendered_depth = self.rasterizer_2d(gaussians, gs_extrins, gs_intrins)
+                rendered_extra_depth = self._render_extra_frames(gaussians, metas, kwargs)
             else:
                 # eval: skip expensive rendering, output None so loss returns 0
-                rendered_sem, rendered_depth = None, None
+                rendered_sem, rendered_depth, rendered_extra_depth = None, None, None
             output['rendered_sem'] = rendered_sem
             output['rendered_depth'] = rendered_depth
+            output['rendered_extra_depth'] = rendered_extra_depth
 
         return output
+
+    def _render_extra_frames(self, gaussians, metas, kwargs):
+        """Render multi-frame (history + future) depth for pseudo supervision.
+
+        History frames render gaussians at original means (dynamic regions are
+        masked in the pseudo depth). Future frames move gaussians by the
+        predicted offset[idx] before rendering. Returns (B, K, nC, H, W) or None.
+        """
+        if metas.get('extra_gs_extrins', None) is None:
+            return None
+        extra_extrins = metas['extra_gs_extrins'].to(self.zero_tensor.device)  # (B, K, nC, 4, 4)
+        extra_intrins = metas['extra_gs_intrins'].to(self.zero_tensor.device)  # (B, K, nC, 3, 3)
+        offset_idx = metas['extra_offset_idx']   # (B, K)
+        valid = metas['extra_valid']             # (B, K)
+        B, K = offset_idx.shape[:2]
+
+        offset = kwargs.get('offset', None)
+        if offset is not None:
+            offset = offset.reshape(1, -1, 6, 2)  # (1, G, 6, 2)
+
+        means = gaussians.means        # (B, G, 3)
+        quats = gaussians.rotations    # (B, G, 4)
+        scales = gaussians.scales      # (B, G, 3)
+        opa = gaussians.opacities      # (B, G, 1)
+        H, W = self.rasterizer_2d.height, self.rasterizer_2d.width
+        out = means.new_zeros((B, K, extra_extrins.shape[2], H, W))
+        for b in range(B):
+            for k in range(K):
+                if not bool(valid[b, k]):
+                    continue
+                idx = int(offset_idx[b, k])
+                if idx < 0:
+                    means_k = means[b]
+                else:
+                    if offset is None:
+                        continue  # no motion prediction available → skip future frame
+                    off = offset[b, :, idx]                       # (G, 2)
+                    off = torch.cat([off, off.new_zeros((off.shape[0], 1))], dim=-1)  # (G, 3)
+                    means_k = means[b] + off
+                depth_k = self.rasterizer_2d.render_depth_only(
+                    means_k, quats[b], scales[b], opa[b, :, 0],
+                    extra_extrins[b, k], extra_intrins[b, k])
+                out[b, k] = depth_k
+        return out  # (B, K, nC, H, W)
 
