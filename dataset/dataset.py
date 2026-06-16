@@ -1240,6 +1240,7 @@ class NuScenesDataset(Dataset):
         max_pseudo_depth=40.0,
         pseudo_label_crop_top=140,
         dynamic_gt_root=None,
+        subsample_seed=None,
     ):
         self.data_path = data_root
         data = mmengine.load(imageset)
@@ -1272,15 +1273,19 @@ class NuScenesDataset(Dataset):
 
         self.sensor_types = ['CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_FRONT_LEFT',
             'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
+        # reproducible subsampling: a fixed seed makes baseline vs experiment
+        # runs use the IDENTICAL keyframe subset so results are comparable.
+        _subsample_rng = (np.random.RandomState(subsample_seed)
+                          if subsample_seed is not None else np.random)
         if vis_indices is not None:
             if len(vis_indices) > 0:
                 vis_indices = [i % len(self.keyframes) for i in vis_indices]
                 self.keyframes = [self.keyframes[idx] for idx in vis_indices]
             elif num_samples > 0:
-                vis_indices = np.random.choice(len(self.keyframes), num_samples, False)
+                vis_indices = _subsample_rng.choice(len(self.keyframes), num_samples, False)
                 self.keyframes = [self.keyframes[idx] for idx in vis_indices]
         elif num_samples > 0:
-            vis_indices = np.random.choice(len(self.keyframes), num_samples, False)
+            vis_indices = _subsample_rng.choice(len(self.keyframes), num_samples, False)
             self.keyframes = [self.keyframes[idx] for idx in vis_indices]
 
         self.aux_seg = aux_seg
