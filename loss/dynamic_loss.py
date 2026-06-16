@@ -56,6 +56,9 @@ class DynamicLoss(BaseLoss):
                 'pseudo_dyn': 'pseudo_dyn',
                 'input_imgs': 'input_imgs',
                 'aug_flip': 'aug_flip',
+                'rendered_extra_dynamic': 'rendered_extra_dynamic',
+                'extra_pseudo_dyn': 'extra_pseudo_dyn',
+                'extra_dyn_valid': 'extra_dyn_valid',
             }
         super().__init__(weight=weight, input_dict=input_dict, **kwargs)
         # BaseLoss.__init__ sets self.loss_func = lambda: 0 as instance attr,
@@ -70,19 +73,25 @@ class DynamicLoss(BaseLoss):
     def forward(self, inputs):
         actual_inputs = {}
         for input_key, input_val in self.input_dict.items():
-            actual_inputs.update({input_key: inputs[input_val]})
+            # .get(): multi-frame keys are absent unless the config maps them,
+            # so missing keys resolve to None and the loss skips that branch.
+            actual_inputs.update({input_key: inputs.get(input_val)})
         loss = self.loss_func(**actual_inputs)
         return self.weight * loss, {
             'DynamicLoss': (self.weight * loss).detach().item(),
         }
 
-    def loss_func(self, rendered_dynamic, pseudo_dyn, input_imgs=None, aug_flip=None):
+    def loss_func(self, rendered_dynamic, pseudo_dyn, input_imgs=None, aug_flip=None,
+                  rendered_extra_dynamic=None, extra_pseudo_dyn=None, extra_dyn_valid=None):
         """
         Args:
             rendered_dynamic: (B, nC, H, W) raw logits, or None (eval)
             pseudo_dyn:       (B, nC, H, W) int, 0=ignore/1=static/2=dynamic, or None
             input_imgs:       (B, F, N, C, H, W) original cam images (optional, for vis)
             aug_flip:         bool or None — whether input image was horizontally flipped
+            rendered_extra_dynamic: (B, K, nC, H, W) multi-frame logits, or None
+            extra_pseudo_dyn:       (B, K, nC, H, W) multi-frame dynamic GT, or None
+            extra_dyn_valid:        (B, K) bool — which extra frames are usable, or None
         """
         if rendered_dynamic is None or pseudo_dyn is None:
             return torch.tensor(0.0, requires_grad=False)
@@ -99,6 +108,14 @@ class DynamicLoss(BaseLoss):
             pred_v, target_v, pos_weight=self.pos_weight.to(pred_v.device)
         )
 
+        # ── multi-frame (history + future) supervision ──
+        extra_loss_val = 0.0
+        if rendered_extra_dynamic is not None and extra_pseudo_dyn is not None:
+            extra = self._extra_dynamic_loss(
+                rendered_extra_dynamic, extra_pseudo_dyn, extra_dyn_valid)
+            loss = loss + extra
+            extra_loss_val = float(extra.detach().item())
+
         # ── diagnostics ──
         self._diag_counter = getattr(self, '_diag_counter', 0) + 1
         if self._diag_counter % self.vis_every == 1:
@@ -111,11 +128,44 @@ class DynamicLoss(BaseLoss):
                 f'[DynamicLoss Diag] iter={self._diag_counter} | '
                 f'valid_px={n_valid} dyn_gt={n_dyn} ({n_dyn / max(n_valid, 1):.2%}) | '
                 f'pred_dyn_ratio={pred_dyn_ratio:.2%} | loss={loss.item():.4f}'
+                + (f' | extra_loss={extra_loss_val:.4f}' if extra_loss_val else '')
             )
             if self.vis_dir is not None:
                 self._save_vis(rendered_dynamic, pseudo_dyn, step=self._diag_counter,
                                input_imgs=input_imgs, aug_flip=aug_flip)
         return loss
+
+    def _extra_dynamic_loss(self, rendered_extra, extra_pseudo, extra_valid):
+        """BCE on multi-frame rendered dynamic logits vs adjacent-frame dynamic GT.
+
+        Args:
+            rendered_extra: (B, K, nC, H, W) raw logits
+            extra_pseudo:   (B, K, nC, H, W) int, 0=ignore/1=static/2=dynamic
+            extra_valid:    (B, K) bool, or None
+        History frames contribute only static (gt==2 already masked to 0 in the
+        dataset -> all negatives); future frames add rare dynamic positives.
+        """
+        B, K = rendered_extra.shape[:2]
+        dev = rendered_extra.device
+        pred_list, tgt_list = [], []
+        for b in range(B):
+            for k in range(K):
+                if extra_valid is not None and not bool(extra_valid[b, k]):
+                    continue
+                pred = rendered_extra[b, k].flatten()
+                gt = extra_pseudo[b, k].flatten().long().to(dev)
+                m = gt > 0
+                if not m.any():
+                    continue
+                pred_list.append(pred[m])
+                tgt_list.append((gt[m] == 2).float())
+        if not pred_list:
+            return rendered_extra.sum() * 0.0
+        pred_v = torch.cat(pred_list)
+        tgt_v = torch.cat(tgt_list)
+        return nn.functional.binary_cross_entropy_with_logits(
+            pred_v, tgt_v, pos_weight=self.pos_weight.to(dev)
+        )
 
     def _save_vis(self, rendered_dynamic, pseudo_dyn, step, input_imgs=None, aug_flip=None):
         """

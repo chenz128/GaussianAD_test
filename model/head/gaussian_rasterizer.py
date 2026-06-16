@@ -81,6 +81,33 @@ class GaussianRasterizer2D(nn.Module):
             rendered_dynamic = None
         return rendered_sem, rendered_depth, rendered_dynamic
 
+    def render_dynamic_only(self, means, quats, scales, opacities, dynamic, gs_extrins, gs_intrins):
+        """Render ONLY the dynamic logit for all cameras of one batch element.
+
+        Single dynamic color channel (depth channel from RGB+D is discarded),
+        much cheaper than the full 17-ch semantic render. Used for multi-frame
+        (history/future) dynamic/static supervision.
+
+        Args:
+            dynamic: (G, 1) raw per-gaussian dynamic logit
+        Returns:
+            rendered_dynamic: (nC, H, W)
+        """
+        rendered, _, _ = rasterization(
+            means=means,
+            quats=quats,
+            scales=scales,
+            opacities=opacities,
+            colors=dynamic,                 # (G, 1)
+            viewmats=gs_extrins,
+            Ks=gs_intrins,
+            width=self.width,
+            height=self.height,
+            render_mode='RGB+D',
+        )
+        # rendered: (nC, H, W, 2) — channel 0 dynamic logit, channel 1 depth
+        return rendered[..., 0]  # (nC, H, W)
+
     def forward(self, gaussian, gs_extrins, gs_intrins):
         """
         Args:

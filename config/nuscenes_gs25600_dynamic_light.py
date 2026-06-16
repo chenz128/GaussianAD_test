@@ -7,6 +7,10 @@ GPU：h20-new 后 4 张（4, 5, 6, 7）
   - train_dataset_config.num_samples=3000 训练集子采样（全量 ~28k → 3000）
   - subsample_seed=42 固定，baseline/实验复用同一子集，结果可比、可复现
   - 仅用于快速验证动静监督有效性，定型后再回到 dynamic_new 全量训练
+多帧动静监督（迁自 mf_depth 多帧几何）：
+  - num_hist_dyn_frames=2 / num_fut_dyn_frames=2
+  - 历史帧：高斯用当前 means 投影，动态像素被 mask（仅监督静态，增加负样本）
+  - 未来帧：高斯用 means+offset[idx] 投影，保留动态（增加稀有动态正样本）
 差异于 nuscenes_gs25600_2D.py：
   - RenderLoss weight=0（语义/深度不参与训练，仅保留 500 iter 可视化/诊断）
   - DynamicLoss pos_weight 30 → 40（SAM static-fill 后负类更多，动态正类更稀）
@@ -145,6 +149,10 @@ loss_input_convertion = dict(
     # dynamic loss inputs
     rendered_dynamic='rendered_dynamic',
     pseudo_dyn='pseudo_dyn',
+    # multi-frame dynamic loss inputs
+    rendered_extra_dynamic='rendered_extra_dynamic',
+    extra_pseudo_dyn='extra_pseudo_dyn',
+    extra_dyn_valid='extra_dyn_valid',
 )
 
 frozen_modules = ['map_decoder', 'planner_head']
@@ -210,6 +218,9 @@ train_dataset_config = dict(
     # lightweight: reproducible 3000-sample subset (vs full ~28k) for fast iteration
     num_samples=3000,
     subsample_seed=42,
+    # multi-frame dynamic supervision (history masks dynamic; future moves by offset)
+    num_hist_dyn_frames=2,
+    num_fut_dyn_frames=2,
 )
 
 model = dict(

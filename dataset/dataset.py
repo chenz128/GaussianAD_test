@@ -1241,6 +1241,8 @@ class NuScenesDataset(Dataset):
         pseudo_label_crop_top=140,
         dynamic_gt_root=None,
         subsample_seed=None,
+        num_hist_dyn_frames=0,
+        num_fut_dyn_frames=0,
     ):
         self.data_path = data_root
         data = mmengine.load(imageset)
@@ -1324,6 +1326,8 @@ class NuScenesDataset(Dataset):
         self.max_pseudo_depth = max_pseudo_depth
         self.pseudo_label_crop_top = pseudo_label_crop_top
         self.dynamic_gt_root = dynamic_gt_root
+        self.num_hist_dyn_frames = num_hist_dyn_frames
+        self.num_fut_dyn_frames = num_fut_dyn_frames
         self.use_pseudo_label = (metric3d_root is not None and grounded_sam_root is not None)
         if self.use_pseudo_label:
             # build scene_token -> scene_name mapping
@@ -1580,6 +1584,86 @@ class NuScenesDataset(Dataset):
 
         return all_sweeps_prev
 
+    def _load_frame_dynamic(self, sample_token, mask_dynamic):
+        """Load one frame's dynamic/static GT (6, H', W').
+
+        The dynamic GT npy is already at render resolution (scale=0.44,
+        crop_top=140) and in sensor_types camera order, so NO reorder /
+        downsample / crop is needed (unlike metric3d depth).
+
+        If mask_dynamic=True, dynamic-class pixels (label 2) are set to ignore
+        (0). This is used for HISTORY frames: current-position gaussians have
+        no backward motion model, so projecting them onto a past frame is only
+        valid for STATIC content. Returns None if the npy is missing.
+        """
+        dyn_path = os.path.join(self.dynamic_gt_root, f'{sample_token}.npy')
+        if not os.path.exists(dyn_path):
+            return None
+        dyn = torch.from_numpy(np.load(dyn_path).astype(np.int64))  # (6, H', W')
+        if mask_dynamic:
+            dyn[dyn == 2] = 0  # keep only static (1); dynamic -> ignore
+        return dyn
+
+    def _build_multiframe_dynamic(self, scene_token, index, lidar2global_t, gs_intrins, ref_hw):
+        """Assemble history + future dynamic/static supervision for one sample.
+
+        Frame order: [hist t-1, t-2, ...] then [fut t+1, t+2, ...].
+        - History frames: gaussians rendered at original means; dynamic pixels
+          masked out (only static supervision, since current-position gaussians
+          cannot be moved backward). target=(gt==2) is all-zero here -> teaches
+          static gaussians to stay non-dynamic (extra negative samples).
+        - Future frames : gaussians moved by predicted offset[idx] before render;
+          dynamic NOT masked -> adds rare dynamic positive samples.
+
+        viewmat_k = ego2cam_k @ inv(ego2global_k) @ lidar2global_t maps current
+        LIDAR-frame gaussians to frame-k camera (exact SE3 ego compensation).
+        At k=current this reduces to the single-frame lidar2cam, so the geometry
+        is consistent with the current-frame gs_extrins.
+        """
+        keyframes = self.keyframes_[scene_token]
+        sample_idx = keyframes.index((scene_token, index))
+        frames = []  # (raw_info, offset_idx, valid)
+        for i in range(1, self.num_hist_dyn_frames + 1):
+            valid = (sample_idx - i >= 0)
+            st, ix = keyframes[sample_idx - i] if valid else keyframes[0]
+            frames.append((self.scene_infos[st][ix], -1, valid))
+        for i in range(1, self.num_fut_dyn_frames + 1):
+            valid = (sample_idx + i <= len(keyframes) - 1)
+            st, ix = keyframes[sample_idx + i] if valid else keyframes[0]
+            frames.append((self.scene_infos[st][ix], i - 1, valid))
+
+        gs_intrins_t = torch.from_numpy(np.asarray(gs_intrins)).float()  # (6, 3, 3)
+        H, W = ref_hw
+        # lidar2ego (sensor calib, frame-invariant) to convert lidar2cam properly
+        extrins, dyns, offset_idx, valids = [], [], [], []
+        for raw_info, off_idx, valid in frames:
+            finfo = self.get_data_info(raw_info)
+            ego2global_k = np.asarray(finfo['ego2global'])               # (4, 4)
+            cam2ego_k = np.asarray(finfo['cam2ego'])                     # (6, 4, 4)
+            ego2cam_k = np.linalg.inv(cam2ego_k)                         # (6, 4, 4)
+            world2lidar_t = np.linalg.inv(ego2global_k) @ lidar2global_t  # (4, 4)
+            viewmat_k = ego2cam_k @ world2lidar_t[None]                  # (6, 4, 4)
+            extrins.append(torch.from_numpy(viewmat_k).float())
+            if valid:
+                d = self._load_frame_dynamic(finfo['sample_idx'], mask_dynamic=(off_idx < 0))
+                if d is None:
+                    d = torch.zeros(6, H, W, dtype=torch.long)
+                    valid = False
+            else:
+                d = torch.zeros(6, H, W, dtype=torch.long)
+            dyns.append(d)
+            offset_idx.append(off_idx)
+            valids.append(valid)
+
+        K = len(frames)
+        return {
+            'extra_dyn_gs_extrins': torch.stack(extrins),                    # (K, 6, 4, 4)
+            'extra_dyn_gs_intrins': gs_intrins_t[None].repeat(K, 1, 1, 1),   # (K, 6, 3, 3)
+            'extra_pseudo_dyn': torch.stack(dyns),                           # (K, 6, H', W')
+            'extra_dyn_offset_idx': torch.tensor(offset_idx, dtype=torch.long),  # (K,)
+            'extra_dyn_valid': torch.tensor(valids, dtype=torch.bool),       # (K,)
+        }
+
     def __getitem__(self, index):
         scene_token, index = self.keyframes[index]
         info = deepcopy(self.scene_infos[scene_token][index])
@@ -1692,6 +1776,15 @@ class NuScenesDataset(Dataset):
                 # align: far/invalid pseudo regions also ignored for dynamic
                 pseudo_dyn[far_mask] = 0
                 return_dict['pseudo_dyn'] = pseudo_dyn       # (6, H', W')
+
+                # ── multi-frame dynamic supervision (history + future) ──
+                if self.num_hist_dyn_frames > 0 or self.num_fut_dyn_frames > 0:
+                    lidar2global_t = get_lidar2global(
+                        info['data']['LIDAR_TOP']['calib'], info['data']['LIDAR_TOP']['pose'])
+                    mf_dyn = self._build_multiframe_dynamic(
+                        scene_token, index, lidar2global_t, gs_intrins,
+                        ref_hw=pseudo_dyn.shape[-2:])
+                    return_dict.update(mf_dyn)
 
         return return_dict
 
