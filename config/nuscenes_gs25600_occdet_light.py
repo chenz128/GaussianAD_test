@@ -51,7 +51,7 @@ optimizer = dict(
     )
 )
 grad_max_norm = 35
-max_epochs = 20
+max_epochs = 15
 
 # ========= loss config ================
 loss = dict(
@@ -124,6 +124,9 @@ frozen_modules = ['map_decoder', 'planner_head']
 # (forward_flow runs unconditionally but no FlowLoss → flow grads unused)
 # and from map_decoder/planner_head (frozen). find_unused_parameters covers both.
 find_unused_parameters = True
+# with_cp (gradient checkpointing) causes reentrant backward → DDP sees params
+# marked ready twice. static_graph tells DDP the graph is fixed across iters.
+static_graph = True
 backbone_fp16 = True
 
 # ========= model config ===============
