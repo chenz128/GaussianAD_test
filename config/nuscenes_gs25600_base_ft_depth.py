@@ -109,7 +109,7 @@ loss = dict(
             sem_lw=0.0,         # 不做语义监督（语义仍渲染，仅用于可视化）
             depth_lw=0.5,       # 当前帧深度
             extra_depth_lw=0.1, # 多帧（历史2+未来2）深度
-            vis_dir='out/nuscenes_gs25600_mf_depth/render_vis',
+            vis_dir='out/nuscenes_gs25600_base_ft_depth/render_vis',
             vis_every=500,
         ),
     ])
