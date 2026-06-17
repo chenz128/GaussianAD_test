@@ -7,7 +7,7 @@ nuscenes_gs25600_base_ft_depth 实验配置（base epoch5 接续 + 多帧深度�
   - load_from=ckpts/base_epoch_5.pth（base 第 5 epoch 权重，strict=False，只加载权重）
   - 新 work_dir（无 latest.pth）→ epoch 从 0 重新计数，cosine lr peak=2e-4
   - max_epochs=10
-  - RenderLoss：sem_lw=0（不做语义监督），depth_lw=2.5（当前帧），extra_depth_lw=0.5（多帧）
+  - RenderLoss：sem_lw=0（不做语义监督），depth_lw=0.5（当前帧），extra_depth_lw=0.1（多帧）
     —— 与 mf_depth 完全相同的 depth 权重，唯一差异是初始化（base epoch5 vs FCOS3D 从零）
   - 多帧深度：未来帧动态不 mask，历史帧动态 mask掉
   - num_samples=3000 子采样 + subsample_seed=42（与 base/mf_depth 同一子集）
@@ -107,8 +107,8 @@ loss = dict(
             type='RenderLoss',
             weight=1.0,
             sem_lw=0.0,         # 不做语义监督（语义仍渲染，仅用于可视化）
-            depth_lw=2.5,       # 当前帧深度
-            extra_depth_lw=0.5, # 多帧（历史2+未来2）深度
+            depth_lw=0.5,       # 当前帧深度
+            extra_depth_lw=0.1, # 多帧（历史2+未来2）深度
             vis_dir='out/nuscenes_gs25600_mf_depth/render_vis',
             vis_every=500,
         ),
