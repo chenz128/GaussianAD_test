@@ -119,7 +119,7 @@ loss = dict(
         ),
         dict(
             type='DynamicLoss',
-            weight=1.0,
+            weight=5.0,
             pos_weight=40.0,
             vis_dir='out/nuscenes_gs25600_dynamic_light/dynamic_vis',
             vis_every=500,
