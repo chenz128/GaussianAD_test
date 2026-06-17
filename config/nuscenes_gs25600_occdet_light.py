@@ -164,7 +164,9 @@ val_dataset_config = dict(
     data_aug_conf=data_aug_conf,
     class_names=det_config['class_names'],
     pc_range=pc_range,
-    num_frames=4
+    num_frames=4,
+    num_samples=2000,
+    subsample_seed=42,
 )
 train_dataset_config = dict(
     imageset='data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v4.pkl',
