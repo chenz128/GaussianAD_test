@@ -72,6 +72,9 @@ class RenderLoss(BaseLoss):
         sem_lw=2.0,
         depth_lw=0.05,
         extra_depth_lw=0.1,
+        acc_lw=0.0,
+        acc_tau_fg=0.8,
+        acc_tau_sky=0.2,
         vis_dir=None,
         vis_every=500,
         input_dict=None,
@@ -81,6 +84,7 @@ class RenderLoss(BaseLoss):
             input_dict = {
                 'rendered_sem': 'rendered_sem',
                 'rendered_depth': 'rendered_depth',
+                'rendered_acc': 'rendered_acc',
                 'pseudo_seg': 'pseudo_seg',
                 'pseudo_depth': 'pseudo_depth',
                 'rendered_extra_depth': 'rendered_extra_depth',
@@ -97,6 +101,12 @@ class RenderLoss(BaseLoss):
         self.sem_lw = sem_lw
         self.depth_lw = depth_lw
         self.extra_depth_lw = extra_depth_lw
+        # A1 accumulation loss: hinge-softened opacity prior.
+        # acc_lw=0 disables it (default). acc_tau_fg: foreground only penalized
+        # when A < tau_fg; acc_tau_sky: sky only penalized when A > tau_sky.
+        self.acc_lw = acc_lw
+        self.acc_tau_fg = acc_tau_fg
+        self.acc_tau_sky = acc_tau_sky
         self.vis_dir = vis_dir
         self.vis_every = vis_every
 
@@ -120,12 +130,13 @@ class RenderLoss(BaseLoss):
         actual_inputs = {}#这里我们根据self.input_dict中定义的键值对，从inputs字典中提取对应的输入张量，并存储在actual_inputs字典中。这样做的目的是为了将输入张量的名称与loss_func方法中的参数名称进行映射，使得我们可以灵活地指定输入张量的来源，而不需要在loss_func方法中硬编码输入张量的名称。
         for input_key, input_val in self.input_dict.items():
             actual_inputs.update({input_key: inputs.get(input_val)})
-        loss_sem, loss_depth, loss_extra_depth = self.loss_func(**actual_inputs)
-        total = self.weight * (loss_sem + loss_depth + loss_extra_depth)
+        loss_sem, loss_depth, loss_extra_depth, loss_acc = self.loss_func(**actual_inputs)
+        total = self.weight * (loss_sem + loss_depth + loss_extra_depth + loss_acc)
         return total, {
             'RenderSemLoss': (self.weight * loss_sem).detach().item(),
             'RenderDepthLoss': (self.weight * loss_depth).detach().item(),
             'RenderExtraDepthLoss': (self.weight * loss_extra_depth).detach().item(),
+            'RenderAccLoss': (self.weight * loss_acc).detach().item(),
         }
 
     def _extra_depth_loss(self, rendered_extra_depth, extra_pseudo_depth, extra_valid):
@@ -150,13 +161,53 @@ class RenderLoss(BaseLoss):
             return self.extra_depth_lw * self.loss_fn_depth(pred[valid_d], tgt[valid_d])
         return pred.sum() * 0.0
 
+    def _acc_loss(self, rendered_acc, pseudo_seg, pseudo_depth):
+        """A1 accumulation loss: a hinge-softened opacity prior on the rendered
+        accumulation map A = 1 - T_final (per-pixel total opacity along the ray).
+
+        Target A* is CONSTRUCTED from existing pseudo labels (no external data):
+          - foreground (pseudo_depth > 0.5): a real surface exists -> A should -> 1
+          - sky/empty  (pseudo_seg == 0 AND pseudo_depth == 0): nothing there -> A -> 0
+          - middle ground (seg > 0 but depth == 0, e.g. far buildings > 40m where
+            Metric3D is unreliable): NOT constrained (skipped) -- we don't know.
+
+        Hinge softening avoids forcing exact binarization (which fights legit
+        thin/semi-transparent surfaces):
+          - foreground: penalize only when A < tau_fg  -> relu(tau_fg - A)
+          - sky:        penalize only when A > tau_sky  -> relu(A - tau_sky)
+
+        Effect: kills low-alpha floaters scattered in empty space (sky gets
+        non-zero A) and pushes foggy foreground surfaces to commit opacity,
+        WITHOUT touching scale or directly supervising occluded gaussians
+        (occluded gaussians have T_i~0 so their gradient ~0).
+        """
+        if rendered_acc is None or pseudo_seg is None or pseudo_depth is None:
+            return None
+        acc = rendered_acc.flatten().clamp(0.0, 1.0)
+        seg = pseudo_seg.flatten().long()
+        dep = pseudo_depth.flatten()
+
+        fg_mask = dep > 0.5
+        sky_mask = (seg == 0) & (dep <= 0.0)
+
+        terms = []
+        if fg_mask.any():
+            terms.append(F.relu(self.acc_tau_fg - acc[fg_mask]).mean())
+        if sky_mask.any():
+            terms.append(F.relu(acc[sky_mask] - self.acc_tau_sky).mean())
+        if not terms:
+            return acc.sum() * 0.0
+        return self.acc_lw * torch.stack(terms).sum()
+
     def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth,
+                  rendered_acc=None,
                   rendered_extra_depth=None, extra_pseudo_depth=None, extra_valid=None,
                   input_imgs=None, aug_flip=None):
         """
         Args:
             rendered_sem:   (B, nC, H, W, 17) — rendered semantic logits
             rendered_depth: (B, nC, H, W)     — rendered depth
+            rendered_acc:   (B, nC, H, W)     — rendered accumulation map A (A1)
             pseudo_seg:     (B, nC, H, W)     — pseudo semantic labels (0=invalid)
             pseudo_depth:   (B, nC, H, W)     — pseudo depth (0=invalid)
             input_imgs:     (B, F, N, C, H, W) — original camera images (optional, for vis)
@@ -165,7 +216,7 @@ class RenderLoss(BaseLoss):
         # eval mode: rendering was skipped, or val dataset has no pseudo labels
         if rendered_sem is None or rendered_depth is None or pseudo_seg is None or pseudo_depth is None:
             zero = torch.tensor(0.0, requires_grad=False)
-            return zero, zero, zero
+            return zero, zero, zero, zero
 
         # ── semantic loss ──semantic是指渲染结果的语义分割图，pseudo_seg是指根据点云生成的伪标签语义分割图。rendered_sem和pseudo_seg都是(B, nC, H, W)的形状，其中nC是相机数量，H和W是图像的高和宽。semantic loss是计算rendered_sem和pseudo_seg之间的交叉熵损失，注意pseudo_seg中的0表示无效像素，不参与损失计算。
         pred_sem = rendered_sem.flatten(0, -2)     # (N, 17)
@@ -203,6 +254,13 @@ class RenderLoss(BaseLoss):
         if loss_extra_depth is None:
             loss_extra_depth = loss_depth.new_zeros(())
 
+        # ── A1 accumulation loss (current frame only) ──
+        loss_acc = None
+        if self.acc_lw > 0:
+            loss_acc = self._acc_loss(rendered_acc, pseudo_seg, pseudo_depth)
+        if loss_acc is None:
+            loss_acc = loss_depth.new_zeros(())
+
         # ── diagnostics（每 vis_every iter 打印一次，并保存渲染可视化图片）──
         self._diag_counter = getattr(self, '_diag_counter', 0) + 1
         if self._diag_counter % self.vis_every == 1:
@@ -215,6 +273,17 @@ class RenderLoss(BaseLoss):
                 prob = torch.softmax(pred_sem[valid_sem], dim=-1) if valid_sem.any() else None
                 pred_entropy = (-(prob * (prob + 1e-8).log()).sum(-1)).mean().item() if prob is not None else float('nan')
                 rand_entropy = math.log(17)   # 随机猜测基准 ≈ 2.833
+                # A1 accumulation diagnostics
+                if self.acc_lw > 0 and rendered_acc is not None:
+                    acc_flat = rendered_acc.flatten().clamp(0.0, 1.0)
+                    seg_flat = pseudo_seg.flatten().long()
+                    dep_flat = pseudo_depth.flatten()
+                    fg_m = dep_flat > 0.5
+                    sky_m = (seg_flat == 0) & (dep_flat <= 0.0)
+                    acc_fg_mean = acc_flat[fg_m].mean().item() if fg_m.any() else float('nan')
+                    acc_sky_mean = acc_flat[sky_m].mean().item() if sky_m.any() else float('nan')
+                else:
+                    acc_fg_mean = acc_sky_mean = float('nan')
             logger = logging.getLogger('mmengine')
             logger.info(
                 f'[RenderLoss Diag] iter={self._diag_counter} | '
@@ -222,8 +291,9 @@ class RenderLoss(BaseLoss):
                 f'pred_depth: mean={pred_depth_mean:.2f}m std={pred_depth_std:.2f}m  '
                 f'gt_depth_mean={gt_depth_mean:.2f}m | '
                 f'sem_entropy={pred_entropy:.3f} (rand={rand_entropy:.3f}) | '
+                f'acc_fg={acc_fg_mean:.3f} acc_sky={acc_sky_mean:.3f} | '
                 f'loss_sem={loss_sem.item():.4f} loss_depth={loss_depth.item():.4f} '
-                f'loss_extra_depth={loss_extra_depth.item():.4f}'
+                f'loss_extra_depth={loss_extra_depth.item():.4f} loss_acc={loss_acc.item():.4f}'
             )
             # 保存渲染可视化图片
             if self.vis_dir is not None:
@@ -234,7 +304,7 @@ class RenderLoss(BaseLoss):
                     self._save_extra_vis(rendered_extra_depth, extra_pseudo_depth,
                                          extra_valid, step=self._diag_counter)
 
-        return loss_sem, loss_depth, loss_extra_depth
+        return loss_sem, loss_depth, loss_extra_depth, loss_acc
 
     def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step, input_imgs=None, aug_flip=None):
         """

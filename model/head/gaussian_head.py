@@ -204,13 +204,14 @@ class GaussianHead(BaseTaskHead):
             if self.training:
                 gs_extrins = metas['gs_extrins'].to(self.zero_tensor.device)  # (B, nC, 4, 4)
                 gs_intrins = metas['gs_intrins'].to(self.zero_tensor.device)  # (B, nC, 3, 3)
-                rendered_sem, rendered_depth = self.rasterizer_2d(gaussians, gs_extrins, gs_intrins)
+                rendered_sem, rendered_depth, rendered_acc = self.rasterizer_2d(gaussians, gs_extrins, gs_intrins)
                 rendered_extra_depth = self._render_extra_frames(gaussians, metas, kwargs)
             else:
                 # eval: skip expensive rendering, output None so loss returns 0
-                rendered_sem, rendered_depth, rendered_extra_depth = None, None, None
+                rendered_sem, rendered_depth, rendered_acc, rendered_extra_depth = None, None, None, None
             output['rendered_sem'] = rendered_sem
             output['rendered_depth'] = rendered_depth
+            output['rendered_acc'] = rendered_acc
             output['rendered_extra_depth'] = rendered_extra_depth
 
         return output

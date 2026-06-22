@@ -1598,27 +1598,13 @@ class NuScenesDataset(Dataset):
         scale = self.pseudo_label_scale
         crop_top = self.pseudo_label_crop_top
         depth_path = os.path.join(self.metric3d_root, scene_name, f'{sample_token}.npy')
-        try:
-            pseudo_depth = torch.from_numpy(np.load(depth_path).astype(np.float32))  # (6, 900, 1600)
-        except FileNotFoundError:
-            print(f'[dataset WARNING] depth npy not found: {depth_path}, returning zeros')
-            scale = self.pseudo_label_scale
-            crop_top = self.pseudo_label_crop_top
-            h = int(round(900 * scale)) - crop_top
-            w = int(round(1600 * scale))
-            return torch.zeros(6, h, w, dtype=torch.float32)
+        pseudo_depth = torch.from_numpy(np.load(depth_path).astype(np.float32))  # (6, 900, 1600)
         pseudo_depth = pseudo_depth[self._depth_reorder]
         pseudo_seg = None
         if mask_dynamic:
             seg_path = os.path.join(self.grounded_sam_root, scene_name, f'{sample_token}.npy')
-            try:
-                pseudo_seg = torch.from_numpy(np.load(seg_path).astype(np.int64))
-            except FileNotFoundError:
-                print(f'[dataset WARNING] seg npy not found: {seg_path}, skipping dynamic mask')
-                pseudo_seg = None
-                mask_dynamic = False
-            else:
-                pseudo_seg = pseudo_seg[self._seg_reorder]
+            pseudo_seg = torch.from_numpy(np.load(seg_path).astype(np.int64))
+            pseudo_seg = pseudo_seg[self._seg_reorder]
         if scale != 1.0:
             pseudo_depth = F.interpolate(pseudo_depth[:, None], scale_factor=scale,
                                          mode='bilinear', align_corners=False).squeeze(1)

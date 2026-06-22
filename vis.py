@@ -412,8 +412,8 @@ def save_gaussian(save_dir, gaussian, name):
             xyz[..., 1], -xyz[..., 0], xyz[..., 2], 
             rstride=1, cstride=1, color=sem_cmap[pred[indx]], linewidth=0, alpha=opas[indx], shade=True)
 
-    plt.axis("equal")
-    # plt.gca().set_box_aspect([1, 1, 1])
+    # plt.axis("equal")  # not supported in Axes3D
+    ax.set_box_aspect([1, 1, 1])
     ax.grid(False)
     ax.set_axis_off()    
 

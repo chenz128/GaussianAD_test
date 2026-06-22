@@ -56,11 +56,14 @@ def main():
     if unexpected:
         print(f"  unexpected keys ({len(unexpected)}): {unexpected[:5]}")
 
+    # 强制 num_workers=0 防止多进程 dataloader 在某些环境下死锁
+    val_loader_cfg = dict(cfg.val_loader)
+    val_loader_cfg['num_workers'] = 0
     _, val_loader = get_dataloader(
         cfg.train_dataset_config,
         cfg.val_dataset_config,
         cfg.train_loader,
-        cfg.val_loader,
+        val_loader_cfg,
         dist=False,
         val_only=True,
     )

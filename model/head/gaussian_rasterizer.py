@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from gsplat import rasterization
+from gsplat import  rasterization
 
 
 class GaussianRasterizer2D(nn.Module):
@@ -49,9 +49,15 @@ class GaussianRasterizer2D(nn.Module):
         Returns:
             rendered_sem:   (nC, H, W, 17)
             rendered_depth: (nC, H, W)
+            rendered_acc:   (nC, H, W)   accumulation map A = 1 - T_final
         """
-        # rasterize all cameras at once
-        rendered, _, _ = rasterization(
+        # rasterize all cameras at once.
+        # A4: render_mode='RGB+ED' -> expected (alpha-normalized) depth instead of
+        # accumulated depth. D = (sum T_i a_i d_i) / A, unbiased by partial coverage,
+        # giving sharper depth edges and cleaner z-placement gradients.
+        # 2nd return value (render_alphas) is the per-pixel accumulation map A,
+        # used by the A1 accumulation loss.
+        rendered, rendered_alpha, _ = rasterization(
             means=means,
             quats=quats,
             scales=scales,
@@ -61,12 +67,13 @@ class GaussianRasterizer2D(nn.Module):
             Ks=gs_intrins,
             width=self.width,
             height=self.height,
-            render_mode='RGB+D',
+            render_mode='RGB+ED',
         )
         # rendered: (nC, H, W, 18) — first 17 channels are semantics, last is depth
         rendered_sem = rendered[..., :17]    # (nC, H, W, 17)
         rendered_depth = rendered[..., 17]   # (nC, H, W)
-        return rendered_sem, rendered_depth
+        rendered_acc = rendered_alpha[..., 0]  # (nC, H, W)
+        return rendered_sem, rendered_depth, rendered_acc
 
     def render_depth_only(self, means, quats, scales, opacities, gs_extrins, gs_intrins):
         """Render ONLY depth for all cameras of one batch element.
@@ -79,6 +86,7 @@ class GaussianRasterizer2D(nn.Module):
             rendered_depth: (nC, H, W)
         """
         dummy = means.new_zeros((means.shape[0], 1))  # (G, 1)
+        # A4: RGB+ED -> expected depth (alpha-normalized), consistent with render()
         rendered, _, _ = rasterization(
             means=means,
             quats=quats,
@@ -89,7 +97,7 @@ class GaussianRasterizer2D(nn.Module):
             Ks=gs_intrins,
             width=self.width,
             height=self.height,
-            render_mode='RGB+D',
+            render_mode='RGB+ED',
         )
         # rendered: (nC, H, W, 2) — channel 0 dummy color, channel 1 depth
         return rendered[..., 1]  # (nC, H, W)
@@ -103,11 +111,12 @@ class GaussianRasterizer2D(nn.Module):
         Returns:
             rendered_sem:   (B, nC, H, W, 17)
             rendered_depth: (B, nC, H, W)
+            rendered_acc:   (B, nC, H, W)   accumulation map for A1 loss
         """
         B = gaussian.means.shape[0]
-        all_sem, all_depth = [], []
+        all_sem, all_depth, all_acc = [], [], []
         for b in range(B):
-            sem_b, depth_b = self.render(
+            sem_b, depth_b, acc_b = self.render(
                 gaussian.means[b],
                 gaussian.rotations[b],
                 gaussian.scales[b],
@@ -118,7 +127,8 @@ class GaussianRasterizer2D(nn.Module):
             )
             all_sem.append(sem_b)
             all_depth.append(depth_b)
-        return torch.stack(all_sem), torch.stack(all_depth)
+            all_acc.append(acc_b)
+        return torch.stack(all_sem), torch.stack(all_depth), torch.stack(all_acc)
 
     def compute_loss(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
         """
