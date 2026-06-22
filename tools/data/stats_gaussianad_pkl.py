@@ -2,7 +2,7 @@
 """Sanity-check / quality-stats for a converted GaussianAD PKL (v6).
 
 Usage:
-    python tools/stats_gaussianad_pkl.py \
+    python tools/data/stats_gaussianad_pkl.py \
         --pkl data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v6.pkl \
         [--pkl-ref path/to/author/original.pkl] \
         [--filter-min-points-in-gt 1]

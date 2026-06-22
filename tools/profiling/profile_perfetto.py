@@ -5,7 +5,7 @@ Captures CPU + CUDA kernel-level timing with high-level stage annotations.
 Output can be loaded directly at https://ui.perfetto.dev/
 
 Usage:
-    CUDA_VISIBLE_DEVICES=0 /data/chenz/conda_env/splatting/bin/python tools/profile_perfetto.py \
+    CUDA_VISIBLE_DEVICES=0 /data/chenz/conda_env/splatting/bin/python tools/profiling/profile_perfetto.py \
         --py-config config/nuscenes_gs25600.py --num-iters 5 --output trace.json
 
     # Then open https://ui.perfetto.dev/ and drag-drop trace.json
@@ -18,7 +18,8 @@ import time
 import torch
 import numpy as np
 
-sys.path.insert(0, osp.dirname(osp.dirname(osp.abspath(__file__))))
+# file now lives in tools/profiling/, go up 3 levels to reach repo root
+sys.path.insert(0, osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__)))))
 
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = True

@@ -843,7 +843,7 @@ pred_sem_rgb = np.where(
 
 ---
 
-## PKL 数据转换脚本（tools/convert_nuscenes_infos_to_gaussianad.py）
+## PKL 数据转换脚本（tools/data/convert_nuscenes_infos_to_gaussianad.py）
 
 > **适用分支**：`main` / `splatting` / `faster`（共享工具脚本，三个分支共用同一套 PKL 数据）
 
@@ -888,19 +888,19 @@ DEFAULT_MIN_MAP_LINE_LENGTH = 2.0  # m
 #### 运行命令（H20）
 
 ```bash
-/data/chenz/conda_env/GaussianAD/bin/python tools/convert_nuscenes_infos_to_gaussianad.py \
+/data/chenz/conda_env/GaussianAD/bin/python tools/data/convert_nuscenes_infos_to_gaussianad.py \
     --dataroot data/nuscenes --version v1.0-trainval \
     --surroundocc-train-dir data/surroundocc/train_samples \
     --surroundocc-val-dir   data/surroundocc/val_samples
 # 输出: data/nuscenes_cam/nuscenes_infos_{train,val}_gaussian_ad_v6.pkl
 ```
 
-### 统计分析脚本（tools/stats_gaussianad_pkl.py）
+### 统计分析脚本（tools/data/stats_gaussianad_pkl.py）
 
 转换完成后用此脚本体检 PKL 质量，不依赖作者原始 PKL：
 
 ```bash
-python tools/stats_gaussianad_pkl.py \
+python tools/data/stats_gaussianad_pkl.py \
     --pkl data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v6.pkl
 # 可选: --pkl-ref 旧版 pkl（对比 v5 vs v6 各项指标变化）
 ```
@@ -1140,6 +1140,6 @@ spconv backbone 处理的点数正比于 anchor 数量（当前 3600）。减半
 | 2026-05-15 | **全量 loss 启用**（map+plan 加回）；发现语义渲染不学习的根因（softplus→alpha-blend≠logits）；修复为 Plan A（渲染 raw logits）；训练改为 tmux `train_splatting` |
 | 2026-05-15 | 训练扩展为 **8 卡**（GPU 0-7），3516 iters/epoch |
 | 2026-05-18 | **发现并修复 RenderLoss off-by-one 类别索引 bug**：CE target 错位导致所有类梯度方向错误，bicycle 18 epoch 全 0%；修复 commit eb138cf；同步修复可视化 palette 映射；max_epochs 延长至 30（commit b19c429），接续 epoch 18 继续训练 |
-| 2026-05-18 | **PKL 转换脚本 v6**：P0 修复（scene_token、num_lidar_pts 真值回填、velocity 坐标系重算）+ P1 质量改进（VAD 命令阈值、自适应匹配、ego_lcf_feat 全维度、map 线长过滤 2m）；新增体检脚本 `tools/stats_gaussianad_pkl.py` |
+| 2026-05-18 | **PKL 转换脚本 v6**：P0 修复（scene_token、num_lidar_pts 真值回填、velocity 坐标系重算）+ P1 质量改进（VAD 命令阈值、自适应匹配、ego_lcf_feat 全维度、map 线长过滤 2m）；新增体检脚本 `tools/data/stats_gaussianad_pkl.py` |
 | 2026-05-19 | **创建 faster 分支**：基于 splatting，克隆 conda 环境为 `faster`；实现 Opt-1（channels_last）、Opt-2（lidar2global float32 预转换）、Opt-3（nonzero→bool mask）三项 GPU 加速优化（commit c29ca34）；分析 Opt-4/5 风险，暂不实施 |
 | 2026-05-20 | **实测 A+B+C 方案**：with_cp=False（Opt-A）+ DDP bucket=200MB（Opt-B）+ max_split_size_mb（Opt-C）合计仅 ~3% 提速（3.17→3.10 s/iter）；确认真正瓶颈为 spconv SubMConv backward 的 cudaFree/cudaMalloc（4400ms/iter）；训练正在以 ~3.10 s/iter 运行；后续提速需升级 spconv 2.3+（commit 36c229c） |

@@ -4,7 +4,7 @@ render_mode_compare.py — 对比 RGB+D vs RGB+ED 渲染效果，不影响训练
 
 运行（远端 GPU 6，不占用训练 GPU 0-5）:
     CUDA_VISIBLE_DEVICES=6 /data/chenz/conda_env/splatting/bin/python \\
-        tools/render_mode_compare.py \\
+        tools/viz/render_mode_compare.py \\
         --py-config config/nuscenes_gs25600_2D.py \\
         --work-dir out/nuscenes_gs25600_2D \\
         --out-dir /tmp/render_compare \\
@@ -15,7 +15,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# file now lives in tools/viz/, go up 3 levels to reach repo root
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # ── colormaps ─────────────────────────────────────────────────────────────────
 

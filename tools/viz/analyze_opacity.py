@@ -3,7 +3,7 @@
 用法（远端 H20）：
   cd /data/chenz/GaussianAD
   CUDA_VISIBLE_DEVICES=0 /data/chenz/conda_env/GaussianAD/bin/python \
-      tools/analyze_opacity.py \
+      tools/viz/analyze_opacity.py \
       --py-config config/nuscenes_gs25600.py \
       --work-dir out/nuscenes_gs25600_4gpu_v4 \
       --num-batches 100
