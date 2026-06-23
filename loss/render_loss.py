@@ -75,6 +75,7 @@ class RenderLoss(BaseLoss):
         acc_lw=0.0,
         acc_tau_fg=0.8,
         acc_tau_sky=0.2,
+        concentration_lw=0.0,
         vis_dir=None,
         vis_every=500,
         input_dict=None,
@@ -85,6 +86,7 @@ class RenderLoss(BaseLoss):
                 'rendered_sem': 'rendered_sem',
                 'rendered_depth': 'rendered_depth',
                 'rendered_acc': 'rendered_acc',
+                'rendered_var': 'rendered_var',
                 'pseudo_seg': 'pseudo_seg',
                 'pseudo_depth': 'pseudo_depth',
                 'rendered_extra_depth': 'rendered_extra_depth',
@@ -107,6 +109,10 @@ class RenderLoss(BaseLoss):
         self.acc_lw = acc_lw
         self.acc_tau_fg = acc_tau_fg
         self.acc_tau_sky = acc_tau_sky
+        # ① depth concentration loss: penalize per-ray depth variance Var[z] on
+        # foreground pixels, forcing Gaussians to collapse onto a sharp surface
+        # instead of smearing along the ray. concentration_lw=0 disables it.
+        self.concentration_lw = concentration_lw
         self.vis_dir = vis_dir
         self.vis_every = vis_every
 
@@ -130,13 +136,14 @@ class RenderLoss(BaseLoss):
         actual_inputs = {}#这里我们根据self.input_dict中定义的键值对，从inputs字典中提取对应的输入张量，并存储在actual_inputs字典中。这样做的目的是为了将输入张量的名称与loss_func方法中的参数名称进行映射，使得我们可以灵活地指定输入张量的来源，而不需要在loss_func方法中硬编码输入张量的名称。
         for input_key, input_val in self.input_dict.items():
             actual_inputs.update({input_key: inputs.get(input_val)})
-        loss_sem, loss_depth, loss_extra_depth, loss_acc = self.loss_func(**actual_inputs)
-        total = self.weight * (loss_sem + loss_depth + loss_extra_depth + loss_acc)
+        loss_sem, loss_depth, loss_extra_depth, loss_acc, loss_conc = self.loss_func(**actual_inputs)
+        total = self.weight * (loss_sem + loss_depth + loss_extra_depth + loss_acc + loss_conc)
         return total, {
             'RenderSemLoss': (self.weight * loss_sem).detach().item(),
             'RenderDepthLoss': (self.weight * loss_depth).detach().item(),
             'RenderExtraDepthLoss': (self.weight * loss_extra_depth).detach().item(),
             'RenderAccLoss': (self.weight * loss_acc).detach().item(),
+            'RenderConcLoss': (self.weight * loss_conc).detach().item(),
         }
 
     def _extra_depth_loss(self, rendered_extra_depth, extra_pseudo_depth, extra_valid):
@@ -199,8 +206,31 @@ class RenderLoss(BaseLoss):
             return acc.sum() * 0.0
         return self.acc_lw * torch.stack(terms).sum()
 
+    def _concentration_loss(self, rendered_var, pseudo_depth):
+        """① Depth concentration loss: penalize per-ray depth variance Var[z] on
+        foreground pixels (where a real surface exists, pseudo_depth > 0.5).
+
+        rendered_var: (B, nC, H, W)  per-ray Var[z] in meters^2
+        pseudo_depth: (B, nC, H, W)  pseudo depth (0 = invalid)
+
+        Minimizing Var[z] forces the Gaussians along each foreground ray to
+        collapse onto a single sharp surface depth, eliminating the foggy
+        depth-smearing that期望深度 (E[z]) supervision alone cannot distinguish.
+        Unlike A1, there is NO stacking loophole: variance can only be reduced by
+        physically tightening the Gaussian depth distribution.
+        """
+        if rendered_var is None or pseudo_depth is None:
+            return None
+        var = rendered_var.flatten()
+        dep = pseudo_depth.flatten()
+        fg_mask = dep > 0.5
+        if fg_mask.any():
+            return self.concentration_lw * var[fg_mask].mean()
+        return var.sum() * 0.0
+
     def loss_func(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth,
                   rendered_acc=None,
+                  rendered_var=None,
                   rendered_extra_depth=None, extra_pseudo_depth=None, extra_valid=None,
                   input_imgs=None, aug_flip=None):
         """
@@ -216,7 +246,7 @@ class RenderLoss(BaseLoss):
         # eval mode: rendering was skipped, or val dataset has no pseudo labels
         if rendered_sem is None or rendered_depth is None or pseudo_seg is None or pseudo_depth is None:
             zero = torch.tensor(0.0, requires_grad=False)
-            return zero, zero, zero, zero
+            return zero, zero, zero, zero, zero
 
         # ── semantic loss ──semantic是指渲染结果的语义分割图，pseudo_seg是指根据点云生成的伪标签语义分割图。rendered_sem和pseudo_seg都是(B, nC, H, W)的形状，其中nC是相机数量，H和W是图像的高和宽。semantic loss是计算rendered_sem和pseudo_seg之间的交叉熵损失，注意pseudo_seg中的0表示无效像素，不参与损失计算。
         pred_sem = rendered_sem.flatten(0, -2)     # (N, 17)
@@ -261,6 +291,13 @@ class RenderLoss(BaseLoss):
         if loss_acc is None:
             loss_acc = loss_depth.new_zeros(())
 
+        # ── ① depth concentration loss (current frame only) ──
+        loss_conc = None
+        if self.concentration_lw > 0:
+            loss_conc = self._concentration_loss(rendered_var, pseudo_depth)
+        if loss_conc is None:
+            loss_conc = loss_depth.new_zeros(())
+
         # ── diagnostics（每 vis_every iter 打印一次，并保存渲染可视化图片）──
         self._diag_counter = getattr(self, '_diag_counter', 0) + 1
         if self._diag_counter % self.vis_every == 1:
@@ -284,6 +321,15 @@ class RenderLoss(BaseLoss):
                     acc_sky_mean = acc_flat[sky_m].mean().item() if sky_m.any() else float('nan')
                 else:
                     acc_fg_mean = acc_sky_mean = float('nan')
+                # ① concentration diagnostics: mean per-ray depth std on foreground
+                if self.concentration_lw > 0 and rendered_var is not None:
+                    var_flat = rendered_var.flatten()
+                    dep_flat2 = pseudo_depth.flatten()
+                    fg_m2 = dep_flat2 > 0.5
+                    var_fg_mean = var_flat[fg_m2].mean().item() if fg_m2.any() else float('nan')
+                    std_fg_mean = var_flat[fg_m2].clamp_min(0).sqrt().mean().item() if fg_m2.any() else float('nan')
+                else:
+                    var_fg_mean = std_fg_mean = float('nan')
             logger = logging.getLogger('mmengine')
             logger.info(
                 f'[RenderLoss Diag] iter={self._diag_counter} | '
@@ -292,8 +338,10 @@ class RenderLoss(BaseLoss):
                 f'gt_depth_mean={gt_depth_mean:.2f}m | '
                 f'sem_entropy={pred_entropy:.3f} (rand={rand_entropy:.3f}) | '
                 f'acc_fg={acc_fg_mean:.3f} acc_sky={acc_sky_mean:.3f} | '
+                f'var_fg={var_fg_mean:.3f} std_fg={std_fg_mean:.3f}m | '
                 f'loss_sem={loss_sem.item():.4f} loss_depth={loss_depth.item():.4f} '
-                f'loss_extra_depth={loss_extra_depth.item():.4f} loss_acc={loss_acc.item():.4f}'
+                f'loss_extra_depth={loss_extra_depth.item():.4f} loss_acc={loss_acc.item():.4f} '
+                f'loss_conc={loss_conc.item():.4f}'
             )
             # 保存渲染可视化图片
             if self.vis_dir is not None:
@@ -304,7 +352,7 @@ class RenderLoss(BaseLoss):
                     self._save_extra_vis(rendered_extra_depth, extra_pseudo_depth,
                                          extra_valid, step=self._diag_counter)
 
-        return loss_sem, loss_depth, loss_extra_depth, loss_acc
+        return loss_sem, loss_depth, loss_extra_depth, loss_acc, loss_conc
 
     def _save_vis(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth, step, input_imgs=None, aug_flip=None):
         """

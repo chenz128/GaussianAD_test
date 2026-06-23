@@ -48,15 +48,16 @@ class GaussianRasterizer2D(nn.Module):
 
         Returns:
             rendered_sem:   (nC, H, W, 17)
-            rendered_depth: (nC, H, W)
+            rendered_depth: (nC, H, W)   accumulated depth D = sum T_i a_i z_i
             rendered_acc:   (nC, H, W)   accumulation map A = 1 - T_final
+            rendered_var:   (nC, H, W)   per-ray depth variance Var[z] (concentration ①)
         """
         # rasterize all cameras at once.
-        # A4: render_mode='RGB+ED' -> expected (alpha-normalized) depth instead of
-        # accumulated depth. D = (sum T_i a_i d_i) / A, unbiased by partial coverage,
-        # giving sharper depth edges and cleaner z-placement gradients.
-        # 2nd return value (render_alphas) is the per-pixel accumulation map A,
-        # used by the A1 accumulation loss.
+        # render_mode='RGB+D' -> ACCUMULATED depth D = sum T_i a_i z_i (NOT
+        # alpha-normalized). This preserves the implicit opacity floor: low
+        # opacity -> small D -> depth loss pushes opacity up. (RGB+ED / A4 removed
+        # this floor and collapsed opacity; reverted.)
+        # 2nd return value (render_alphas) is the per-pixel accumulation map A.
         rendered, rendered_alpha, _ = rasterization(
             means=means,
             quats=quats,
@@ -67,13 +68,62 @@ class GaussianRasterizer2D(nn.Module):
             Ks=gs_intrins,
             width=self.width,
             height=self.height,
-            render_mode='RGB+ED',
+            render_mode='RGB+D',
         )
         # rendered: (nC, H, W, 18) — first 17 channels are semantics, last is depth
         rendered_sem = rendered[..., :17]    # (nC, H, W, 17)
-        rendered_depth = rendered[..., 17]   # (nC, H, W)
+        rendered_depth = rendered[..., 17]   # (nC, H, W) accumulated depth
         rendered_acc = rendered_alpha[..., 0]  # (nC, H, W)
-        return rendered_sem, rendered_depth, rendered_acc
+
+        # ── ① depth concentration: render per-ray second moment of depth ──
+        # For each camera, render z^2 (camera-space depth squared) as a single
+        # color channel. With RGB+D this yields:
+        #   z2_acc = sum T_i a_i z_i^2   (color channel)
+        #   d_acc  = sum T_i a_i z_i     (D channel)
+        # Then E[z]=d_acc/A, E[z^2]=z2_acc/A, Var[z]=E[z^2]-E[z]^2.
+        # Var is per-camera (z_i depends on the camera), so we loop cameras.
+        rendered_var = self._render_depth_variance(
+            means, quats, scales, opacities, gs_extrins, gs_intrins, rendered_acc)
+        return rendered_sem, rendered_depth, rendered_acc, rendered_var
+
+    def _render_depth_variance(self, means, quats, scales, opacities,
+                               gs_extrins, gs_intrins, rendered_acc, eps=1e-4):
+        """Per-ray depth variance Var[z] for the concentration loss ①.
+
+        Var[z] = E[z^2] - E[z]^2 where the expectations are alpha-normalized
+        along each ray. A high variance means Gaussians are smeared along the
+        ray (a foggy slab); minimizing it forces them to collapse onto a single
+        sharp surface depth. z^2 is camera-dependent, so render per camera.
+        """
+        nC = gs_extrins.shape[0]
+        ones = means.new_ones((means.shape[0], 1))
+        means_h = torch.cat([means, ones], dim=-1)  # (G, 4)
+        var_list = []
+        for c in range(nC):
+            # camera-space depth z_i = (ego2cam @ [x,y,z,1])_2
+            cam_pts = means_h @ gs_extrins[c].transpose(0, 1)  # (G, 4)
+            z = cam_pts[:, 2]                                  # (G,)
+            z2 = (z * z).unsqueeze(-1)                         # (G, 1)
+            out_c, alpha_c, _ = rasterization(
+                means=means,
+                quats=quats,
+                scales=scales,
+                opacities=opacities,
+                colors=z2,
+                viewmats=gs_extrins[c:c + 1],
+                Ks=gs_intrins[c:c + 1],
+                width=self.width,
+                height=self.height,
+                render_mode='RGB+D',
+            )
+            z2_acc = out_c[0, ..., 0]            # sum T a z^2
+            d_acc = out_c[0, ..., 1]             # sum T a z  (D channel)
+            A_c = alpha_c[0, ..., 0].clamp_min(eps)
+            E_z = d_acc / A_c
+            E_z2 = z2_acc / A_c
+            var_c = (E_z2 - E_z * E_z).clamp_min(0.0)  # (H, W)
+            var_list.append(var_c)
+        return torch.stack(var_list, dim=0)  # (nC, H, W)
 
     def render_depth_only(self, means, quats, scales, opacities, gs_extrins, gs_intrins):
         """Render ONLY depth for all cameras of one batch element.
@@ -86,7 +136,7 @@ class GaussianRasterizer2D(nn.Module):
             rendered_depth: (nC, H, W)
         """
         dummy = means.new_zeros((means.shape[0], 1))  # (G, 1)
-        # A4: RGB+ED -> expected depth (alpha-normalized), consistent with render()
+        # RGB+D -> accumulated depth (consistent with render(), preserves opacity floor)
         rendered, _, _ = rasterization(
             means=means,
             quats=quats,
@@ -97,7 +147,7 @@ class GaussianRasterizer2D(nn.Module):
             Ks=gs_intrins,
             width=self.width,
             height=self.height,
-            render_mode='RGB+ED',
+            render_mode='RGB+D',
         )
         # rendered: (nC, H, W, 2) — channel 0 dummy color, channel 1 depth
         return rendered[..., 1]  # (nC, H, W)
@@ -110,13 +160,14 @@ class GaussianRasterizer2D(nn.Module):
             gs_intrins:  (B, nC, 3, 3)
         Returns:
             rendered_sem:   (B, nC, H, W, 17)
-            rendered_depth: (B, nC, H, W)
-            rendered_acc:   (B, nC, H, W)   accumulation map for A1 loss
+            rendered_depth: (B, nC, H, W)   accumulated depth
+            rendered_acc:   (B, nC, H, W)   accumulation map A
+            rendered_var:   (B, nC, H, W)   per-ray depth variance (concentration ①)
         """
         B = gaussian.means.shape[0]
-        all_sem, all_depth, all_acc = [], [], []
+        all_sem, all_depth, all_acc, all_var = [], [], [], []
         for b in range(B):
-            sem_b, depth_b, acc_b = self.render(
+            sem_b, depth_b, acc_b, var_b = self.render(
                 gaussian.means[b],
                 gaussian.rotations[b],
                 gaussian.scales[b],
@@ -128,7 +179,9 @@ class GaussianRasterizer2D(nn.Module):
             all_sem.append(sem_b)
             all_depth.append(depth_b)
             all_acc.append(acc_b)
-        return torch.stack(all_sem), torch.stack(all_depth), torch.stack(all_acc)
+            all_var.append(var_b)
+        return (torch.stack(all_sem), torch.stack(all_depth),
+                torch.stack(all_acc), torch.stack(all_var))
 
     def compute_loss(self, rendered_sem, rendered_depth, pseudo_seg, pseudo_depth):
         """
