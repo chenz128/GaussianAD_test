@@ -82,8 +82,9 @@ loss = dict(
             depth_lw=0.5,          # 当前帧深度（RGB+D 累积深度）
             extra_depth_lw=0.1,    # 多帧（历史2+未来2）深度
             # ── ① depth concentration loss ──
-            concentration_lw=0.02, # 深度方差惩罚权重（>0 才启用 ①），首跑保守值；
-                                   # 看诊断行 var_fg/std_fg/loss_conc 后再调
+            concentration_lw=0.2,  # 深度方差惩罚权重（>0 才启用 ①）；
+                                   # 实测 var_mean≈1m², lw=0.02 时 loss 仅 0.02 约为深度 loss 的 0.7%，
+                                   # 梯度量级不足，改为 0.2 使 ConcLoss≈0.2（深度 loss 的 5-10%）
             vis_dir='out/nuscenes_gs25600_concentrate/render_vis',
             vis_every=500,
         ),
