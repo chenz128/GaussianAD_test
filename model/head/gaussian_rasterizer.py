@@ -11,12 +11,13 @@ class GaussianRasterizer2D(nn.Module):
     and computes semantic + depth losses against pseudo labels.
     """
 
-    def __init__(self, render_h, render_w, sem_lw=2.0, depth_lw=0.05):
+    def __init__(self, render_h, render_w, sem_lw=2.0, depth_lw=0.05, detach_shape=False):
         super().__init__()
         self.height = render_h
         self.width = render_w
         self.sem_lw = sem_lw
         self.depth_lw = depth_lw
+        self.detach_shape = detach_shape
 
         # dynamic classes (depth loss unreliable for moving objects)
         self.dynamic_classes = torch.tensor([2, 3, 4, 5, 6, 7, 9, 10])
@@ -167,11 +168,16 @@ class GaussianRasterizer2D(nn.Module):
         B = gaussian.means.shape[0]
         all_sem, all_depth, all_acc, all_var = [], [], [], []
         for b in range(B):
+            # detach_shape: block 2D gradients from flowing into scales/rot/opacity
+            # so they are only optimized by 3D OccLoss
+            quats_b = gaussian.rotations[b].detach() if self.detach_shape else gaussian.rotations[b]
+            scales_b = gaussian.scales[b].detach() if self.detach_shape else gaussian.scales[b]
+            opa_b = gaussian.opacities[b, :, 0].detach() if self.detach_shape else gaussian.opacities[b, :, 0]
             sem_b, depth_b, acc_b, var_b = self.render(
                 gaussian.means[b],
-                gaussian.rotations[b],
-                gaussian.scales[b],
-                gaussian.opacities[b, :, 0],
+                quats_b,
+                scales_b,
+                opa_b,
                 gaussian.semantics_logits[b],  # use raw logits for proper CE loss
                 gs_extrins[b],
                 gs_intrins[b],
