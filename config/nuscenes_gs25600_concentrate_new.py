@@ -88,7 +88,7 @@ loss = dict(
             sem_lw=0.0,
             depth_lw=0.5,
             extra_depth_lw=0.1,
-            concentration_lw=0.2,
+            concentration_lw=0.0,
             vis_dir='out/nuscenes_gs25600_concentrate_new/render_vis',
             vis_every=500,
         ),
