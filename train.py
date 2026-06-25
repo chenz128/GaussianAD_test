@@ -147,6 +147,7 @@ def main(args):
     if args.gpus > 1:
         distributed = True
         rank, local_rank = initialize(args)
+        world_size = dist.get_world_size()
     else:
         distributed = False
         world_size = 1
