@@ -38,18 +38,71 @@ def pcgrad_backward(L_main, L_aux, params, clip_norm, distributed, world_size):
     正交补, 删掉伤害 occ 的分量; 否则原样保留 g_aux.
     occ 的梯度 g_main 一字不动 -> occ 一阶上不被 depth 伤害.
 
+    用两次 .backward() (而非 autograd.grad) 取梯度: 模型启用了
+    torch.utils.checkpoint (with_cp), 与 autograd.grad/inputs 参数不兼容.
+
     返回: (grad_norm, cos_global, proj_ratio)
       cos_global : 全局 main·aux 余弦 (<0 说明整体冲突)
       proj_ratio : 发生投影的张量占比
     """
     params = [p for p in params if p.requires_grad]
-    g_main = torch.autograd.grad(L_main, params, retain_graph=True, allow_unused=True)
-    if L_aux is not None and L_aux.requires_grad:
-        g_aux = torch.autograd.grad(L_aux, params, retain_graph=False, allow_unused=True)
+    has_aux = L_aux is not None and L_aux.requires_grad
+
+    # 1) g_main via backward, clone before second pass overwrites .grad
+    for p in params:
+        p.grad = None
+    L_main.backward(retain_graph=has_aux)
+    g_main = [None if p.grad is None else p.grad.detach().clone() for p in params]
+
+    # 2) g_aux via backward (fresh .grad)
+    if has_aux:
+        for p in params:
+            p.grad = None
+        L_aux.backward()
+        g_aux = [None if p.grad is None else p.grad.detach().clone() for p in params]
     else:
         g_aux = [None] * len(params)
 
     dot_sum = 0.0
+    nm_sum = 0.0
+    na_sum = 0.0
+    n_proj = 0
+    n_both = 0
+    for p, gm, ga in zip(params, g_main, g_aux):
+        if gm is None and ga is None:
+            p.grad = None
+            continue
+        if gm is None:
+            p.grad = ga
+            continue
+        if ga is None:
+            p.grad = gm
+            continue
+        # both present -> conflict check & projection
+        n_both += 1
+        gm_f = gm.flatten()
+        ga_f = ga.flatten()
+        dot = torch.dot(gm_f, ga_f)
+        dot_sum += dot.item()
+        nm_sum += torch.dot(gm_f, gm_f).item()
+        na_sum += torch.dot(ga_f, ga_f).item()
+        if dot < 0:
+            ga = ga - (dot / torch.dot(gm_f, gm_f).clamp_min(1e-12)) * gm
+            n_proj += 1
+        p.grad = gm + ga
+
+    # manual all-reduce average across ranks (we bypassed DDP reducer)
+    if distributed and world_size > 1:
+        for p in params:
+            if p.grad is not None:
+                dist.all_reduce(p.grad)
+                p.grad /= world_size
+
+    grad_norm = torch.nn.utils.clip_grad_norm_(params, clip_norm)
+    cos_global = dot_sum / ((nm_sum ** 0.5) * (na_sum ** 0.5) + 1e-12)
+    proj_ratio = n_proj / max(n_both, 1)
+    return grad_norm, cos_global, proj_ratio
+
     nm_sum = 0.0
     na_sum = 0.0
     n_proj = 0
