@@ -29,6 +29,66 @@ from vis import vis_map_train
 def pass_print(*args, **kwargs):
     pass
 
+
+def pcgrad_backward(L_main, L_aux, params, clip_norm, distributed, world_size):
+    """PCGrad gradient surgery (做法A: 网络参数层面, 逐张量投影).
+
+    main = occ+flow+det (受保护方), aux = render (让步方).
+    若某参数张量上 dot(g_main, g_aux) < 0 (冲突), 把 g_aux 投影到 g_main 的
+    正交补, 删掉伤害 occ 的分量; 否则原样保留 g_aux.
+    occ 的梯度 g_main 一字不动 -> occ 一阶上不被 depth 伤害.
+
+    返回: (grad_norm, cos_global, proj_ratio)
+      cos_global : 全局 main·aux 余弦 (<0 说明整体冲突)
+      proj_ratio : 发生投影的张量占比
+    """
+    params = [p for p in params if p.requires_grad]
+    g_main = torch.autograd.grad(L_main, params, retain_graph=True, allow_unused=True)
+    if L_aux is not None and L_aux.requires_grad:
+        g_aux = torch.autograd.grad(L_aux, params, retain_graph=False, allow_unused=True)
+    else:
+        g_aux = [None] * len(params)
+
+    dot_sum = 0.0
+    nm_sum = 0.0
+    na_sum = 0.0
+    n_proj = 0
+    n_both = 0
+    for p, gm, ga in zip(params, g_main, g_aux):
+        if gm is None and ga is None:
+            p.grad = None
+            continue
+        if gm is None:
+            p.grad = ga
+            continue
+        if ga is None:
+            p.grad = gm
+            continue
+        # both present -> conflict check & projection
+        n_both += 1
+        gm_f = gm.flatten()
+        ga_f = ga.flatten()
+        dot = torch.dot(gm_f, ga_f)
+        dot_sum += dot.item()
+        nm_sum += torch.dot(gm_f, gm_f).item()
+        na_sum += torch.dot(ga_f, ga_f).item()
+        if dot < 0:
+            ga = ga - (dot / torch.dot(gm_f, gm_f).clamp_min(1e-12)) * gm
+            n_proj += 1
+        p.grad = gm + ga
+
+    # manual all-reduce average across ranks (we bypassed DDP reducer)
+    if distributed and world_size > 1:
+        for p in params:
+            if p.grad is not None:
+                dist.all_reduce(p.grad)
+                p.grad /= world_size
+
+    grad_norm = torch.nn.utils.clip_grad_norm_(params, clip_norm)
+    cos_global = dot_sum / ((nm_sum ** 0.5) * (na_sum ** 0.5) + 1e-12)
+    proj_ratio = n_proj / max(n_both, 1)
+    return grad_norm, cos_global, proj_ratio
+
 def initialize(args):#多卡训练时的初始化，返回rank和local_rank
     rank = int(os.environ.get("RANK", 0))#这里获取全局的rank，默认为0，如果是多卡训练，每个进程的rank会不同
     local_rank = int(os.environ.get("LOCAL_RANK", 0))#这里获取当前节点上的GPU编号，默认为0，如果是多卡训练，每个进程的local_rank会不同
@@ -174,6 +234,12 @@ def main(args):
         scaler = torch.cuda.amp.GradScaler()
     os.environ['amp'] = 'true' if amp else 'false'
 
+    # PCGrad gradient surgery (做法A): protect occ from depth.
+    use_pcgrad = cfg.get('use_pcgrad', False)
+    if use_pcgrad:
+        assert not use_scaler, 'PCGrad path requires amp=False (no GradScaler).'
+        logger.info('PCGrad enabled: main=occ+flow+det, aux=render; per-tensor orthogonal projection.')
+
     # resume and load
     epoch = 0
     global_iter = 0
@@ -256,7 +322,10 @@ def main(args):
 
             with torch.cuda.amp.autocast(amp):
                 # forward + backward + optimize
-                result_dict = my_model(imgs=input_imgs, metas=data, global_iter=global_iter)#前向传播
+                # PCGrad does manual two-grad surgery + manual all-reduce, so it
+                # must bypass the DDP reducer -> forward through raw_model.
+                fwd_model = raw_model if use_pcgrad else my_model
+                result_dict = fwd_model(imgs=input_imgs, metas=data, global_iter=global_iter)#前向传播
 
                 loss_input = {
                     'metas': data
@@ -276,7 +345,17 @@ def main(args):
 
                 if args.vis_map:
                     vis_map_train(result_dict, data)
-            if not use_scaler:
+            if use_pcgrad:
+                group_losses = loss_func.group_losses or {}
+                L_main = group_losses.get('main')
+                L_aux = group_losses.get('aux')
+                optimizer.zero_grad()
+                grad_norm, pcgrad_cos, pcgrad_proj = pcgrad_backward(
+                    L_main, L_aux, raw_model.parameters(),
+                    cfg.grad_max_norm, distributed, world_size)
+                optimizer.step()
+                optimizer.zero_grad()
+            elif not use_scaler:
                 loss.backward()
                 if (global_iter + 1) % grad_accumulation == 0:
                     grad_norm = torch.nn.utils.clip_grad_norm_(my_model.parameters(), cfg.grad_max_norm)
@@ -307,6 +386,9 @@ def main(args):
                     detailed_loss.append(f'{loss_name}: {loss_value:.5f}')
                 detailed_loss = ', '.join(detailed_loss)
                 logger.info(detailed_loss)
+                if use_pcgrad:
+                    logger.info('[PCGrad] main-aux cos: %.4f, projected tensor ratio: %.3f'%(
+                        pcgrad_cos, pcgrad_proj))
                 loss_list = []
             data_time_s = time.time()
             time_s = time.time()
