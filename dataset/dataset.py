@@ -1242,6 +1242,10 @@ class NuScenesDataset(Dataset):
         # multi-frame depth supervision
         num_hist_depth_frames=0,
         num_fut_depth_frames=0,
+        # depth-based gaussian init
+        depth_init_root=None,
+        depth_init_max_depth=40.0,
+        depth_init_stride=4,
         subsample_seed=None,
     ):
         self.data_path = data_root
@@ -1333,6 +1337,23 @@ class NuScenesDataset(Dataset):
         # them (offset moves the gaussians).
         self.dynamic_pseudo_classes = [2, 3, 4, 5, 6, 7, 9, 10]
         self.use_pseudo_label = (metric3d_root is not None and grounded_sam_root is not None)
+        # depth-based gaussian init
+        self.depth_init_root = depth_init_root
+        self.depth_init_max_depth = depth_init_max_depth
+        self.depth_init_stride = depth_init_stride
+        self.use_depth_init = (depth_init_root is not None)
+        if self.use_depth_init and not self.use_pseudo_label:
+            # need scene_token -> scene_name mapping and depth reorder
+            self._scene_token_to_name = {
+                s['token']: s['name'] for s in self.nusc.scene
+            }
+            self._depth_cam_order = [
+                'CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
+                'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT'
+            ]
+            self._depth_reorder = [
+                self._depth_cam_order.index(c) for c in self.sensor_types
+            ]
         if self.use_pseudo_label:
             # build scene_token -> scene_name mapping
             self._scene_token_to_name = {
@@ -1690,7 +1711,7 @@ class NuScenesDataset(Dataset):
             input_dict["aug_configs"] = self._sample_augmentation()
         # save keys before pipeline may drop them (needed for pseudo label loading)
         _ori_intrinsic_saved = np.array(input_dict.get('ori_intrinsic', input_dict.get('cam_intrinsic'))).copy()
-        _cam2ego_saved = np.array(input_dict['cam2ego']).copy() if self.use_pseudo_label else None
+        _cam2ego_saved = np.array(input_dict['cam2ego']).copy() if (self.use_pseudo_label or self.use_depth_init) else None
         for t in self.pipeline:
             input_dict = t(input_dict)
         # restore after pipeline transforms
@@ -1787,6 +1808,66 @@ class NuScenesDataset(Dataset):
                     scene_token, index, lidar2global_t, gs_intrins,
                     ref_hw=pseudo_depth.shape[-2:])
                 return_dict.update(mf)
+
+        # ── depth-based gaussian init (backproject depth to LIDAR 3D) ──
+        if self.use_depth_init:
+            sample_token = info['token']
+            # scene_token (from self.keyframes) → scene_name for file path
+            _st = info.get('scene_token', scene_token)
+            scene_name = self._scene_token_to_name[_st]
+            depth_path = os.path.join(self.depth_init_root, scene_name, f'{sample_token}.npy')
+            raw_depth = np.load(depth_path).astype(np.float32)  # (6, 900, 1600) in depth_cam_order
+            raw_depth = raw_depth[self._depth_reorder]           # reorder to sensor_types
+
+            # img2lidar: (6, 4, 4) already computed in get_data_info
+            # ori_intrinsic saved before pipeline
+            ori_K = _ori_intrinsic_saved[:, :3, :3]  # (6, 3, 3)
+
+            # build cam2lidar for each camera (cam_frame → lidar_frame)
+            cam2ego_all = _cam2ego_saved  # (6, 4, 4), saved before pipeline
+            lidar2ego_init = np.eye(4, dtype=np.float64)
+            lidar2ego_init[:3, :3] = Quaternion(info['lidar2ego_rotation']).rotation_matrix
+            lidar2ego_init[:3, 3] = np.asarray(info['lidar2ego_translation'])
+            ego2lidar_init = np.linalg.inv(lidar2ego_init)
+            cam2lidar = ego2lidar_init[None] @ cam2ego_all  # (6, 4, 4)
+
+            stride = self.depth_init_stride
+            all_pts = []
+            for c in range(6):
+                depth_c = raw_depth[c]  # (H, W) = (900, 1600)
+                H, W = depth_c.shape
+                # subsample with stride for efficiency
+                v_grid, u_grid = np.mgrid[0:H:stride, 0:W:stride]
+                d_vals = depth_c[v_grid, u_grid]
+                valid = (d_vals > 0.5) & (d_vals < self.depth_init_max_depth)
+                u_valid = u_grid[valid].astype(np.float64)
+                v_valid = v_grid[valid].astype(np.float64)
+                d_valid = d_vals[valid].astype(np.float64)
+
+                if len(d_valid) == 0:
+                    continue
+
+                # backproject: pixel (u,v,d) → camera 3D
+                K_inv = np.linalg.inv(ori_K[c].astype(np.float64))  # (3, 3)
+                pts_cam = K_inv @ np.stack([u_valid * d_valid,
+                                            v_valid * d_valid,
+                                            d_valid], axis=0)  # (3, N)
+                # to homogeneous (4, N)
+                ones = np.ones((1, pts_cam.shape[1]), dtype=np.float64)
+                pts_cam_h = np.vstack([pts_cam, ones])
+                # cam → lidar
+                pts_lidar = (cam2lidar[c] @ pts_cam_h)[:3].T  # (N, 3)
+                all_pts.append(pts_lidar.astype(np.float32))
+
+            if len(all_pts) > 0:
+                all_pts = np.concatenate(all_pts, axis=0)
+            else:
+                all_pts = np.zeros((0, 3), dtype=np.float32)
+
+            # Use tuple wrapper so collate_fn treats it as a generic Python
+            # object (not numpy/tensor) → result is list[tuple] per batch.
+            # Access in lifter: metas['init_pts'][b][0]
+            return_dict['init_pts'] = (all_pts,)
 
         return return_dict
 
