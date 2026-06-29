@@ -127,15 +127,18 @@ class GaussianLifter(BaseLifter):
         return safe_inverse_sigmoid(xyz_norm).to(device)
 
     def forward(self, ms_img_feats, metas=None, **kwargs):
-        batch_size = ms_img_feats[0].shape[0]
+        batch_size = ms_img_feats[0].shape[0]  # B*F (batch × temporal frames)
 
         if self.pts_init and metas is not None and 'init_pts' in metas:
             # dynamic xyz from backprojected pseudo-depth points
             # init_pts is list of tuples: [(arr0,), (arr1,), ...] after collation
+            # Length = B (actual batch size), not B*F
             init_pts_list = metas['init_pts']
+            actual_B = len(init_pts_list)
+            F = batch_size // actual_B  # number of temporal frames
             device = self.anchor_non_xyz.device
             xyz_batch = []
-            for b in range(batch_size):
+            for b in range(actual_B):
                 pts = init_pts_list[b]
                 if isinstance(pts, (tuple, list)):
                     pts = pts[0]  # unwrap tuple from collation
@@ -143,9 +146,14 @@ class GaussianLifter(BaseLifter):
                 xyz_batch.append(xyz_b)
             xyz_batch = torch.stack(xyz_batch)  # (B, num_anchor, 3)
 
+            # tile along temporal dimension: (B, A, 3) → (B*F, A, 3)
+            if F > 1:
+                xyz_batch = xyz_batch.unsqueeze(1).expand(-1, F, -1, -1) \
+                                     .reshape(batch_size, self.num_anchor, 3)
+
             # tile non-xyz attributes
-            non_xyz = self.anchor_non_xyz[None].expand(batch_size, -1, -1)  # (B, num_anchor, D)
-            anchor = torch.cat([xyz_batch, non_xyz], dim=-1)  # (B, num_anchor, 3+D)
+            non_xyz = self.anchor_non_xyz[None].expand(batch_size, -1, -1)  # (B*F, num_anchor, D)
+            anchor = torch.cat([xyz_batch, non_xyz], dim=-1)  # (B*F, num_anchor, 3+D)
         elif self.pts_init:
             # pts_init mode but no init_pts in metas (e.g., eval without depth)
             # fallback to random xyz
