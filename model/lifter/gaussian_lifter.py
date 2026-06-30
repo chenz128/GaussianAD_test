@@ -21,6 +21,7 @@ class GaussianLifter(BaseLifter):
         offset_dim=2*6,
         pts_init=False,
         pc_range=None,
+        init_xyz_path=None,
     ):
         super().__init__()
         self.embed_dims = embed_dims
@@ -29,6 +30,18 @@ class GaussianLifter(BaseLifter):
         if pts_init:
             assert pc_range is not None, "pc_range is required for pts_init"
             self.pc_range = pc_range
+        elif init_xyz_path is not None:
+            # Plan A: load pre-computed xyz, normalize to [0,1], apply inverse_sigmoid
+            assert pc_range is not None, "pc_range is required for init_xyz_path"
+            raw_xyz = np.load(init_xyz_path).astype(np.float32)  # (num_anchor, 3)
+            assert raw_xyz.shape == (num_anchor, 3), \
+                f"init_xyz shape mismatch: expected ({num_anchor}, 3), got {raw_xyz.shape}"
+            pc_min = np.array(pc_range[:3], dtype=np.float32)
+            pc_max = np.array(pc_range[3:], dtype=np.float32)
+            xyz_norm = (raw_xyz - pc_min) / (pc_max - pc_min)
+            xyz_norm = np.clip(xyz_norm, 1e-4, 1 - 1e-4)
+            xyz = safe_inverse_sigmoid(torch.from_numpy(xyz_norm))
+            print(f"[GaussianLifter] Loaded depth-init xyz from {init_xyz_path}")
         else:
             xyz = torch.rand(num_anchor, 3, dtype=torch.float)
             xyz = safe_inverse_sigmoid(xyz)
