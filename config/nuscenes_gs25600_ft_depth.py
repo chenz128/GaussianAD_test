@@ -206,6 +206,7 @@ model = dict(
         offset=offset,
         offset_dim=offset_dim,
         empty_args=dict(
+            _delete_=True,
             mean=[0, 0, -1.0],
             scale=[60, 60, 4.0],
         ),
