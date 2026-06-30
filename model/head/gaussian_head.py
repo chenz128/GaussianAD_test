@@ -196,7 +196,9 @@ class GaussianHead(BaseTaskHead):
             'sampled_xyz': sampled_xyz,
             'occ_mask': occ_cam_mask,
             'gaussian': representation_temp['gaussian'],
-            'occ_flow': occ_flow
+            'occ_flow': occ_flow,
+            'offset': kwargs.get('offset'),
+            'dynamic_logits': getattr(representation_temp['gaussian'], 'dynamic_logits', None),
         }
 
         # 2D splatting for pseudo-label supervision (training only)
@@ -214,6 +216,13 @@ class GaussianHead(BaseTaskHead):
             output['rendered_acc'] = rendered_acc
             output['rendered_var'] = rendered_var
             output['rendered_extra_depth'] = rendered_extra_depth
+
+        # Dynamic rendering (for DynamicLoss) — gs_extrins/gs_intrins already set above
+        if self.rasterizer_2d is not None and self.training and getattr(gaussians, 'dynamic_logits', None) is not None:
+            rendered_dynamic = self.rasterizer_2d.render_dynamic(gaussians, gs_extrins, gs_intrins)
+        else:
+            rendered_dynamic = None
+        output['rendered_dynamic'] = rendered_dynamic
 
         return output
 

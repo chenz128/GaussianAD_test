@@ -1239,6 +1239,7 @@ class NuScenesDataset(Dataset):
         pseudo_label_scale=0.44,
         max_pseudo_depth=40.0,
         pseudo_label_crop_top=140,
+        dynamic_gt_root=None,
         # multi-frame depth supervision
         num_hist_depth_frames=0,
         num_fut_depth_frames=0,
@@ -1329,6 +1330,7 @@ class NuScenesDataset(Dataset):
         self.pseudo_label_scale = pseudo_label_scale
         self.max_pseudo_depth = max_pseudo_depth
         self.pseudo_label_crop_top = pseudo_label_crop_top
+        self.dynamic_gt_root = dynamic_gt_root
         # multi-frame depth supervision (history + future frames, depth only)
         self.num_hist_depth_frames = num_hist_depth_frames
         self.num_fut_depth_frames = num_fut_depth_frames
@@ -1808,6 +1810,17 @@ class NuScenesDataset(Dataset):
                     scene_token, index, lidar2global_t, gs_intrins,
                     ref_hw=pseudo_depth.shape[-2:])
                 return_dict.update(mf)
+
+            # ── dynamic/static GT ──
+            if self.dynamic_gt_root is not None:
+                dyn_path = os.path.join(self.dynamic_gt_root, f'{sample_token}.npy')
+                if os.path.exists(dyn_path):
+                    pseudo_dyn = torch.from_numpy(np.load(dyn_path).astype(np.int64))  # (6, H', W')
+                else:
+                    pseudo_dyn = torch.zeros_like(pseudo_seg)  # missing -> all ignore
+                pseudo_dyn[far_mask] = 0
+                return_dict['pseudo_dyn'] = pseudo_dyn       # (6, H', W')
+
 
         # ── depth-based gaussian init (backproject depth to LIDAR 3D) ──
         if self.use_depth_init:

@@ -229,3 +229,38 @@ class GaussianRasterizer2D(nn.Module):
             loss_depth = pred_d.sum() * 0.0
 
         return loss_sem, loss_depth
+
+    def render_dynamic(self, gaussian, gs_extrins, gs_intrins):
+        """Render dynamic logit channel for all cameras.
+
+        Renders gaussian.dynamic_logits (G, 1) to 2D via gsplat.
+        Only called during training when use_dynamic=True.
+
+        Returns:
+            rendered_dynamic: (B, nC, H, W) or None
+        """
+        if getattr(gaussian, 'dynamic_logits', None) is None:
+            return None
+
+        from gsplat import rasterization as gsplat_rasterization
+        B = gaussian.means.shape[0]
+        all_dyn = []
+        for b in range(B):
+            opa_b = gaussian.opacities[b, :, 0]
+            if self.detach_shape:
+                opa_b = opa_b.detach()
+            rendered, _, _ = gsplat_rasterization(
+                means=gaussian.means[b],
+                quats=gaussian.rotations[b].detach() if self.detach_shape else gaussian.rotations[b],
+                scales=gaussian.scales[b].detach() if self.detach_shape else gaussian.scales[b],
+                opacities=opa_b,
+                colors=gaussian.dynamic_logits[b],  # (G, 1)
+                viewmats=gs_extrins[b],
+                Ks=gs_intrins[b],
+                width=self.width,
+                height=self.height,
+                render_mode='RGB+D',
+            )
+            # rendered: (nC, H, W, 2) — channel 0 is dynamic logit, channel 1 is depth
+            all_dyn.append(rendered[..., 0])  # (nC, H, W)
+        return torch.stack(all_dyn)  # (B, nC, H, W)
