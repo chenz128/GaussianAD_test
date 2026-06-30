@@ -156,6 +156,7 @@ model = dict(
                 scale_range=scale_range),
         ),
         spconv_layer=dict(
+            _delete_=True,
             type='SparseGaussian3DConv',
             embed_dims=embed_dims,
             pc_range=pc_range,
