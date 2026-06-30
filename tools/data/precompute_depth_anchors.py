@@ -34,8 +34,73 @@ def get_reorder_indices():
     return [DEPTH_CAM_ORDER.index(s) for s in SENSOR_TYPES]
 
 
-def backproject_sample(info, depth_root, pc_range, max_depth=40.0, stride=8):
-    """Backproject one sample's depth maps to 3D points in LIDAR frame."""
+def voxel_downsample(pts, voxel_size, num_target):
+    """Voxel downsample, then random subsample/repeat to exact num_target."""
+    if pts.shape[0] == 0:
+        return np.random.uniform(-30, 30, (num_target, 3)).astype(np.float32)
+
+    # Voxel downsample: average points per voxel
+    voxel_indices = np.floor(pts / voxel_size).astype(np.int32)
+    # Use a dict to accumulate
+    voxel_dict = {}
+    for i in range(pts.shape[0]):
+        key = tuple(voxel_indices[i])
+        if key not in voxel_dict:
+            voxel_dict[key] = []
+        voxel_dict[key].append(pts[i])
+
+    # Compute voxel centers (mean of points in each voxel)
+    centers = np.array([np.mean(v, axis=0) for v in voxel_dict.values()], dtype=np.float32)
+
+    N = centers.shape[0]
+    if N >= num_target:
+        indices = np.random.choice(N, num_target, replace=False)
+        return centers[indices]
+    else:
+        # Repeat + jitter
+        repeats = (num_target // N) + 1
+        pts_rep = np.tile(centers, (repeats, 1))[:num_target]
+        jitter = np.random.randn(*pts_rep.shape).astype(np.float32) * 0.1
+        pts_rep = pts_rep + jitter
+        return pts_rep
+
+
+def flatten_infos(data, dataroot=None):
+    """Flatten PKL infos to a list of frame dicts, handling v4/v6 formats."""
+    infos = data['infos'] if isinstance(data, dict) and 'infos' in data else data
+
+    # v4 format: dict of scene_token -> list of frames
+    if isinstance(infos, dict):
+        # Need nuscenes to map scene_token -> scene_name
+        scene_token_to_name = {}
+        if dataroot is not None:
+            try:
+                from nuscenes.nuscenes import NuScenes
+                nusc = NuScenes(version='v1.0-trainval', dataroot=dataroot, verbose=False)
+                for scene in nusc.scene:
+                    scene_token_to_name[scene['token']] = scene['name']
+                print(f"  Loaded {len(scene_token_to_name)} scene mappings from nuScenes")
+            except Exception as e:
+                print(f"  Warning: cannot load nuScenes for scene mapping: {e}")
+
+        all_frames = []
+        for scene_token, frames in infos.items():
+            scene_name = scene_token_to_name.get(scene_token, None)
+            for frame in frames:
+                frame['_scene_token'] = scene_token
+                if scene_name:
+                    frame['scene_name'] = scene_name
+                # v4: 'cams' key with sensor2ego_translation/rotation
+                if 'cams' in frame and 'cams_info' not in frame:
+                    frame['cams_info'] = frame['cams']
+                all_frames.append(frame)
+        return all_frames
+    else:
+        return list(infos)
+
+
+def backproject_sample_v4(info, depth_root, pc_range, max_depth=40.0, stride=8):
+    """Backproject for v4 PKL format (sensor2ego_translation/rotation in cams)."""
     scene_name = info.get('scene_name', None)
     if scene_name is None:
         return np.zeros((0, 3), dtype=np.float32)
@@ -55,8 +120,7 @@ def backproject_sample(info, depth_root, pc_range, max_depth=40.0, stride=8):
     lidar2ego[:3, 3] = np.asarray(info['lidar2ego_translation'])
     ego2lidar = np.linalg.inv(lidar2ego)
 
-    # Get cam params
-    cams_info = info['cams_info']
+    cams_info = info.get('cams_info', info.get('cams', {}))
     all_pts = []
 
     for c, cam_name in enumerate(SENSOR_TYPES):
@@ -102,37 +166,6 @@ def backproject_sample(info, depth_root, pc_range, max_depth=40.0, stride=8):
     return pts[mask]
 
 
-def voxel_downsample(pts, voxel_size, num_target):
-    """Voxel downsample, then random subsample/repeat to exact num_target."""
-    if pts.shape[0] == 0:
-        return np.random.uniform(-30, 30, (num_target, 3)).astype(np.float32)
-
-    # Voxel downsample: average points per voxel
-    voxel_indices = np.floor(pts / voxel_size).astype(np.int32)
-    # Use a dict to accumulate
-    voxel_dict = {}
-    for i in range(pts.shape[0]):
-        key = tuple(voxel_indices[i])
-        if key not in voxel_dict:
-            voxel_dict[key] = []
-        voxel_dict[key].append(pts[i])
-
-    # Compute voxel centers (mean of points in each voxel)
-    centers = np.array([np.mean(v, axis=0) for v in voxel_dict.values()], dtype=np.float32)
-
-    N = centers.shape[0]
-    if N >= num_target:
-        indices = np.random.choice(N, num_target, replace=False)
-        return centers[indices]
-    else:
-        # Repeat + jitter
-        repeats = (num_target // N) + 1
-        pts_rep = np.tile(centers, (repeats, 1))[:num_target]
-        jitter = np.random.randn(*pts_rep.shape).astype(np.float32) * 0.1
-        pts_rep = pts_rep + jitter
-        return pts_rep
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataroot', default='data/nuscenes')
@@ -155,18 +188,20 @@ def main():
     print(f"Loading PKL: {args.pkl}")
     with open(args.pkl, 'rb') as f:
         data = pickle.load(f)
-    infos = data['infos'] if isinstance(data, dict) else data
+
+    all_frames = flatten_infos(data, args.dataroot)
+    print(f"Total frames in PKL: {len(all_frames)}")
 
     # Randomly select a subset of frames
-    num_samples = min(args.num_samples, len(infos))
-    indices = np.random.choice(len(infos), num_samples, replace=False)
+    num_samples = min(args.num_samples, len(all_frames))
+    indices = np.random.choice(len(all_frames), num_samples, replace=False)
     print(f"Processing {num_samples} frames...")
 
     all_pts = []
     for i, idx in enumerate(indices):
-        info = infos[idx]
-        pts = backproject_sample(info, args.depth_root, args.pc_range,
-                                 args.max_depth, args.stride)
+        info = all_frames[idx]
+        pts = backproject_sample_v4(info, args.depth_root, args.pc_range,
+                                    args.max_depth, args.stride)
         all_pts.append(pts)
         if (i + 1) % 50 == 0:
             total = sum(p.shape[0] for p in all_pts)

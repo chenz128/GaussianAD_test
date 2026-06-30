@@ -32,3 +32,7 @@ tools/__pycache__/
 
 model/encoder/gaussian_encoder/ops/build/
 model/head/localagg/build/trace.json
+*.html
+*.json
+0.1
+claude_old.md
