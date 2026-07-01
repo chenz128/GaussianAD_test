@@ -152,6 +152,16 @@ class BEVSegmentor(CustomBaseSegmentor):
         anchor_hist = anchor_v[:, :-1].reshape(B * (F - 1), num_anchor, Ca)
         anchor_curr = anchor_v[:, -1:].reshape(B * 1, num_anchor, Ca)
 
+        # --- split rep_features (independent instance feature), if present -
+        rep_features = results.get('rep_features', None)
+        if rep_features is not None:
+            Cr = rep_features.shape[2]
+            rep_v = rep_features.view(B, F, num_anchor, Cr)
+            rep_hist = rep_v[:, :-1].reshape(B * (F - 1), num_anchor, Cr)
+            rep_curr = rep_v[:, -1:].reshape(B * 1, num_anchor, Cr)
+        else:
+            rep_hist = rep_curr = None
+
         # --- split ms_img_feats: each is (B*F, N, C, H, W) ---------------
         feats_hist, feats_curr = [], []
         for f in results['ms_img_feats']:
@@ -168,11 +178,13 @@ class BEVSegmentor(CustomBaseSegmentor):
         with torch.no_grad():
             out_hist = self.encoder(
                 representation=anchor_hist,
+                rep_features=rep_hist,
                 ms_img_feats=feats_hist,
                 metas=metas_hist,
             )
         out_curr = self.encoder(
             representation=anchor_curr,
+            rep_features=rep_curr,
             ms_img_feats=feats_curr,
             metas=metas_curr,
         )

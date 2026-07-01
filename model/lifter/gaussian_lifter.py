@@ -22,10 +22,12 @@ class GaussianLifter(BaseLifter):
         pts_init=False,
         pc_range=None,
         init_xyz_path=None,
+        indep_instance_feat=False,
     ):
         super().__init__()
         self.embed_dims = embed_dims
         self.pts_init = pts_init
+        self.indep_instance_feat = indep_instance_feat
 
         if pts_init:
             assert pc_range is not None, "pc_range is required for pts_init"
@@ -85,9 +87,24 @@ class GaussianLifter(BaseLifter):
 
         self.num_anchor = num_anchor
 
+        # GaussianFormer V1 (opt-in): independent, learnable instance feature
+        # (query), decoupled from anchor geometry. Only created when
+        # indep_instance_feat=True, so other configs are unaffected. Xavier
+        # init applied here so it takes effect even when the lifter's
+        # init_weight() is not auto-invoked.
+        if indep_instance_feat:
+            self.instance_feature = nn.Parameter(
+                torch.zeros(num_anchor, embed_dims, dtype=torch.float32),
+                requires_grad=feat_grad,
+            )
+            if feat_grad:
+                nn.init.xavier_uniform_(self.instance_feature.data, gain=1)
+
     def init_weight(self):
         if not self.pts_init:
             self.anchor.data = self.anchor.data.new_tensor(self.anchor_init)
+        if self.indep_instance_feat and self.instance_feature.requires_grad:
+            nn.init.xavier_uniform_(self.instance_feature.data, gain=1)
 
     def _sample_pts(self, init_pts, device):
         """Sample num_anchor points from backprojected 3D points for one sample.
@@ -184,6 +201,13 @@ class GaussianLifter(BaseLifter):
             # original: fixed learnable anchor
             anchor = torch.tile(self.anchor[None], (batch_size, 1, 1))
 
-        return {
+        out = {
             'representation': anchor,
         }
+        # GaussianFormer V1 (opt-in): independent learnable instance feature
+        # (query), tiled over batch. When disabled, encoder falls back to
+        # deriving instance_feature from anchor geometry (original behavior).
+        if self.indep_instance_feat:
+            out['rep_features'] = torch.tile(
+                self.instance_feature[None], (batch_size, 1, 1))
+        return out
