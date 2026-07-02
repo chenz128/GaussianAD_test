@@ -232,9 +232,6 @@ train_dataset_config = dict(
     # lightweight: reproducible 3000-sample subset (vs full ~28k) for fast iteration
     num_samples=3000,
     subsample_seed=42,
-    # multi-frame dynamic supervision (history masks dynamic; future moves by offset)
-    num_hist_dyn_frames=2,
-    num_fut_dyn_frames=2,
 )
 
 model = dict(
