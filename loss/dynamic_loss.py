@@ -6,6 +6,11 @@ import numpy as np
 from . import OPENOCC_LOSS
 from .base_loss import BaseLoss
 
+try:
+    from model.ops.roiaware_pool3d.roiaware_pool3d_utils import points_in_boxes_gpu
+except Exception:  # pragma: no cover - only needed when use_gt_box=True
+    points_in_boxes_gpu = None
+
 
 def _dyn_prob_to_rgb(prob):
     """prob: (H, W) float in [0,1] → RGB (H, W, 3) uint8.
@@ -48,19 +53,30 @@ class DynamicLoss(BaseLoss):
         extra_weight=0.3,
         vis_dir=None,
         vis_every=500,
+        use_gt_box=False,
+        v_thresh=0.5,
         input_dict=None,
         **kwargs,
     ):
         if input_dict is None:
-            input_dict = {
-                'rendered_dynamic': 'rendered_dynamic',
-                'pseudo_dyn': 'pseudo_dyn',
-                'input_imgs': 'input_imgs',
-                'aug_flip': 'aug_flip',
-                'rendered_extra_dynamic': 'rendered_extra_dynamic',
-                'extra_pseudo_dyn': 'extra_pseudo_dyn',
-                'extra_dyn_valid': 'extra_dyn_valid',
-            }
+            if use_gt_box:
+                # oracle mode: supervise per-gaussian dynamic_logits directly in
+                # 3D via point-in-box, bypassing 2D render and noisy pseudo_dyn.
+                input_dict = {
+                    'dynamic_logits': 'dynamic_logits',
+                    'gaussian': 'gaussian',
+                    'gt_boxes': 'gt_boxes',
+                }
+            else:
+                input_dict = {
+                    'rendered_dynamic': 'rendered_dynamic',
+                    'pseudo_dyn': 'pseudo_dyn',
+                    'input_imgs': 'input_imgs',
+                    'aug_flip': 'aug_flip',
+                    'rendered_extra_dynamic': 'rendered_extra_dynamic',
+                    'extra_pseudo_dyn': 'extra_pseudo_dyn',
+                    'extra_dyn_valid': 'extra_dyn_valid',
+                }
         super().__init__(weight=weight, input_dict=input_dict, **kwargs)
         # BaseLoss.__init__ sets self.loss_func = lambda: 0 as instance attr,
         # which shadows our loss_func method. Delete it to restore method lookup.
@@ -68,9 +84,38 @@ class DynamicLoss(BaseLoss):
 
         self.vis_dir = vis_dir
         self.vis_every = vis_every
+        self.use_gt_box = use_gt_box
+        self.v_thresh = v_thresh
+        if use_gt_box:
+            assert points_in_boxes_gpu is not None, \
+                'points_in_boxes_gpu unavailable but use_gt_box=True'
         # dynamic pixels are rare (~1.6% of labeled px) → up-weight positive class
         self.register_buffer('pos_weight', torch.tensor(float(pos_weight)))
         self.extra_weight = extra_weight
+
+    @torch.no_grad()
+    def _gt_box_membership(self, means, gt_boxes):
+        """Assign each gaussian to a GT box and derive a dynamic mask.
+
+        Args:
+            means:    (B, G, 3) gaussian centers in LIDAR frame
+            gt_boxes: (B, T, >=9) padded GT boxes (pad rows all-zero, never hit)
+        Returns:
+            dyn_mask: (B, G) bool, True if inside a moving box (|v| > v_thresh)
+        """
+        means = means.detach().float().contiguous()
+        gt_boxes = gt_boxes.to(means.device).float()
+        boxes7 = gt_boxes[..., :7].contiguous()          # (B, T, 7)
+        box_idx = points_in_boxes_gpu(means, boxes7).long()  # (B, G), -1 bg
+        speed = torch.linalg.norm(gt_boxes[..., 7:9], dim=-1)  # (B, T)
+        moving_box = speed > self.v_thresh                     # (B, T) bool
+        B, G = box_idx.shape
+        dyn_mask = torch.zeros((B, G), dtype=torch.bool, device=means.device)
+        for b in range(B):
+            valid = box_idx[b] >= 0
+            if valid.any():
+                dyn_mask[b, valid] = moving_box[b][box_idx[b, valid]]
+        return dyn_mask
 
     def forward(self, inputs):
         actual_inputs = {}
@@ -78,10 +123,50 @@ class DynamicLoss(BaseLoss):
             # .get(): multi-frame keys are absent unless the config maps them,
             # so missing keys resolve to None and the loss skips that branch.
             actual_inputs.update({input_key: inputs.get(input_val)})
-        loss = self.loss_func(**actual_inputs)
+        if self.use_gt_box:
+            loss = self._gt_box_loss_func(**actual_inputs)
+        else:
+            loss = self.loss_func(**actual_inputs)
         return self.weight * loss, {
             'DynamicLoss': (self.weight * loss).detach().item(),
         }
+
+    def _gt_box_loss_func(self, dynamic_logits, gaussian=None, gt_boxes=None):
+        """Direct 3D supervision of per-gaussian dynamic_logits via GT boxes.
+
+        A gaussian is labeled dynamic (target=1) iff its center falls inside a
+        GT box moving faster than ``v_thresh``; everything else (static boxes and
+        background) is static (target=0). Background=static is a safe assumption
+        for nuScenes (buildings/road/vegetation). Eval passes None → returns 0.
+        """
+        if dynamic_logits is None or gaussian is None or gt_boxes is None:
+            return torch.tensor(0.0, requires_grad=False)
+
+        dyn_mask = self._gt_box_membership(gaussian.means, gt_boxes)  # (B, G) bool
+        logit = dynamic_logits
+        if logit.dim() == 3:
+            logit = logit[..., 0]                        # (B, G, 1) -> (B, G)
+        pred_v = logit.flatten()                         # (N,)
+        target_v = dyn_mask.flatten().float()            # (N,)
+        loss = nn.functional.binary_cross_entropy_with_logits(
+            pred_v, target_v, pos_weight=self.pos_weight.to(pred_v.device)
+        )
+
+        # ── diagnostics ──
+        self._diag_counter = getattr(self, '_diag_counter', 0) + 1
+        if self._diag_counter % self.vis_every == 1:
+            with torch.no_grad():
+                n_total = target_v.numel()
+                n_dyn = int(target_v.sum().item())
+                prob = torch.sigmoid(pred_v)
+                pred_dyn_ratio = (prob > 0.5).float().mean().item()
+            logging.getLogger('mmengine').info(
+                f'[DynamicLoss Diag] iter={self._diag_counter} | gt_box=True | '
+                f'gaussians={n_total} dyn_gt={n_dyn} ({n_dyn / max(n_total, 1):.2%}) | '
+                f'pred_dyn_ratio={pred_dyn_ratio:.2%} | loss={loss.item():.4f}'
+            )
+        return loss
+
 
     def loss_func(self, rendered_dynamic, pseudo_dyn, input_imgs=None, aug_flip=None,
                   rendered_extra_dynamic=None, extra_pseudo_dyn=None, extra_dyn_valid=None):
