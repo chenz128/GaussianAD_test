@@ -242,12 +242,15 @@ def main(args):
             logger.info('converted sync bn.')
 
         find_unused_parameters = cfg.get('find_unused_parameters', False)
+        static_graph = cfg.get('static_graph', False)
         ddp_model_module = torch.nn.parallel.DistributedDataParallel
         my_model = ddp_model_module(
             my_model.cuda(),
             device_ids=[torch.cuda.current_device()],
             broadcast_buffers=False,
             find_unused_parameters=find_unused_parameters)
+        if static_graph:
+            my_model._set_static_graph()
         raw_model = my_model.module
     else:
         my_model = my_model.cuda()
