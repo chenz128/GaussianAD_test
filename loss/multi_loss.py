@@ -34,25 +34,30 @@ class MultiLoss(nn.Module):
         group_sums = {} if self.group_map is not None else None
         for loss_func in self.losses:
             cls_name = loss_func.__class__.__name__
+            # weight=0 的 loss 仍执行(如 RenderLoss 保留可视化)，但不写入
+            # loss_dict / tensorboard，避免 log 里堆一堆无效项。
+            enabled = getattr(loss_func, 'weight', 1.0) != 0
             result = loss_func(inputs)
             if isinstance(result, tuple):
                 loss, sub_dict = result
                 tot_loss += loss
-                loss_dict.update(sub_dict)
-                if writer and self.iter_counter % 10 == 0:
-                    for k, v in sub_dict.items():
-                        writer.add_scalar(f'loss/{k}', v, self.iter_counter)
+                if enabled:
+                    loss_dict.update(sub_dict)
+                    if writer and self.iter_counter % 10 == 0:
+                        for k, v in sub_dict.items():
+                            writer.add_scalar(f'loss/{k}', v, self.iter_counter)
             else:
                 loss = result
                 tot_loss += loss
-                loss_dict.update({
-                    cls_name: \
-                    loss.detach().item()
-                })
-                if writer and self.iter_counter % 10 == 0:
-                    writer.add_scalar(
-                        f'loss/{cls_name}',
-                        loss.detach().item(), self.iter_counter)
+                if enabled:
+                    loss_dict.update({
+                        cls_name: \
+                        loss.detach().item()
+                    })
+                    if writer and self.iter_counter % 10 == 0:
+                        writer.add_scalar(
+                            f'loss/{cls_name}',
+                            loss.detach().item(), self.iter_counter)
             if group_sums is not None:
                 grp = self.group_map.get(cls_name, 'main')
                 if grp not in group_sums:

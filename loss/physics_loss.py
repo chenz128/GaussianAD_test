@@ -42,6 +42,8 @@ class PhysicsLoss(BaseLoss):
         dyn_threshold=0.5,
         use_gt_box=False,
         v_thresh=0.5,
+        movable_classes=None,
+        num_sem_classes=17,
         weight=1.0,
         input_dict=None,
         **kwargs,
@@ -67,22 +69,34 @@ class PhysicsLoss(BaseLoss):
         self.dyn_threshold = dyn_threshold
         self.use_gt_box = use_gt_box
         self.v_thresh = v_thresh
+        # Semantic static gate: only gaussians whose predicted semantic argmax is
+        # in movable_classes may be dynamic; background-class gaussians inside a
+        # moving box are forced static. None -> disabled (legacy behavior).
+        self.movable_classes = tuple(movable_classes) if movable_classes is not None else None
+        if self.movable_classes is not None:
+            lut = torch.zeros(num_sem_classes, dtype=torch.bool)
+            lut[list(self.movable_classes)] = True
+            self.register_buffer('movable_lut', lut)
         if use_gt_box:
             assert points_in_boxes_gpu is not None, \
                 'points_in_boxes_gpu unavailable but use_gt_box=True'
         self._diag_counter = 0
 
     @torch.no_grad()
-    def _gt_box_membership(self, means, gt_boxes):
+    def _gt_box_membership(self, means, gt_boxes, semantics=None):
         """Assign each gaussian to a GT box and derive a dynamic mask.
 
         Args:
-            means:    (B, G, 3) gaussian centers in LIDAR frame
-            gt_boxes: (B, T, >=9) padded GT boxes (pad rows are all-zero, i.e.
-                      zero-size boxes that never contain any point)
+            means:     (B, G, 3) gaussian centers in LIDAR frame
+            gt_boxes:  (B, T, >=9) padded GT boxes (pad rows are all-zero, i.e.
+                       zero-size boxes that never contain any point)
+            semantics: (B, G, C) optional predicted semantics; with
+                       ``movable_classes`` a gaussian whose argmax is a
+                       background class is forced static.
         Returns:
             box_idx:  (B, G) long, index of the containing box (-1 = background)
             dyn_mask: (B, G) bool, True if inside a moving box (|v| > v_thresh)
+                      AND (if enabled) its semantic is a movable class.
         """
         means = means.detach().float().contiguous()
         gt_boxes = gt_boxes.to(means.device).float()
@@ -100,6 +114,11 @@ class PhysicsLoss(BaseLoss):
             valid = box_idx[b] >= 0
             if valid.any():
                 dyn_mask[b, valid] = moving_box[b][box_idx[b, valid]]
+        # semantic static gate: force background-class gaussians to static
+        if semantics is not None and self.movable_classes is not None:
+            sem_cls = semantics.detach().argmax(dim=-1)     # (B, G)
+            movable = self.movable_lut.to(sem_cls.device)[sem_cls]  # (B, G) bool
+            dyn_mask = dyn_mask & movable
         return box_idx, dyn_mask
 
     def forward(self, inputs):
@@ -143,7 +162,8 @@ class PhysicsLoss(BaseLoss):
         box_idx = None
         gt_dyn_mask = None
         if self.use_gt_box and gaussian is not None and gt_boxes is not None:
-            box_idx, gt_dyn_mask = self._gt_box_membership(gaussian.means, gt_boxes)
+            box_idx, gt_dyn_mask = self._gt_box_membership(
+                gaussian.means, gt_boxes, getattr(gaussian, 'semantics', None))
             dyn_gate = gt_dyn_mask.float()               # (B, G) hard {0,1}
             static_gate = 1.0 - dyn_gate
         else:
