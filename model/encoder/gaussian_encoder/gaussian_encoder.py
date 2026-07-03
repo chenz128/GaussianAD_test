@@ -22,6 +22,7 @@ class GaussianOccEncoder(BaseEncoder):
         num_single_frame_decoder: int = -1,
         operation_order: Optional[List[str]] = None,
         with_cp: bool = False,
+        decouple_feat: bool = False,
         init_cfg=None,
         **kwargs,
     ):
@@ -29,6 +30,12 @@ class GaussianOccEncoder(BaseEncoder):
         self.num_decoder = num_decoder
         self.num_single_frame_decoder = num_single_frame_decoder
         self.with_cp = with_cp
+        # GaussianFormer V1 full decoupling: when True, skip re-injecting
+        # anchor geometry into the instance_feature (query) inside the refine
+        # loop, so the query stays independent of anchor geometry across all
+        # decoder layers. anchor_embed is still recomputed for the next
+        # layer's deformable op. Default False preserves original behavior.
+        self.decouple_feat = decouple_feat
 
         if operation_order is None:
             operation_order = [
@@ -138,7 +145,8 @@ class GaussianOccEncoder(BaseEncoder):
                 prediction.append({'gaussian': gaussian})
                 if i != len(self.operation_order) - 1:
                     anchor_embed = self.anchor_encoder(anchor)
-                    instance_feature += anchor_embed
+                    if not self.decouple_feat:
+                        instance_feature += anchor_embed
             else:
                 raise NotImplementedError(f"{op} is not supported.")
 
