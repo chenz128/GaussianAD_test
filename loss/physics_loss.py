@@ -42,8 +42,7 @@ class PhysicsLoss(BaseLoss):
         dyn_threshold=0.5,
         use_gt_box=False,
         v_thresh=0.5,
-        movable_classes=None,
-        num_sem_classes=17,
+        z_margin=0.2,
         weight=1.0,
         input_dict=None,
         **kwargs,
@@ -69,34 +68,28 @@ class PhysicsLoss(BaseLoss):
         self.dyn_threshold = dyn_threshold
         self.use_gt_box = use_gt_box
         self.v_thresh = v_thresh
-        # Semantic static gate: only gaussians whose predicted semantic argmax is
-        # in movable_classes may be dynamic; background-class gaussians inside a
-        # moving box are forced static. None -> disabled (legacy behavior).
-        self.movable_classes = tuple(movable_classes) if movable_classes is not None else None
-        if self.movable_classes is not None:
-            lut = torch.zeros(num_sem_classes, dtype=torch.bool)
-            lut[list(self.movable_classes)] = True
-            self.register_buffer('movable_lut', lut)
+        # Ground gate: a moving box's floor slice also encloses static ground
+        # voxels. Only the thin bottom layer (< z_margin above the box floor) is
+        # forced static; the object body is untouched. Kept small so genuine
+        # dynamic gaussians are never dropped. 0 -> gate disabled.
+        self.z_margin = z_margin
         if use_gt_box:
             assert points_in_boxes_gpu is not None, \
                 'points_in_boxes_gpu unavailable but use_gt_box=True'
         self._diag_counter = 0
 
     @torch.no_grad()
-    def _gt_box_membership(self, means, gt_boxes, semantics=None):
+    def _gt_box_membership(self, means, gt_boxes):
         """Assign each gaussian to a GT box and derive a dynamic mask.
 
         Args:
             means:     (B, G, 3) gaussian centers in LIDAR frame
             gt_boxes:  (B, T, >=9) padded GT boxes (pad rows are all-zero, i.e.
                        zero-size boxes that never contain any point)
-            semantics: (B, G, C) optional predicted semantics; with
-                       ``movable_classes`` a gaussian whose argmax is a
-                       background class is forced static.
         Returns:
             box_idx:  (B, G) long, index of the containing box (-1 = background)
             dyn_mask: (B, G) bool, True if inside a moving box (|v| > v_thresh)
-                      AND (if enabled) its semantic is a movable class.
+                      AND above the box-floor ground slice (height > z_margin).
         """
         means = means.detach().float().contiguous()
         gt_boxes = gt_boxes.to(means.device).float()
@@ -114,11 +107,18 @@ class PhysicsLoss(BaseLoss):
             valid = box_idx[b] >= 0
             if valid.any():
                 dyn_mask[b, valid] = moving_box[b][box_idx[b, valid]]
-        # semantic static gate: force background-class gaussians to static
-        if semantics is not None and self.movable_classes is not None:
-            sem_cls = semantics.detach().argmax(dim=-1)     # (B, G)
-            movable = self.movable_lut.to(sem_cls.device)[sem_cls]  # (B, G) bool
-            dyn_mask = dyn_mask & movable
+        # ground gate: heading is yaw-only (rotation about z), so z needs no
+        # un-rotation. Force gaussians in the box's bottom slice (ground) static.
+        if self.z_margin > 0:
+            box_bottom = gt_boxes[..., 2] - 0.5 * gt_boxes[..., 5]  # (B, T)
+            for b in range(B):
+                sel = box_idx[b] >= 0
+                if not sel.any():
+                    continue
+                bi = box_idx[b].clamp_min(0)                       # (G,)
+                h_above = means[b, :, 2] - box_bottom[b][bi]       # (G,)
+                ground = sel & (h_above < self.z_margin)
+                dyn_mask[b, ground] = False
         return box_idx, dyn_mask
 
     def forward(self, inputs):
@@ -163,7 +163,7 @@ class PhysicsLoss(BaseLoss):
         gt_dyn_mask = None
         if self.use_gt_box and gaussian is not None and gt_boxes is not None:
             box_idx, gt_dyn_mask = self._gt_box_membership(
-                gaussian.means, gt_boxes, getattr(gaussian, 'semantics', None))
+                gaussian.means, gt_boxes)
             dyn_gate = gt_dyn_mask.float()               # (B, G) hard {0,1}
             static_gate = 1.0 - dyn_gate
         else:

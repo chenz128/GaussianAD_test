@@ -49,9 +49,24 @@ optimizer = dict(
 grad_max_norm = 35
 max_epochs = 20
 
+# ========= PCGrad 梯度手术 =========
+# main = occ+flow+det (受保护的几何/未来任务，梯度一字不动)
+# aux  = dynamic+physics (运动监督，与 main 冲突的梯度分量被正交投影删除)
+# 关键：Flow 学 offset 的梯度在 main 组不受影响 -> 未来帧预测能力保留；
+# 只砍掉 Physics/Dynamic 里伤当前帧几何的冲突分量。
+use_pcgrad = True
+
 # ========= loss config ================
 loss = dict(
     type='MultiLoss',
+    group_map=dict(
+        OccupancyLoss='main',
+        OccupancyFlowLoss='main',
+        DetectionLoss='main',
+        RenderLoss='main',
+        DynamicLoss='aux',
+        PhysicsLoss='aux',
+    ),
     loss_cfgs=[
         dict(
             type='OccupancyLoss',
@@ -104,7 +119,7 @@ loss = dict(
             weight=0.0,
             sem_lw=5.0,
             depth_lw=0.5,
-            vis_dir='out/nuscenes_gs25600_gtbox_oracle/render_vis',
+            vis_dir='out/nuscenes_gs25600_gtbox_oracle_v3/render_vis',
             vis_every=500,
         ),
         dict(
@@ -114,25 +129,22 @@ loss = dict(
             extra_weight=0.5,
             use_gt_box=True,
             v_thresh=0.5,
-            # 语义静态门控：仅可动类(bicycle,bus,car,construction,motorcycle,
-            # pedestrian,trailer,truck)语义的高斯才允许被判动态；背景类(路面/
-            # 植被/建筑/barrier/traffic_cone 等)即使落在移动框内也强制静态。
-            movable_classes=(2, 3, 4, 5, 6, 7, 9, 10),
-            vis_dir='out/nuscenes_gs25600_gtbox_oracle/dynamic_vis',
+            # 地面高度门控：仅强制"高于框底不足 z_margin(0.2m)"的贴地高斯为静态，
+            # 车身高度(0.3~1.5m)全部保留 -> 剔除移动框底部的静态地面，不误伤动态。
+            z_margin=0.2,
+            vis_dir='out/nuscenes_gs25600_gtbox_oracle_v3/dynamic_vis',
             vis_every=500,
         ),
         dict(
             type='PhysicsLoss',
             weight=1.0,
             static_w=5.0,
-            # rigid_w=50 过大：刚体约束把移动框内所有高斯(含底部地面)强拉成同一
-            # 位移，破坏几何(iou2 下降)。配合语义门控后适度降低刚体/平滑约束。
             smooth_w=20.0,
             rigid_w=10.0,
             warmup_epoch=2,
             use_gt_box=True,
             v_thresh=0.5,
-            movable_classes=(2, 3, 4, 5, 6, 7, 9, 10),
+            z_margin=0.2,
         ),
     ])
 
