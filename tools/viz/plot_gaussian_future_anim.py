@@ -44,35 +44,60 @@ def load_future(path):
 
 
 def motion_score(future_path):
-    """movable-class raw offset (object world-motion) 90th-pct magnitude.
+    """movable-class DE-DRIFTED offset 90th-pct magnitude (per-object motion).
 
-    Uses RAW offset (not ego-compensated): for movable objects the raw offset is
-    the object's own predicted motion in the current ego frame, which is exactly
-    what we want to rank scenes by. Subtracting the ego planner (~const across
-    scenes) would swamp the signal.
+    The model's offset is heavily collapsed (future ~= copy current), and for
+    some checkpoints it also carries a large per-frame GLOBAL drift shared by all
+    gaussians (e.g. base). Ranking by RAW offset would either be uniformly tiny
+    (oracle/v2) or dominated by that global drift. We remove the per-frame median
+    (global drift proxy) first, then rank by the residual -- i.e. how much a
+    movable object moves RELATIVE to the scene. This is the signal that tells a
+    "dynamic" scene from a "static" one after collapse.
     """
     f = load_future(future_path)
     if f is None:
         return -1.0
     offset, planner, pred_cls = f
-    mag = np.linalg.norm(offset, axis=-1).max(axis=-1)   # (A,) max over 6 frames
+    med = np.median(offset, axis=0, keepdims=True)       # (1,6,2) global drift
+    res = offset - med                                   # (A,6,2) per-object
+    mag = np.linalg.norm(res, axis=-1).max(axis=-1)      # (A,) max over 6 frames
     mov = np.isin(pred_cls, list(MOVABLE))
     if mov.sum() == 0:
         return 0.0
     return float(np.percentile(mag[mov], 90))
 
 
-def future_positions(means, offset, planner, ego_comp=True, amplify=1.0):
-    """return list of 7 (A,3) arrays: [current, f0..f5].
+def future_positions(means, offset, planner, ego_comp=True, amplify=1.0,
+                     extrap=0):
+    """return list of (7+extrap) (A,3) arrays: [current, f0..f5, e0..e{extrap-1}].
 
     amplify scales the per-gaussian offset (object motion) so tiny predicted
     motion is visible. Ego planner term is NOT amplified.
+
+    extrap linearly extends the horizon beyond the model's 6 frames (3s): for
+    frame 6+k we use offset[5] + (k+1)*(offset[5]-offset[4]) -- i.e. hold the
+    last predicted per-gaussian velocity constant. The ego planner is extended
+    the same way (const last ego velocity). This is pure extrapolation, so the
+    extra frames are less reliable and are labeled '(extrap)' in the slider.
     """
     A = means.shape[0]
-    steps = [means.copy()]
     off3 = np.concatenate([offset, np.zeros((A, 6, 1), np.float32)], axis=-1)  # (A,6,3)
     pl3 = np.concatenate([planner, np.zeros((6, 1), np.float32)], axis=-1)     # (6,3)
-    for i in range(6):
+
+    if extrap > 0:
+        # per-gaussian last velocity (offset[5]-offset[4]) and last ego velocity
+        vg = off3[:, 5, :] - off3[:, 4, :]          # (A,3)
+        ve = pl3[5, :] - pl3[4, :]                   # (3,)
+        ext_off = np.stack(
+            [off3[:, 5, :] + (k + 1) * vg for k in range(extrap)], axis=1)  # (A,extrap,3)
+        ext_pl = np.stack(
+            [pl3[5, :] + (k + 1) * ve for k in range(extrap)], axis=0)      # (extrap,3)
+        off3 = np.concatenate([off3, ext_off], axis=1)   # (A,6+extrap,3)
+        pl3 = np.concatenate([pl3, ext_pl], axis=0)      # (6+extrap,3)
+
+    nfut = off3.shape[1]
+    steps = [means.copy()]
+    for i in range(nfut):
         pos = means + amplify * off3[:, i, :]
         if ego_comp:
             pos = pos - pl3[i][None]
@@ -82,7 +107,7 @@ def future_positions(means, offset, planner, ego_comp=True, amplify=1.0):
 
 def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
                exclude_cls=None, max_ellip=1200, ellip_res=6, point_size=2.0,
-               dyn_thr=0.0, ego_comp=True, amplify=1.0):
+               dyn_thr=0.0, ego_comp=True, amplify=1.0, extrap=0):
     means, scales, rots, opas, pred, dyn = load_attr(attr_path)
     fut = load_future(future_path)
     if fut is None:
@@ -101,7 +126,8 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     d = dyn[idx] if dyn is not None else None
     has_dyn = d is not None
 
-    steps = future_positions(m, off, pl, ego_comp=ego_comp, amplify=amplify)  # 7 x (Nkeep,3)
+    steps = future_positions(m, off, pl, ego_comp=ego_comp, amplify=amplify,
+                             extrap=extrap)  # (7+extrap) x (Nkeep,3)
     T = len(steps)
 
     # ellipsoid selection (subsample for size/perf)
@@ -198,8 +224,10 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     builders.append(lambda t: ([0.0], [0.0], [0.0]))
 
     # ---- build animation frames ----
-    frame_labels = ['t=0 (now)'] + ['t=%d (+%.1fs)' % (i + 1, 0.5 * (i + 1))
-                                    for i in range(6)]
+    frame_labels = ['t=0 (now)']
+    for i in range(T - 1):
+        tag = ' extrap' if i >= 6 else ''
+        frame_labels.append('t=%d (+%.1fs)%s' % (i + 1, 0.5 * (i + 1), tag))
     frames = []
     for t in range(T):
         fdata = []
@@ -261,13 +289,15 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
 
     menus = [play_menu] + ([color_menu] if has_dyn else [])
     amp_txt = ('  [motion x%.0f amplified]' % amplify) if amplify != 1.0 else ''
+    ext_txt = ('  [+%d extrap frames]' % extrap) if extrap > 0 else ''
     fig.update_layout(
         scene=dict(
             xaxis=dict(title='x (forward)', range=xr),
             yaxis=dict(title='y (left)', range=yr),
             zaxis=dict(title='z (up)', range=zr),
             aspectmode='data', bgcolor='white'),
-        title=os.path.basename(out_html) + '  (Play=future frames, drag=rotate)' + amp_txt,
+        title=os.path.basename(out_html) + '  (Play=future frames, drag=rotate)'
+              + amp_txt + ext_txt,
         margin=dict(l=0, r=0, t=30, b=40),
         updatemenus=menus, sliders=[slider])
 
@@ -290,6 +320,8 @@ if __name__ == '__main__':
     ap.add_argument('--dyn-thr', type=float, default=0.0)
     ap.add_argument('--amplify', type=float, default=1.0,
                     help='scale object offset for visibility (labeled in title)')
+    ap.add_argument('--extrap-frames', type=int, default=0,
+                    help='linearly extrapolate N frames beyond the model 6 (3s)')
     ap.add_argument('--no-ego-comp', action='store_true',
                     help='do NOT subtract ego motion (show raw means+offset)')
     ap.add_argument('--suffix', type=str, default='_future_anim')
@@ -324,4 +356,4 @@ if __name__ == '__main__':
                    exclude_cls=args.exclude_cls, max_ellip=args.max_ellip,
                    ellip_res=args.ellip_res, point_size=args.point_size,
                    dyn_thr=args.dyn_thr, ego_comp=not args.no_ego_comp,
-                   amplify=args.amplify)
+                   amplify=args.amplify, extrap=args.extrap_frames)
