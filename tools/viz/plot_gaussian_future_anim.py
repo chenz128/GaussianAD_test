@@ -62,14 +62,18 @@ def motion_score(future_path):
     return float(np.percentile(mag[mov], 90))
 
 
-def future_positions(means, offset, planner, ego_comp=True):
-    """return list of 7 (A,3) arrays: [current, f0..f5]."""
+def future_positions(means, offset, planner, ego_comp=True, amplify=1.0):
+    """return list of 7 (A,3) arrays: [current, f0..f5].
+
+    amplify scales the per-gaussian offset (object motion) so tiny predicted
+    motion is visible. Ego planner term is NOT amplified.
+    """
     A = means.shape[0]
     steps = [means.copy()]
     off3 = np.concatenate([offset, np.zeros((A, 6, 1), np.float32)], axis=-1)  # (A,6,3)
     pl3 = np.concatenate([planner, np.zeros((6, 1), np.float32)], axis=-1)     # (6,3)
     for i in range(6):
-        pos = means + off3[:, i, :]
+        pos = means + amplify * off3[:, i, :]
         if ego_comp:
             pos = pos - pl3[i][None]
         steps.append(pos.astype(np.float32))
@@ -78,7 +82,7 @@ def future_positions(means, offset, planner, ego_comp=True):
 
 def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
                exclude_cls=None, max_ellip=1200, ellip_res=6, point_size=2.0,
-               dyn_thr=0.0, ego_comp=True):
+               dyn_thr=0.0, ego_comp=True, amplify=1.0):
     means, scales, rots, opas, pred, dyn = load_attr(attr_path)
     fut = load_future(future_path)
     if fut is None:
@@ -97,7 +101,7 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     d = dyn[idx] if dyn is not None else None
     has_dyn = d is not None
 
-    steps = future_positions(m, off, pl, ego_comp=ego_comp)   # 7 x (Nkeep,3)
+    steps = future_positions(m, off, pl, ego_comp=ego_comp, amplify=amplify)  # 7 x (Nkeep,3)
     T = len(steps)
 
     # ellipsoid selection (subsample for size/perf)
@@ -252,13 +256,14 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
                for t in range(T)])
 
     menus = [play_menu] + ([color_menu] if has_dyn else [])
+    amp_txt = ('  [motion x%.0f amplified]' % amplify) if amplify != 1.0 else ''
     fig.update_layout(
         scene=dict(
             xaxis=dict(title='x (forward)', range=xr),
             yaxis=dict(title='y (left)', range=yr),
             zaxis=dict(title='z (up)', range=zr),
             aspectmode='data', bgcolor='white'),
-        title=os.path.basename(out_html) + '  (Play=future frames, drag=rotate)',
+        title=os.path.basename(out_html) + '  (Play=future frames, drag=rotate)' + amp_txt,
         margin=dict(l=0, r=0, t=30, b=40),
         updatemenus=menus, sliders=[slider])
 
@@ -279,6 +284,8 @@ if __name__ == '__main__':
     ap.add_argument('--ellip-res', type=int, default=6)
     ap.add_argument('--point-size', type=float, default=2.0)
     ap.add_argument('--dyn-thr', type=float, default=0.0)
+    ap.add_argument('--amplify', type=float, default=1.0,
+                    help='scale object offset for visibility (labeled in title)')
     ap.add_argument('--no-ego-comp', action='store_true',
                     help='do NOT subtract ego motion (show raw means+offset)')
     ap.add_argument('--suffix', type=str, default='_future_anim')
@@ -312,4 +319,5 @@ if __name__ == '__main__':
         build_anim(ap_, fut, out, opa_thr=args.opa_thr, scalar=args.scalar,
                    exclude_cls=args.exclude_cls, max_ellip=args.max_ellip,
                    ellip_res=args.ellip_res, point_size=args.point_size,
-                   dyn_thr=args.dyn_thr, ego_comp=not args.no_ego_comp)
+                   dyn_thr=args.dyn_thr, ego_comp=not args.no_ego_comp,
+                   amplify=args.amplify)
