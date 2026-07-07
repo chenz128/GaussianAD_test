@@ -127,6 +127,7 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     # movable index within each trace is via 'kind' so frames can update x/y/z.
     # record how to rebuild each trace's positions at a given timestep.
     builders = []   # list of callables: t -> (x,y,z)
+    ttypes = []     # per-trace plotly type ('scatter3d'|'mesh3d') for frame data
 
     def scatter_pts(sel, col, name, cat):
         pos0 = steps[0][sel]
@@ -134,6 +135,7 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
             x=pos0[:, 0], y=pos0[:, 1], z=pos0[:, 2], mode='markers',
             marker=dict(size=point_size, color=col, opacity=0.9), name=name))
         cats.append(cat)
+        ttypes.append('scatter3d')
         builders.append(lambda t, sel=sel: (steps[t][sel][:, 0],
                                              steps[t][sel][:, 1],
                                              steps[t][sel][:, 2]))
@@ -153,6 +155,7 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
             color=col, opacity=1.0, flatshading=True, hoverinfo='skip',
             name=name, showlegend=True))
         cats.append(cat)
+        ttypes.append('mesh3d')
         builders.append(verts_at)
 
     # semantic scatter (per class)
@@ -191,6 +194,7 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
         marker=dict(size=6, color='black', symbol='diamond'),
         text=['ego'], textposition='top center', name='ego'))
     cats.append('both')
+    ttypes.append('scatter3d')
     builders.append(lambda t: ([0.0], [0.0], [0.0]))
 
     # ---- build animation frames ----
@@ -199,9 +203,9 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     frames = []
     for t in range(T):
         fdata = []
-        for b in builders:
+        for b, tp in zip(builders, ttypes):
             x, y, z = b(t)
-            fdata.append(dict(x=x, y=y, z=z))
+            fdata.append(dict(type=tp, x=x, y=y, z=z))
         frames.append(go.Frame(name=str(t), data=fdata))
 
     fig = go.Figure(data=traces, frames=frames)
