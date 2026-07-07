@@ -183,6 +183,33 @@ def main(local_rank, args):
                                 pred_cls=pred_cls)
                     except Exception as e:
                         logger.info(f'[future dump] failed on val_{i_iter_val}: {e}')
+                    # dump occ_flow 6 future frames (the model's real future occ) for animation
+                    try:
+                        occ_flow = result_dict.get('occ_flow')
+                        if occ_flow is not None:
+                            sxyz = result_dict['sampled_xyz'][0].detach().cpu().numpy().astype(np.float32)  # (N,3)
+                            occ_now = result_dict['pred_occ'][-1][0].argmax(0).detach().cpu().numpy().astype(np.int16)  # (N,)
+                            N = occ_now.shape[0]
+                            nfut = len(occ_flow)
+                            occ_fut = np.zeros((nfut, N), dtype=np.int16)
+                            occ_fut_gt = np.full((nfut, N), -1, dtype=np.int16)
+                            valid = np.zeros((nfut,), dtype=np.int8)
+                            for fi in range(nfut):
+                                fdict = occ_flow[fi][0]
+                                valid[fi] = int(bool(fdict['flow_valid_flag']))
+                                pf = fdict['pred_flow'][0].argmax(0).detach().cpu().numpy().astype(np.int16)
+                                occ_fut[fi, :pf.shape[0]] = pf
+                                gtf = fdict['sampled_label']
+                                if isinstance(gtf, torch.Tensor):
+                                    gtf = gtf.detach().cpu().numpy()
+                                gtf = np.asarray(gtf).reshape(-1).astype(np.int16)
+                                occ_fut_gt[fi, :gtf.shape[0]] = gtf
+                            np.savez(
+                                os.path.join(args.work_dir, 'vis', f'val_{i_iter_val}_occflow.npz'),
+                                xyz=sxyz, occ_now=occ_now,
+                                occ_fut=occ_fut, occ_fut_gt=occ_fut_gt, valid=valid)
+                    except Exception as e:
+                        logger.info(f'[occflow dump] failed on val_{i_iter_val}: {e}')
                 miou_metric._after_step(pred_occ, gt_occ)
             
             if i_iter_val % print_freq == 0 and local_rank == 0:
