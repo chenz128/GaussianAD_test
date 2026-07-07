@@ -49,24 +49,13 @@ optimizer = dict(
 grad_max_norm = 35
 max_epochs = 20
 
-# ========= PCGrad 梯度手术 =========
-# main = occ+flow+det (受保护的几何/未来任务，梯度一字不动)
-# aux  = dynamic+physics (运动监督，与 main 冲突的梯度分量被正交投影删除)
-# 关键：Flow 学 offset 的梯度在 main 组不受影响 -> 未来帧预测能力保留；
-# 只砍掉 Physics/Dynamic 里伤当前帧几何的冲突分量。
-use_pcgrad = True
+# ========= PCGrad 已移除 =========
+# 回归标准加权求和：所有 loss 直接相加，无梯度手术。
+use_pcgrad = False
 
 # ========= loss config ================
 loss = dict(
     type='MultiLoss',
-    group_map=dict(
-        OccupancyLoss='main',
-        OccupancyFlowLoss='main',
-        DetectionLoss='main',
-        RenderLoss='main',
-        DynamicLoss='aux',
-        PhysicsLoss='aux',
-    ),
     loss_cfgs=[
         dict(
             type='OccupancyLoss',
@@ -138,7 +127,7 @@ loss = dict(
         dict(
             type='PhysicsLoss',
             weight=1.0,
-            static_w=5.0,
+            static_w=2.0,
             smooth_w=20.0,
             rigid_w=10.0,
             warmup_epoch=2,
