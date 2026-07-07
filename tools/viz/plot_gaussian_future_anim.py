@@ -44,13 +44,18 @@ def load_future(path):
 
 
 def motion_score(future_path):
-    """movable-class 90th-pct displacement magnitude over future frames."""
+    """movable-class raw offset (object world-motion) 90th-pct magnitude.
+
+    Uses RAW offset (not ego-compensated): for movable objects the raw offset is
+    the object's own predicted motion in the current ego frame, which is exactly
+    what we want to rank scenes by. Subtracting the ego planner (~const across
+    scenes) would swamp the signal.
+    """
     f = load_future(future_path)
     if f is None:
         return -1.0
     offset, planner, pred_cls = f
-    disp = offset - planner[None]           # (A,6,2) next-ego displacement
-    mag = np.linalg.norm(disp, axis=-1).max(axis=-1)   # (A,) max over 6 frames
+    mag = np.linalg.norm(offset, axis=-1).max(axis=-1)   # (A,) max over 6 frames
     mov = np.isin(pred_cls, list(MOVABLE))
     if mov.sum() == 0:
         return 0.0
