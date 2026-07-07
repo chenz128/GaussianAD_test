@@ -159,11 +159,30 @@ def main(local_rank, args):
                         gt_occ.reshape(1, 200, 200, 16),
                         f'val_{i_iter_val}_gt',
                         True, 0)
-                if args.vis_gaussian:
+                if args.vis_gaussian and local_rank == 0:
                     save_gaussian(
                         os.path.join(args.work_dir, 'vis'),
                         result_dict['gaussian'],
                         f'val_{i_iter_val}_gaussian')
+                    # dump future-frame offset (+ego motion) for animation
+                    try:
+                        off_t = result_dict.get('offset')
+                        if off_t is not None:
+                            off = off_t.reshape(1, -1, 6, 2)[0].detach().cpu().numpy()  # (A,6,2)
+                            planner = np.zeros((6, 2), dtype=np.float32)
+                            if 'ego_fut_preds' in result_dict and 'ego_fut_cmd' in data:
+                                cmd = data['ego_fut_cmd'].argmax(dim=-1)
+                                pr = result_dict['ego_fut_preds'].cumsum(dim=1)[0, cmd, ...]
+                                planner = pr.detach().cpu().numpy().reshape(-1, 2)[:6]  # (6,2)
+                            g = result_dict['gaussian']
+                            pred_cls = g.semantics[0].detach().cpu().numpy().argmax(-1).astype(np.int16)
+                            np.savez(
+                                os.path.join(args.work_dir, 'vis', f'val_{i_iter_val}_future.npz'),
+                                offset=off.astype(np.float32),
+                                planner=planner.astype(np.float32),
+                                pred_cls=pred_cls)
+                    except Exception as e:
+                        logger.info(f'[future dump] failed on val_{i_iter_val}: {e}')
                 miou_metric._after_step(pred_occ, gt_occ)
             
             if i_iter_val % print_freq == 0 and local_rank == 0:
