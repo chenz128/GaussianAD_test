@@ -56,6 +56,10 @@ class DynamicLoss(BaseLoss):
         use_gt_box=False,
         v_thresh=0.5,
         z_margin=0.2,
+        use_gt_semantic_gate=False,
+        movable_classes=None,
+        sem_gate_max_dist=0.5,
+        num_sem_classes=18,
         input_dict=None,
         **kwargs,
     ):
@@ -68,6 +72,10 @@ class DynamicLoss(BaseLoss):
                     'gaussian': 'gaussian',
                     'gt_boxes': 'gt_boxes',
                 }
+                if use_gt_semantic_gate:
+                    # per-gaussian GT occ labels for the semantic gate
+                    input_dict['sampled_xyz'] = 'sampled_xyz'
+                    input_dict['sampled_label'] = 'sampled_label'
             else:
                 input_dict = {
                     'rendered_dynamic': 'rendered_dynamic',
@@ -95,20 +103,33 @@ class DynamicLoss(BaseLoss):
         # box floor) is forced static; the object body is kept. z_margin is small
         # so genuine dynamic gaussians are never dropped. 0 -> gate disabled.
         self.z_margin = z_margin
+        # GT semantic gate: keep as dynamic only gaussians whose nearest occ-GT
+        # label is a movable class (clean labels, no predicted-sem circularity).
+        self.use_gt_semantic_gate = use_gt_semantic_gate
+        self.sem_gate_max_dist = sem_gate_max_dist
+        if use_gt_semantic_gate:
+            assert movable_classes is not None, \
+                'movable_classes required when use_gt_semantic_gate=True'
+            lut = torch.zeros(num_sem_classes, dtype=torch.bool)
+            lut[list(movable_classes)] = True
+            self.register_buffer('movable_lut', lut)
         # dynamic pixels are rare (~1.6% of labeled px) → up-weight positive class
         self.register_buffer('pos_weight', torch.tensor(float(pos_weight)))
         self.extra_weight = extra_weight
 
     @torch.no_grad()
-    def _gt_box_membership(self, means, gt_boxes):
+    def _gt_box_membership(self, means, gt_boxes,
+                           sampled_xyz=None, sampled_label=None):
         """Assign each gaussian to a GT box and derive a dynamic mask.
 
         Args:
             means:     (B, G, 3) gaussian centers in LIDAR frame
             gt_boxes:  (B, T, >=9) padded GT boxes (pad rows all-zero, never hit)
+            sampled_xyz:   (B, N, 3) occ-GT sample points (same frame as means)
+            sampled_label: (B, N) occ-GT semantic labels for the GT semantic gate
         Returns:
-            dyn_mask: (B, G) bool, True if inside a moving box (|v| > v_thresh)
-                      AND above the box-floor ground slice (height > z_margin).
+            dyn_mask: (B, G) bool, True if inside a moving box (|v| > v_thresh),
+                      after optional ground / GT-semantic gating.
         """
         means = means.detach().float().contiguous()
         gt_boxes = gt_boxes.to(means.device).float()
@@ -134,6 +155,30 @@ class DynamicLoss(BaseLoss):
                 h_above = means[b, :, 2] - box_bottom[b][bi]       # (G,)
                 ground = sel & (h_above < self.z_margin)
                 dyn_mask[b, ground] = False
+        # GT semantic gate: keep dynamic only where the nearest occ-GT label is
+        # a movable class (checks currently-dynamic gaussians only).
+        if (self.use_gt_semantic_gate and sampled_xyz is not None
+                and sampled_label is not None):
+            sx = sampled_xyz.to(means.device).float()
+            sl = sampled_label.to(means.device).long()
+            if sx.dim() == 2:
+                sx = sx[None]
+            if sl.dim() == 1:
+                sl = sl[None]
+            lut = self.movable_lut.to(means.device)
+            for b in range(B):
+                sel = dyn_mask[b]
+                if not sel.any():
+                    continue
+                idx = sel.nonzero(as_tuple=False).squeeze(1)      # (k,)
+                dist = torch.cdist(means[b, idx], sx[b])          # (k, N)
+                nn_dist, nn_idx = dist.min(dim=1)                 # (k,)
+                nn_lbl = sl[b][nn_idx]                            # (k,)
+                movable = torch.zeros_like(nn_lbl, dtype=torch.bool)
+                ok = (nn_lbl >= 0) & (nn_lbl < lut.numel())
+                movable[ok] = lut[nn_lbl[ok]]
+                drop = (~movable) | (nn_dist > self.sem_gate_max_dist)
+                dyn_mask[b, idx[drop]] = False
         return dyn_mask
 
     def forward(self, inputs):
@@ -150,7 +195,8 @@ class DynamicLoss(BaseLoss):
             'DynamicLoss': (self.weight * loss).detach().item(),
         }
 
-    def _gt_box_loss_func(self, dynamic_logits, gaussian=None, gt_boxes=None):
+    def _gt_box_loss_func(self, dynamic_logits, gaussian=None, gt_boxes=None,
+                          sampled_xyz=None, sampled_label=None):
         """Direct 3D supervision of per-gaussian dynamic_logits via GT boxes.
 
         A gaussian is labeled dynamic (target=1) iff its center falls inside a
@@ -162,7 +208,7 @@ class DynamicLoss(BaseLoss):
             return torch.tensor(0.0, requires_grad=False)
 
         dyn_mask = self._gt_box_membership(
-            gaussian.means, gt_boxes)  # (B, G) bool
+            gaussian.means, gt_boxes, sampled_xyz, sampled_label)  # (B, G) bool
         logit = dynamic_logits
         if logit.dim() == 3:
             logit = logit[..., 0]                        # (B, G, 1) -> (B, G)

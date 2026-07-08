@@ -38,11 +38,16 @@ class PhysicsLoss(BaseLoss):
         static_w=5.0,
         smooth_w=50.0,
         rigid_w=0.0,
+        vel_w=0.0,
         warmup_epoch=2,
         dyn_threshold=0.5,
         use_gt_box=False,
         v_thresh=0.5,
         z_margin=0.2,
+        use_gt_semantic_gate=False,
+        movable_classes=None,
+        sem_gate_max_dist=0.5,
+        num_sem_classes=18,
         weight=1.0,
         input_dict=None,
         **kwargs,
@@ -56,6 +61,10 @@ class PhysicsLoss(BaseLoss):
             if use_gt_box:
                 input_dict['gaussian'] = 'gaussian'
                 input_dict['gt_boxes'] = 'gt_boxes'
+                if use_gt_semantic_gate:
+                    # per-gaussian GT occ labels for the semantic gate
+                    input_dict['sampled_xyz'] = 'sampled_xyz'
+                    input_dict['sampled_label'] = 'sampled_label'
         super().__init__(weight=weight, input_dict=input_dict, **kwargs)
         # BaseLoss.__init__ sets self.loss_func as instance attr, shadowing method
         if hasattr(self, 'loss_func'):
@@ -64,6 +73,10 @@ class PhysicsLoss(BaseLoss):
         self.static_w = static_w
         self.smooth_w = smooth_w
         self.rigid_w = rigid_w
+        # Positive motion supervision: dynamic gaussians should move at their GT
+        # box velocity (offset[t] ~= v_box * (t+1) * dt). This is the only term
+        # that actively DRIVES motion; the others only suppress. 0 -> disabled.
+        self.vel_w = vel_w
         self.warmup_epoch = warmup_epoch
         self.dyn_threshold = dyn_threshold
         self.use_gt_box = use_gt_box
@@ -73,23 +86,38 @@ class PhysicsLoss(BaseLoss):
         # forced static; the object body is untouched. Kept small so genuine
         # dynamic gaussians are never dropped. 0 -> gate disabled.
         self.z_margin = z_margin
+        # GT semantic gate: of the gaussians geometrically inside a moving box,
+        # keep as dynamic only those whose nearest occ-GT label is a movable
+        # class. Uses clean GT labels (sampled_label) -> no circular dependency
+        # on the model's own predicted semantics.
+        self.use_gt_semantic_gate = use_gt_semantic_gate
+        self.sem_gate_max_dist = sem_gate_max_dist
+        if use_gt_semantic_gate:
+            assert movable_classes is not None, \
+                'movable_classes required when use_gt_semantic_gate=True'
+            lut = torch.zeros(num_sem_classes, dtype=torch.bool)
+            lut[list(movable_classes)] = True
+            self.register_buffer('movable_lut', lut)
         if use_gt_box:
             assert points_in_boxes_gpu is not None, \
                 'points_in_boxes_gpu unavailable but use_gt_box=True'
         self._diag_counter = 0
 
     @torch.no_grad()
-    def _gt_box_membership(self, means, gt_boxes):
+    def _gt_box_membership(self, means, gt_boxes,
+                           sampled_xyz=None, sampled_label=None):
         """Assign each gaussian to a GT box and derive a dynamic mask.
 
         Args:
             means:     (B, G, 3) gaussian centers in LIDAR frame
             gt_boxes:  (B, T, >=9) padded GT boxes (pad rows are all-zero, i.e.
                        zero-size boxes that never contain any point)
+            sampled_xyz:   (B, N, 3) occ-GT sample points (same frame as means)
+            sampled_label: (B, N) occ-GT semantic labels for the GT semantic gate
         Returns:
             box_idx:  (B, G) long, index of the containing box (-1 = background)
-            dyn_mask: (B, G) bool, True if inside a moving box (|v| > v_thresh)
-                      AND above the box-floor ground slice (height > z_margin).
+            dyn_mask: (B, G) bool, True if inside a moving box (|v| > v_thresh),
+                      after optional ground / GT-semantic gating.
         """
         means = means.detach().float().contiguous()
         gt_boxes = gt_boxes.to(means.device).float()
@@ -119,6 +147,32 @@ class PhysicsLoss(BaseLoss):
                 h_above = means[b, :, 2] - box_bottom[b][bi]       # (G,)
                 ground = sel & (h_above < self.z_margin)
                 dyn_mask[b, ground] = False
+        # GT semantic gate: keep dynamic only where the nearest occ-GT label is
+        # a movable class. Only checks currently-dynamic gaussians (cheap). A
+        # gaussian is forced static if its nearest GT sample is a non-movable
+        # class OR is farther than sem_gate_max_dist (label unreliable).
+        if (self.use_gt_semantic_gate and sampled_xyz is not None
+                and sampled_label is not None):
+            sx = sampled_xyz.to(means.device).float()
+            sl = sampled_label.to(means.device).long()
+            if sx.dim() == 2:
+                sx = sx[None]
+            if sl.dim() == 1:
+                sl = sl[None]
+            lut = self.movable_lut.to(means.device)
+            for b in range(B):
+                sel = dyn_mask[b]
+                if not sel.any():
+                    continue
+                idx = sel.nonzero(as_tuple=False).squeeze(1)      # (k,)
+                dist = torch.cdist(means[b, idx], sx[b])          # (k, N)
+                nn_dist, nn_idx = dist.min(dim=1)                 # (k,)
+                nn_lbl = sl[b][nn_idx]                            # (k,)
+                movable = torch.zeros_like(nn_lbl, dtype=torch.bool)
+                ok = (nn_lbl >= 0) & (nn_lbl < lut.numel())
+                movable[ok] = lut[nn_lbl[ok]]
+                drop = (~movable) | (nn_dist > self.sem_gate_max_dist)
+                dyn_mask[b, idx[drop]] = False
         return box_idx, dyn_mask
 
     def forward(self, inputs):
@@ -131,7 +185,8 @@ class PhysicsLoss(BaseLoss):
         }
 
     def loss_func(self, offset, dynamic_logits, current_epoch=None,
-                  gaussian=None, gt_boxes=None):
+                  gaussian=None, gt_boxes=None,
+                  sampled_xyz=None, sampled_label=None):
         """
         Args:
             offset:          (B, G, 6, 2) or flat tensor needing reshape
@@ -139,6 +194,8 @@ class PhysicsLoss(BaseLoss):
             current_epoch:   int or None
             gaussian:        GaussianPrediction (gt-box mode), provides .means
             gt_boxes:        (B, T, >=9) padded GT boxes (gt-box mode)
+            sampled_xyz:     (B, N, 3) occ-GT points (GT semantic gate)
+            sampled_label:   (B, N) occ-GT labels (GT semantic gate)
         """
         if offset is None or dynamic_logits is None:
             return torch.tensor(0.0, requires_grad=False)
@@ -163,7 +220,7 @@ class PhysicsLoss(BaseLoss):
         gt_dyn_mask = None
         if self.use_gt_box and gaussian is not None and gt_boxes is not None:
             box_idx, gt_dyn_mask = self._gt_box_membership(
-                gaussian.means, gt_boxes)
+                gaussian.means, gt_boxes, sampled_xyz, sampled_label)
             dyn_gate = gt_dyn_mask.float()               # (B, G) hard {0,1}
             static_gate = 1.0 - dyn_gate
         else:
@@ -188,7 +245,16 @@ class PhysicsLoss(BaseLoss):
         if self.rigid_w > 0 and box_idx is not None:
             loss_rigid = self.rigid_w * self._rigid_variance(offset, box_idx, gt_dyn_mask)
 
-        total = loss_static + loss_smooth + loss_rigid
+        # ====== Velocity constraint: dynamic gaussians move at GT box velocity =
+        # The only POSITIVE driver of motion: offset[t] ~= v_box * (t+1) * dt.
+        # Grad flows to offset; the target is a GT-derived constant.
+        loss_vel = offset.new_tensor(0.0)
+        if self.vel_w > 0 and box_idx is not None and gt_boxes is not None \
+                and gt_dyn_mask is not None:
+            loss_vel = self.vel_w * self._velocity_target(
+                offset, box_idx, gt_dyn_mask, gt_boxes)
+
+        total = loss_static + loss_smooth + loss_rigid + loss_vel
 
         # Warmup: skip for early epochs when supervision is unreliable
         if current_epoch is not None and current_epoch < self.warmup_epoch:
@@ -206,17 +272,48 @@ class PhysicsLoss(BaseLoss):
                     n_static = (_p < self.dyn_threshold).sum().item()
                     n_dyn = (_p >= self.dyn_threshold).sum().item()
                 off_mag = offset.pow(2).sum(-1).sqrt().mean().item()
+                if gt_dyn_mask is not None and gt_dyn_mask.any():
+                    off_dyn = offset.pow(2).sum(-1).sqrt()[gt_dyn_mask].mean().item()
+                else:
+                    off_dyn = 0.0
             logging.getLogger('mmengine').info(
                 f'[PhysicsLoss Diag] iter={self._diag_counter} | '
                 f'gt_box={self.use_gt_box} static={n_static} dyn={n_dyn} | '
-                f'offset_rms={off_mag:.4f} | '
+                f'offset_rms={off_mag:.4f} offset_dyn_rms={off_dyn:.4f} | '
                 f'loss_static={loss_static.item():.4f} '
                 f'loss_smooth={loss_smooth.item():.4f} '
                 f'loss_rigid={loss_rigid.item():.4f} '
+                f'loss_vel={loss_vel.item():.4f} '
                 f'total={total.item():.4f}'
             )
 
         return total
+
+    def _velocity_target(self, offset, box_idx, dyn_mask, gt_boxes):
+        """MSE(offset, constant-velocity GT-box trajectory) over dynamic gaussians.
+
+        target[b, g, t] = v_box(g) * (t+1) * dt, with dt=0.5s and t=0..5, where
+        v_box(g) is the (vx, vy) of the box containing gaussian g. Grad flows to
+        ``offset``; the target is a GT-derived constant. This is the positive
+        motion driver that the suppressive static/smooth/rigid terms lack.
+        """
+        B = offset.shape[0]
+        dt = 0.5
+        gt_boxes = gt_boxes.to(offset.device).float()
+        tmul = (torch.arange(6, device=offset.device).float() + 1.0) * dt  # (6,)
+        terms = []
+        for b in range(B):
+            dyn_b = dyn_mask[b]
+            if not dyn_b.any():
+                continue
+            bi = box_idx[b].clamp_min(0)                  # (G,)
+            v_box = gt_boxes[b][bi][:, 7:9]               # (G, 2)
+            target = v_box[:, None, :] * tmul[None, :, None]   # (G, 6, 2)
+            err = ((offset[b] - target) ** 2)[dyn_b]      # (k, 6, 2)
+            terms.append(err.mean())
+        if len(terms) == 0:
+            return offset.new_tensor(0.0)
+        return torch.stack(terms).mean()
 
     def _rigid_variance(self, offset, box_idx, dyn_mask):
         """Mean per-box variance of offset over gaussians inside each moving box.
