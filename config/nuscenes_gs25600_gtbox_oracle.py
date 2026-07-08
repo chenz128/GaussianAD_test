@@ -191,7 +191,10 @@ find_unused_parameters = True
 # dynamic render path reuses last refine module's dynamic head inside the
 # with_cp (checkpoint) region → a param is marked ready twice under DDP.
 # graph is identical every train iter (vis/diag are outside autograd) → static OK.
-static_graph = True
+# v4: loss_vel indexes offset by the per-iter dynamic mask (offset[dyn_b]) →
+# the autograd graph varies iter-to-iter → static_graph=True is violated
+# (manifested as empty-voxel spconv crash at iter 1). Disable it for v4.
+static_graph = False
 backbone_fp16 = True
 
 # ========= model config ===============
