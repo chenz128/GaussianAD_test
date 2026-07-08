@@ -118,11 +118,9 @@ loss = dict(
             extra_weight=0.5,
             use_gt_box=True,
             v_thresh=0.5,
-            # v4: 地面门控换成 GT 语义门控 —— z_margin 关闭(=0)，改用 occ-GT 逐高斯
-            # 真值标签，仅保留最近标签属可动类的高斯为动态(bicycle/bus/car/constr/
-            # motor/ped/trailer/truck = 2,3,4,5,6,7,9,10)，精确剔除框内地面/背景。
-            z_margin=0.0,
-            use_gt_semantic_gate=True,
+            # ISOLATION TEST: v3 behavior (semantic gate OFF, z_margin=0.2)
+            z_margin=0.2,
+            use_gt_semantic_gate=False,
             movable_classes=(2, 3, 4, 5, 6, 7, 9, 10),
             sem_gate_max_dist=0.5,
             vis_dir='out/nuscenes_gs25600_gtbox_oracle_v4/dynamic_vis',
@@ -134,15 +132,13 @@ loss = dict(
             static_w=2.0,
             smooth_w=20.0,
             rigid_w=10.0,
-            # v4: 正向速度监督 —— 动态高斯 offset[t] 应 ≈ v_box*(t+1)*0.5s。
-            # 这是唯一"驱动"运动的项(其余三项都是抑制)，用 GT 框速度当干净目标。
-            vel_w=1.0,
+            # ISOLATION TEST: v3 behavior (vel OFF, semantic gate OFF, z_margin=0.2)
+            vel_w=0.0,
             warmup_epoch=2,
             use_gt_box=True,
             v_thresh=0.5,
-            # v4: z_margin 关闭，改用 GT 语义门控精确剔除框内地面/背景高斯。
-            z_margin=0.0,
-            use_gt_semantic_gate=True,
+            z_margin=0.2,
+            use_gt_semantic_gate=False,
             movable_classes=(2, 3, 4, 5, 6, 7, 9, 10),
             sem_gate_max_dist=0.5,
         ),
