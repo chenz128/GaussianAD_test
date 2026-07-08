@@ -290,30 +290,30 @@ class PhysicsLoss(BaseLoss):
         return total
 
     def _velocity_target(self, offset, box_idx, dyn_mask, gt_boxes):
-        """MSE(offset, constant-velocity GT-box trajectory) over dynamic gaussians.
+        """MSE(offset, constant-velocity GT-box trajectory), masked to dynamic gaussians.
 
-        target[b, g, t] = v_box(g) * (t+1) * dt, with dt=0.5s and t=0..5, where
-        v_box(g) is the (vx, vy) of the box containing gaussian g. Grad flows to
-        ``offset``; the target is a GT-derived constant. This is the positive
-        motion driver that the suppressive static/smooth/rigid terms lack.
+        target[b, g, t] = v_box(g) * (t+1) * dt, dt=0.5s, t=0..5, where v_box(g)
+        is the (vx, vy) of the box containing gaussian g. Grad flows to ``offset``;
+        target is a GT-derived constant, the positive motion driver the
+        suppressive static/smooth/rigid terms lack.
+
+        Uses a MULTIPLICATIVE mask over the FULL offset tensor (not boolean
+        indexing / no Python loop) so the autograd graph is identical every
+        iteration -> compatible with DDP static_graph=True (required here because
+        with_cp reuses the dynamic head).
         """
-        B = offset.shape[0]
+        B, G = box_idx.shape
         dt = 0.5
         gt_boxes = gt_boxes.to(offset.device).float()
         tmul = (torch.arange(6, device=offset.device).float() + 1.0) * dt  # (6,)
-        terms = []
-        for b in range(B):
-            dyn_b = dyn_mask[b]
-            if not dyn_b.any():
-                continue
-            bi = box_idx[b].clamp_min(0)                  # (G,)
-            v_box = gt_boxes[b][bi][:, 7:9]               # (G, 2)
-            target = v_box[:, None, :] * tmul[None, :, None]   # (G, 6, 2)
-            err = ((offset[b] - target) ** 2)[dyn_b]      # (k, 6, 2)
-            terms.append(err.mean())
-        if len(terms) == 0:
-            return offset.new_tensor(0.0)
-        return torch.stack(terms).mean()
+        bi = box_idx.clamp_min(0)                                          # (B, G)
+        v_box = torch.gather(
+            gt_boxes[..., 7:9], 1, bi.unsqueeze(-1).expand(B, G, 2))       # (B, G, 2)
+        target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B, G, 6, 2)
+        sq_err = (offset - target).pow(2).sum(-1)                          # (B, G, 6)
+        w = dyn_mask.float()[:, :, None]                                   # (B, G, 1)
+        denom = w.sum() * offset.shape[2] + 1e-6
+        return (w * sq_err).sum() / denom
 
     def _rigid_variance(self, offset, box_idx, dyn_mask):
         """Mean per-box variance of offset over gaussians inside each moving box.
