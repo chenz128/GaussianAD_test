@@ -191,14 +191,12 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=True: all grad-bearing ops are now graph-static.
-# - loss_vel: always computed (multiplicative mask, not skipped during warmup)
-# - loss_static / loss_smooth: constant graph
-# - rigid_w=0: _rigid_variance has Python loops (variable graph) -> disabled
-# with_cp=True: backbone gradient checkpoint. Reentrant but static_graph=True
-# allows 'marked ready twice' from reentrant checkpoint without crashing.
-# Memory: ~67 GB vs ~94 GB with with_cp=False. Safe on 97.87 GB cards.
-static_graph = True
+# static_graph=False + with_cp=False: the only confirmed-working DDP config
+# for this model with loss_vel active. with_cp=True (any combination) causes
+# spconv empty-voxel at iter 1 (DDP gradient timing issue with the temporal
+# encoder checkpoint). Memory: ~94 GB / 97.87 GB, use max_split_size_mb=512
+# to reduce OOM risk from fragmentation.
+static_graph = False
 backbone_fp16 = True
 
 # ========= model config ===============
@@ -273,7 +271,7 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp=True,
+        with_cp=False,
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
