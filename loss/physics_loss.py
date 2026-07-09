@@ -248,14 +248,19 @@ class PhysicsLoss(BaseLoss):
             loss_rigid = self.rigid_w * self._rigid_variance(offset, box_idx, gt_dyn_mask)
 
         # ====== Velocity constraint: dynamic gaussians move at GT box velocity =
-        # Always build loss_vel (graph must be identical every iter for
-        # static_graph=True + with_cp=True). Warmup zeroes via total*0.0 below.
-        # Empty gt_boxes and no-dynamic cases handled inside _velocity_target.
+        # SKIP loss_vel entirely during warmup. Running _velocity_target's
+        # torch.gather during warmup (iter 0) triggered a CUDA async error that
+        # corrupted the context -> surfaced as a fake spconv empty-voxel crash at
+        # iter 1's forward. fix4 (skip during warmup) ran 1500+ iters stably.
+        # static_graph=False tolerates the variable graph (vel path appears only
+        # at epoch >= warmup_epoch).
         in_warmup = (current_epoch is not None
                      and current_epoch < self.warmup_epoch)
         loss_vel = offset.new_tensor(0.0)
-        if (self.vel_w > 0 and box_idx is not None
-                and gt_boxes is not None and gt_dyn_mask is not None):
+        if (self.vel_w > 0 and not in_warmup and box_idx is not None
+                and gt_boxes is not None and gt_dyn_mask is not None
+                and gt_boxes.shape[1] > 0   # empty-box batch -> skip gather
+                and gt_dyn_mask.any()):      # no dynamic gaussians -> skip
             loss_vel = self.vel_w * self._velocity_target(
                 offset, box_idx, gt_dyn_mask, gt_boxes, ego_fut_trajs)
 
@@ -321,9 +326,11 @@ class PhysicsLoss(BaseLoss):
             # so w=0 and the loss is 0 regardless of target. Safe to skip gather.
             if gt_boxes.shape[1] > 0:
                 bi = box_idx.clamp(0, gt_boxes.shape[1] - 1)                  # (B, G)
+                # .contiguous() on the gather index avoids a non-contiguous
+                # expanded-index path that can trip CUDA on some spconv builds.
+                idx = bi.unsqueeze(-1).expand(B, G, 2).contiguous()          # (B, G, 2)
                 v_box = torch.gather(
-                    gt_boxes[..., 7:9], 1,
-                    bi.unsqueeze(-1).expand(B, G, 2))                          # (B, G, 2)
+                    gt_boxes[..., 7:9].contiguous(), 1, idx)                   # (B, G, 2)
             else:
                 v_box = torch.zeros(B, G, 2, device=offset.device)
             target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B,G,6,2)
