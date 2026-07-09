@@ -229,7 +229,6 @@ class BEVSegmentor(CustomBaseSegmentor):
             'metas': metas,
             'points': points,
             'gt_boxes': metas['gt_boxes'],
-            'ego_fut_trajs': metas['ego_fut_trajs'],
         }
         results.update(kwargs)
         outs = self.extract_img_feat(**results)
@@ -265,5 +264,9 @@ class BEVSegmentor(CustomBaseSegmentor):
 
         outs = self.head(**results)
         results.update(outs)
+
+        # Append GT metas needed by loss functions AFTER all model forward passes
+        # so they do not pollute model component kwargs (e.g. temporal_encoder).
+        results['ego_fut_trajs'] = metas['ego_fut_trajs']
 
         return results
