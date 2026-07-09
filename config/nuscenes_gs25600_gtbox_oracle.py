@@ -189,12 +189,12 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=True: loss_vel now always builds its graph (warmup zeros via
-# total*0.0 instead of skipping), so the graph is identical every iter.
-# with_cp=True: reentrant checkpoint is safe with static_graph=True (the
-# 'marked ready twice' issue only appears with static_graph=False).
-# Memory: ~67 GB vs ~94 GB with with_cp=False. Safe on 97.87 GB cards.
-static_graph = True
+# static_graph=False: loss_vel warmup skip creates variable graph; also
+# with_cp=True (reentrant checkpoint) conflicts with static_graph=True
+# ('marked ready twice' corrupts DDP -> fake spconv empty-voxel at next op).
+# static_graph=False is lenient: 'marked ready twice' becomes a silent warning.
+# with_cp=True reduces memory from ~94 GB back to ~67 GB (safe on 97.87 GB).
+static_graph = False
 backbone_fp16 = True
 
 # ========= model config ===============
