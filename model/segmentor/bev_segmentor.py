@@ -229,6 +229,7 @@ class BEVSegmentor(CustomBaseSegmentor):
             'metas': metas,
             'points': points,
             'gt_boxes': metas['gt_boxes'],
+            'ego_fut_trajs': metas['ego_fut_trajs'],
         }
         results.update(kwargs)
         outs = self.extract_img_feat(**results)

@@ -61,6 +61,7 @@ class PhysicsLoss(BaseLoss):
             if use_gt_box:
                 input_dict['gaussian'] = 'gaussian'
                 input_dict['gt_boxes'] = 'gt_boxes'
+                input_dict['ego_fut_trajs'] = 'ego_fut_trajs'
                 if use_gt_semantic_gate:
                     # per-gaussian GT occ labels for the semantic gate
                     input_dict['sampled_xyz'] = 'sampled_xyz'
@@ -185,7 +186,7 @@ class PhysicsLoss(BaseLoss):
         }
 
     def loss_func(self, offset, dynamic_logits, current_epoch=None,
-                  gaussian=None, gt_boxes=None,
+                  gaussian=None, gt_boxes=None, ego_fut_trajs=None,
                   sampled_xyz=None, sampled_label=None):
         """
         Args:
@@ -194,6 +195,7 @@ class PhysicsLoss(BaseLoss):
             current_epoch:   int or None
             gaussian:        GaussianPrediction (gt-box mode), provides .means
             gt_boxes:        (B, T, >=9) padded GT boxes (gt-box mode)
+            ego_fut_trajs:   (B, 6, 2) GT ego per-step displacements (LIDAR frame)
             sampled_xyz:     (B, N, 3) occ-GT points (GT semantic gate)
             sampled_label:   (B, N) occ-GT labels (GT semantic gate)
         """
@@ -300,22 +302,20 @@ class PhysicsLoss(BaseLoss):
 
         return total
 
-    def _velocity_target(self, offset, box_idx, dyn_mask, gt_boxes):
-        """MSE(offset, constant-velocity GT-box trajectory), masked to dynamic gaussians.
+    def _velocity_target(self, offset, box_idx, dyn_mask, gt_boxes,
+                         ego_fut_trajs=None):
+        """MSE(offset, ego-compensated GT-box trajectory), masked to dynamic gaussians.
 
-        target[b, g, t] = v_box(g) * (t+1) * dt, dt=0.5s, t=0..5, where v_box(g)
-        is the (vx, vy) of the box containing gaussian g. Grad flows to ``offset``;
-        target is a GT-derived constant, the positive motion driver the
-        suppressive static/smooth/rigid terms lack.
+        Corrected target per gaussian g at step t:
+            target[b,g,t] = v_box*(t+1)*dt - ego_cumdisp[b,t]
+        where ego_cumdisp = cumsum(ego_fut_trajs) gives the GT ego cumulative
+        displacement in the LIDAR frame (same frame as offset and v_box).
+        Subtracting ego displacement converts from world-relative object velocity
+        to ego-relative: a static object (v_box=0) will have offset=-ego_disp.
 
-        Uses a MULTIPLICATIVE mask over the FULL offset tensor (not boolean
-        indexing / no Python loop) so the autograd graph is identical every
-        iteration -> compatible with DDP static_graph=True (required here because
-        with_cp reuses the dynamic head).
+        Uses a MULTIPLICATIVE mask over the FULL offset tensor so the autograd
+        graph is identical every iteration.
         """
-        # All target/mask math is GT-derived constants -> compute under no_grad
-        # so the ONLY graph op touching offset is (offset - target).pow(2),
-        # structurally identical to loss_static (which is DDP-safe).
         with torch.no_grad():
             B, G = box_idx.shape
             dt = 0.5
@@ -324,7 +324,15 @@ class PhysicsLoss(BaseLoss):
             bi = box_idx.clamp(0, gt_boxes.shape[1] - 1)                      # (B, G) in-bounds
             v_box = torch.gather(
                 gt_boxes[..., 7:9], 1, bi.unsqueeze(-1).expand(B, G, 2))       # (B, G, 2)
-            target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B,G,6,2) const
+            # Object displacement target (world frame, LIDAR coords)
+            target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B,G,6,2)
+            # Ego compensation: subtract GT cumulative ego displacement so that
+            # offset is supervised in the EGO-RELATIVE frame.
+            # ego_fut_trajs: (B, 6, 2) per-step → cumsum gives cumulative disp.
+            if ego_fut_trajs is not None:
+                ego = ego_fut_trajs.to(offset.device).float()                  # (B, 6, 2)
+                ego_cumdisp = ego.cumsum(dim=1)                                # (B, 6, 2)
+                target = target - ego_cumdisp[:, None, :, :]                   # broadcast (B,G,6,2)
             w = dyn_mask.float()[:, :, None]                                   # (B,G,1) const
             denom = w.sum() * offset.shape[2] + 1e-6
         sq_err = (offset - target).pow(2).sum(-1)                             # (B,G,6) grad→offset

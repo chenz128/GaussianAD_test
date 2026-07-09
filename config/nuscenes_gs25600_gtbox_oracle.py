@@ -181,6 +181,8 @@ loss_input_convertion = dict(
     # gt-box oracle for physics loss (dynamic gating + rigid membership)
     gaussian='gaussian',
     gt_boxes='gt_boxes',
+    # GT ego future trajectory for ego-motion compensation in loss_vel
+    ego_fut_trajs='ego_fut_trajs',
 )
 
 frozen_modules = ['map_decoder', 'planner_head']
