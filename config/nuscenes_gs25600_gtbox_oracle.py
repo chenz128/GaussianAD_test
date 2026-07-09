@@ -133,9 +133,11 @@ loss = dict(
             weight=1.0,
             static_w=2.0,
             smooth_w=20.0,
-            rigid_w=10.0,
-            # v5: GT semantic gate ON + z_margin=0（与 DynamicLoss 同理）。
-            # vel_w=1.0: 正向速度监督，offset[t] ~= v_box*(t+1)*0.5s。
+            rigid_w=0.0,
+            # v5: rigid_w=0 avoids _rigid_variance's Python-loop variable graph
+            # (incompatible with static_graph=True). loss_vel already covers
+            # the rigid-body effect by supervising all same-box gaussians toward
+            # the same v_box target.
             vel_w=1.0,
             warmup_epoch=2,
             use_gt_box=True,
@@ -189,12 +191,14 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=False: loss_vel warmup skip creates variable graph; also
-# with_cp=True (reentrant checkpoint) conflicts with static_graph=True
-# ('marked ready twice' corrupts DDP -> fake spconv empty-voxel at next op).
-# static_graph=False is lenient: 'marked ready twice' becomes a silent warning.
-# with_cp=True reduces memory from ~94 GB back to ~67 GB (safe on 97.87 GB).
-static_graph = False
+# static_graph=True: all grad-bearing ops are now graph-static.
+# - loss_vel: always computed (multiplicative mask, not skipped during warmup)
+# - loss_static / loss_smooth: constant graph
+# - rigid_w=0: _rigid_variance has Python loops (variable graph) -> disabled
+# with_cp=True: backbone gradient checkpoint. Reentrant but static_graph=True
+# allows 'marked ready twice' from reentrant checkpoint without crashing.
+# Memory: ~67 GB vs ~94 GB with with_cp=False. Safe on 97.87 GB cards.
+static_graph = True
 backbone_fp16 = True
 
 # ========= model config ===============
