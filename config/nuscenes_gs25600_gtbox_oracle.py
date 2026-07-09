@@ -188,11 +188,11 @@ frozen_modules = ['map_decoder', 'planner_head']
 find_unused_parameters = True
 # dynamic render path reuses last refine module's dynamic head inside the
 # with_cp (checkpoint) region → a param is marked ready twice under DDP.
-# graph is identical every train iter (vis/diag are outside autograd) → static OK.
-# v4: loss_vel uses a multiplicative dynamic mask (not boolean indexing) so its
-# autograd graph is identical every iter → static_graph=True stays valid (and is
-# still REQUIRED: with_cp reuses the dynamic head, else "marked ready twice").
-static_graph = True
+# v4-vel: loss_vel adds a gradient path to offset that conflicts with
+# static_graph=True (empty-voxel spconv crash at iter1). Fix: drop img_backbone
+# with_cp (the only reentrant checkpoint -> no "marked ready twice") so we can
+# set static_graph=False, which tolerates loss_vel's graph.
+static_graph = False
 backbone_fp16 = True
 
 # ========= model config ===============
@@ -267,7 +267,7 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp=True,
+        with_cp=False,
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(

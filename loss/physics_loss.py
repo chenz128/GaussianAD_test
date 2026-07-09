@@ -306,17 +306,21 @@ class PhysicsLoss(BaseLoss):
         iteration -> compatible with DDP static_graph=True (required here because
         with_cp reuses the dynamic head).
         """
-        B, G = box_idx.shape
-        dt = 0.5
-        gt_boxes = gt_boxes.to(offset.device).float()
-        tmul = (torch.arange(6, device=offset.device).float() + 1.0) * dt  # (6,)
-        bi = box_idx.clamp_min(0)                                          # (B, G)
-        v_box = torch.gather(
-            gt_boxes[..., 7:9], 1, bi.unsqueeze(-1).expand(B, G, 2))       # (B, G, 2)
-        target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B, G, 6, 2)
-        sq_err = (offset - target).pow(2).sum(-1)                          # (B, G, 6)
-        w = dyn_mask.float()[:, :, None]                                   # (B, G, 1)
-        denom = w.sum() * offset.shape[2] + 1e-6
+        # All target/mask math is GT-derived constants -> compute under no_grad
+        # so the ONLY graph op touching offset is (offset - target).pow(2),
+        # structurally identical to loss_static (which is DDP-safe).
+        with torch.no_grad():
+            B, G = box_idx.shape
+            dt = 0.5
+            gt_boxes = gt_boxes.to(offset.device).float()
+            tmul = (torch.arange(6, device=offset.device).float() + 1.0) * dt  # (6,)
+            bi = box_idx.clamp_min(0)                                          # (B, G)
+            v_box = torch.gather(
+                gt_boxes[..., 7:9], 1, bi.unsqueeze(-1).expand(B, G, 2))       # (B, G, 2)
+            target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B,G,6,2) const
+            w = dyn_mask.float()[:, :, None]                                   # (B,G,1) const
+            denom = w.sum() * offset.shape[2] + 1e-6
+        sq_err = (offset - target).pow(2).sum(-1)                             # (B,G,6) grad→offset
         return (w * sq_err).sum() / denom
 
     def _rigid_variance(self, offset, box_idx, dyn_mask):
