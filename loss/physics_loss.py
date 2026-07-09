@@ -255,7 +255,9 @@ class PhysicsLoss(BaseLoss):
                      and current_epoch < self.warmup_epoch)
         loss_vel = offset.new_tensor(0.0)
         if (self.vel_w > 0 and not in_warmup and box_idx is not None
-                and gt_boxes is not None and gt_dyn_mask is not None):
+                and gt_boxes is not None and gt_dyn_mask is not None
+                and gt_boxes.shape[1] > 0   # guard: empty-box batch crashes gather
+                and gt_dyn_mask.any()):      # guard: no dynamic gaussians → skip
             loss_vel = self.vel_w * self._velocity_target(
                 offset, box_idx, gt_dyn_mask, gt_boxes)
 
