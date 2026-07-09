@@ -189,13 +189,12 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# dynamic render path reuses last refine module's dynamic head inside the
-# with_cp (checkpoint) region → a param is marked ready twice under DDP.
-# v4-vel: loss_vel adds a gradient path to offset that conflicts with
-# static_graph=True (empty-voxel spconv crash at iter1). Fix: drop img_backbone
-# with_cp (the only reentrant checkpoint -> no "marked ready twice") so we can
-# set static_graph=False, which tolerates loss_vel's graph.
-static_graph = False
+# static_graph=True: loss_vel now always builds its graph (warmup zeros via
+# total*0.0 instead of skipping), so the graph is identical every iter.
+# with_cp=True: reentrant checkpoint is safe with static_graph=True (the
+# 'marked ready twice' issue only appears with static_graph=False).
+# Memory: ~67 GB vs ~94 GB with with_cp=False. Safe on 97.87 GB cards.
+static_graph = True
 backbone_fp16 = True
 
 # ========= model config ===============
@@ -270,7 +269,7 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp=False,
+        with_cp=True,
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(

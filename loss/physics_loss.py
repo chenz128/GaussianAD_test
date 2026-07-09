@@ -248,20 +248,16 @@ class PhysicsLoss(BaseLoss):
             loss_rigid = self.rigid_w * self._rigid_variance(offset, box_idx, gt_dyn_mask)
 
         # ====== Velocity constraint: dynamic gaussians move at GT box velocity =
-        # The only POSITIVE driver of motion: offset[t] ~= v_box * (t+1) * dt.
-        # Grad flows to offset; the target is a GT-derived constant.
-        # During warmup, skip loss_vel ENTIRELY (don't build it) so early epochs
-        # match the vel-off baseline exactly; static_graph=False tolerates the
-        # graph appearing later at epoch>=warmup_epoch.
+        # Always build loss_vel (graph must be identical every iter for
+        # static_graph=True + with_cp=True). Warmup zeroes via total*0.0 below.
+        # Empty gt_boxes and no-dynamic cases handled inside _velocity_target.
         in_warmup = (current_epoch is not None
                      and current_epoch < self.warmup_epoch)
         loss_vel = offset.new_tensor(0.0)
-        if (self.vel_w > 0 and not in_warmup and box_idx is not None
-                and gt_boxes is not None and gt_dyn_mask is not None
-                and gt_boxes.shape[1] > 0   # guard: empty-box batch crashes gather
-                and gt_dyn_mask.any()):      # guard: no dynamic gaussians → skip
+        if (self.vel_w > 0 and box_idx is not None
+                and gt_boxes is not None and gt_dyn_mask is not None):
             loss_vel = self.vel_w * self._velocity_target(
-                offset, box_idx, gt_dyn_mask, gt_boxes)
+                offset, box_idx, gt_dyn_mask, gt_boxes, ego_fut_trajs)
 
         total = loss_static + loss_smooth + loss_rigid + loss_vel
 
@@ -321,10 +317,15 @@ class PhysicsLoss(BaseLoss):
             dt = 0.5
             gt_boxes = gt_boxes.to(offset.device).float()
             tmul = (torch.arange(6, device=offset.device).float() + 1.0) * dt  # (6,)
-            bi = box_idx.clamp(0, gt_boxes.shape[1] - 1)                      # (B, G) in-bounds
-            v_box = torch.gather(
-                gt_boxes[..., 7:9], 1, bi.unsqueeze(-1).expand(B, G, 2))       # (B, G, 2)
-            # Object displacement target (world frame, LIDAR coords)
+            # Empty gt_boxes (no annotations): v_box=0, dyn_mask is all-False
+            # so w=0 and the loss is 0 regardless of target. Safe to skip gather.
+            if gt_boxes.shape[1] > 0:
+                bi = box_idx.clamp(0, gt_boxes.shape[1] - 1)                  # (B, G)
+                v_box = torch.gather(
+                    gt_boxes[..., 7:9], 1,
+                    bi.unsqueeze(-1).expand(B, G, 2))                          # (B, G, 2)
+            else:
+                v_box = torch.zeros(B, G, 2, device=offset.device)
             target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B,G,6,2)
             # Ego compensation: subtract GT cumulative ego displacement so that
             # offset is supervised in the EGO-RELATIVE frame.
