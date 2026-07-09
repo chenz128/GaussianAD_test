@@ -248,16 +248,21 @@ class PhysicsLoss(BaseLoss):
         # ====== Velocity constraint: dynamic gaussians move at GT box velocity =
         # The only POSITIVE driver of motion: offset[t] ~= v_box * (t+1) * dt.
         # Grad flows to offset; the target is a GT-derived constant.
+        # During warmup, skip loss_vel ENTIRELY (don't build it) so early epochs
+        # match the vel-off baseline exactly; static_graph=False tolerates the
+        # graph appearing later at epoch>=warmup_epoch.
+        in_warmup = (current_epoch is not None
+                     and current_epoch < self.warmup_epoch)
         loss_vel = offset.new_tensor(0.0)
-        if self.vel_w > 0 and box_idx is not None and gt_boxes is not None \
-                and gt_dyn_mask is not None:
+        if (self.vel_w > 0 and not in_warmup and box_idx is not None
+                and gt_boxes is not None and gt_dyn_mask is not None):
             loss_vel = self.vel_w * self._velocity_target(
                 offset, box_idx, gt_dyn_mask, gt_boxes)
 
         total = loss_static + loss_smooth + loss_rigid + loss_vel
 
-        # Warmup: skip for early epochs when supervision is unreliable
-        if current_epoch is not None and current_epoch < self.warmup_epoch:
+        # Warmup: also zero the still-active static/smooth/rigid terms.
+        if in_warmup:
             total = total * 0.0
 
         # Diagnostics
@@ -314,7 +319,7 @@ class PhysicsLoss(BaseLoss):
             dt = 0.5
             gt_boxes = gt_boxes.to(offset.device).float()
             tmul = (torch.arange(6, device=offset.device).float() + 1.0) * dt  # (6,)
-            bi = box_idx.clamp_min(0)                                          # (B, G)
+            bi = box_idx.clamp(0, gt_boxes.shape[1] - 1)                      # (B, G) in-bounds
             v_box = torch.gather(
                 gt_boxes[..., 7:9], 1, bi.unsqueeze(-1).expand(B, G, 2))       # (B, G, 2)
             target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B,G,6,2) const
