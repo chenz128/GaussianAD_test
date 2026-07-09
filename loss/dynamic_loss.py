@@ -226,11 +226,15 @@ class DynamicLoss(BaseLoss):
                 n_dyn = int(target_v.sum().item())
                 prob = torch.sigmoid(pred_v)
                 pred_dyn_ratio = (prob > 0.5).float().mean().item()
-            logging.getLogger('mmengine').info(
+            _msg = (
                 f'[DynamicLoss Diag] iter={self._diag_counter} | gt_box=True | '
                 f'gaussians={n_total} dyn_gt={n_dyn} ({n_dyn / max(n_total, 1):.2%}) | '
                 f'pred_dyn_ratio={pred_dyn_ratio:.2%} | loss={loss.item():.4f}'
             )
+            if (not torch.distributed.is_available()
+                    or not torch.distributed.is_initialized()
+                    or torch.distributed.get_rank() == 0):
+                print(_msg, flush=True)
         return loss
 
 

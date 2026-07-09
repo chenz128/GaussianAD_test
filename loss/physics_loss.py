@@ -276,7 +276,7 @@ class PhysicsLoss(BaseLoss):
                     off_dyn = offset.pow(2).sum(-1).sqrt()[gt_dyn_mask].mean().item()
                 else:
                     off_dyn = 0.0
-            logging.getLogger('mmengine').info(
+            _msg = (
                 f'[PhysicsLoss Diag] iter={self._diag_counter} | '
                 f'gt_box={self.use_gt_box} static={n_static} dyn={n_dyn} | '
                 f'offset_rms={off_mag:.4f} offset_dyn_rms={off_dyn:.4f} | '
@@ -286,6 +286,10 @@ class PhysicsLoss(BaseLoss):
                 f'loss_vel={loss_vel.item():.4f} '
                 f'total={total.item():.4f}'
             )
+            if (not torch.distributed.is_available()
+                    or not torch.distributed.is_initialized()
+                    or torch.distributed.get_rank() == 0):
+                print(_msg, flush=True)
 
         return total
 
