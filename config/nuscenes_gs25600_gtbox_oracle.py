@@ -118,10 +118,11 @@ loss = dict(
             extra_weight=0.5,
             use_gt_box=True,
             v_thresh=0.5,
-            # v4-vel: DynamicLoss = v3 (semantic gate OFF; it caused the iter-1
-            # empty-voxel DDP crash -> deferred). Ground handled by z_margin=0.2.
-            z_margin=0.2,
-            use_gt_semantic_gate=False,
+            # v5: GT semantic gate ON (iter-1 crash root cause = gather OOB, now fixed).
+            # z_margin=0: 语义门控已能过滤地面高斯（地面/植被属于非可移动类），
+            # 不再需要 z_margin 做额外裁切。
+            z_margin=0.0,
+            use_gt_semantic_gate=True,
             movable_classes=(2, 3, 4, 5, 6, 7, 9, 10),
             sem_gate_max_dist=0.5,
             vis_dir='out/nuscenes_gs25600_gtbox_oracle_v4/dynamic_vis',
@@ -133,14 +134,14 @@ loss = dict(
             static_w=2.0,
             smooth_w=20.0,
             rigid_w=10.0,
-            # v4-vel: positive velocity supervision ON (the key v4 feature).
-            # offset[t] ~= v_box*(t+1)*0.5s, multiplicative-mask (graph-static).
+            # v5: GT semantic gate ON + z_margin=0（与 DynamicLoss 同理）。
+            # vel_w=1.0: 正向速度监督，offset[t] ~= v_box*(t+1)*0.5s。
             vel_w=1.0,
             warmup_epoch=2,
             use_gt_box=True,
             v_thresh=0.5,
-            z_margin=0.2,
-            use_gt_semantic_gate=False,
+            z_margin=0.0,
+            use_gt_semantic_gate=True,
             movable_classes=(2, 3, 4, 5, 6, 7, 9, 10),
             sem_gate_max_dist=0.5,
         ),
