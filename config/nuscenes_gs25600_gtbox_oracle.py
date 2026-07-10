@@ -191,11 +191,10 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=True: graph is constant every iter (rigid_w=0 removes
-# _rigid_variance variable graph; loss_vel always built, warmup zeros total).
-# Allows backbone with_cp=True: static_graph suppresses the 'marked ready
-# twice' from N checkpoint calls on shared backbone params (N = num images).
-static_graph = True
+# static_graph=False: loss_vel warmup skip creates variable graph.
+# backbone with_cp=False: with_cp=True causes 'marked ready twice' crash when
+# backbone is called N times (N images) with shared params + static_graph=True.
+static_graph = False
 backbone_fp16 = True
 
 # ========= model config ===============
@@ -270,8 +269,8 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp=True,   # mmcv ResNet patched to use_reentrant=False on remote
-        # static_graph=True handles the multiple 'ready' marks from N images
+        with_cp=False,  # with_cp=True causes DDP crash (N images x backbone
+        # shared params x checkpoint = 'marked ready twice')
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
