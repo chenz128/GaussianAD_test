@@ -191,9 +191,11 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=False + img_backbone with_cp=False: required for stability.
-# Backbone uses mmcv ResNet's reentrant checkpoint which conflicts with DDP.\n# encoder + temporal_encoder with_cp=True is safe: they use use_reentrant=False.
-static_graph = False
+# static_graph=True: graph is constant every iter (rigid_w=0 removes
+# _rigid_variance variable graph; loss_vel always built, warmup zeros total).
+# Allows backbone with_cp=True: static_graph suppresses the 'marked ready
+# twice' from N checkpoint calls on shared backbone params (N = num images).
+static_graph = True
 backbone_fp16 = True
 
 # ========= model config ===============
@@ -269,8 +271,7 @@ model = dict(
         norm_eval=True,
         style='caffe',
         with_cp=True,   # mmcv ResNet patched to use_reentrant=False on remote
-        # -> non-reentrant, no 'marked ready twice', safe with static_graph=False
-        # saves ~30 GB vs with_cp=False (24 images * multi-stage activations)
+        # static_graph=True handles the multiple 'ready' marks from N images
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(

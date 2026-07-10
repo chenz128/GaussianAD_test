@@ -254,19 +254,17 @@ class PhysicsLoss(BaseLoss):
             loss_rigid = self.rigid_w * self._rigid_variance(offset, box_idx, gt_dyn_mask)
 
         # ====== Velocity constraint: dynamic gaussians move at GT box velocity =
-        # SKIP loss_vel entirely during warmup. Running _velocity_target's
-        # torch.gather during warmup (iter 0) triggered a CUDA async error that
-        # corrupted the context -> surfaced as a fake spconv empty-voxel crash at
-        # iter 1's forward. fix4 (skip during warmup) ran 1500+ iters stably.
-        # static_graph=False tolerates the variable graph (vel path appears only
-        # at epoch >= warmup_epoch).
+        # ALWAYS build loss_vel so the autograd graph is identical every iter
+        # -> compatible with static_graph=True (needed for backbone with_cp=True).
+        # Warmup zeros happen via `total * 0.0` below, NOT by skipping the call.
+        # Edge cases (empty gt_boxes, no dynamic gaussians) are handled INSIDE
+        # _velocity_target via the multiplicative mask (w=0 or v_box=0) - all
+        # inside torch.no_grad(), so they don't affect the autograd graph.
         in_warmup = (current_epoch is not None
                      and current_epoch < self.warmup_epoch)
         loss_vel = offset.new_tensor(0.0)
-        if (self.vel_w > 0 and not in_warmup and box_idx is not None
-                and gt_boxes is not None and gt_dyn_mask is not None
-                and gt_boxes.shape[1] > 0   # empty-box batch -> skip gather
-                and gt_dyn_mask.any()):      # no dynamic gaussians -> skip
+        if (self.vel_w > 0 and box_idx is not None
+                and gt_boxes is not None and gt_dyn_mask is not None):
             loss_vel = self.vel_w * self._velocity_target(
                 offset, box_idx, gt_dyn_mask, gt_boxes, ego_fut_trajs)
 
