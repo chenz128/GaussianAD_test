@@ -333,12 +333,15 @@ class PhysicsLoss(BaseLoss):
             gt_boxes = gt_boxes.to(offset.device).float()
             tmul = (torch.arange(6, device=offset.device).float() + 1.0) * dt  # (6,)
             # Empty gt_boxes (no annotations): v_box=0, dyn_mask is all-False
-            # so w=0 and the loss is 0 regardless of target. Safe to skip gather.
+            # so w=0 and the loss is 0 regardless of target.
             if gt_boxes.shape[1] > 0:
                 bi = box_idx.clamp(0, gt_boxes.shape[1] - 1)                  # (B, G)
-                idx = bi.unsqueeze(-1).expand(B, G, 2).contiguous()          # (B, G, 2)
-                v_box = torch.gather(
-                    gt_boxes[..., 7:9].contiguous(), 1, idx)                   # (B, G, 2)
+                v_all = gt_boxes[..., 7:9]                                    # (B, T, 2)
+                # Per-batch advanced indexing instead of torch.gather: v_all[b]
+                # is (T, 2), bi[b] is (G,) long -> v_all[b][bi[b]] is (G, 2).
+                # Avoids torch.gather with an expanded index, which triggered a
+                # CUDA async error at iter 0 -> fake spconv empty-voxel at iter 1.
+                v_box = torch.stack([v_all[b][bi[b]] for b in range(B)], dim=0)  # (B, G, 2)
             else:
                 v_box = torch.zeros(B, G, 2, device=offset.device)
             target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B,G,6,2)
