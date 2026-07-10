@@ -191,11 +191,12 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=True: warmup skip removed → loss_vel always builds same graph.
-# backbone with_cp=True + use_reentrant=False (mmcv patched on remote) +
-# static_graph=True: no 'marked ready twice' check, gradient timing stable.
-# Memory: ~67 GB vs ~94 GB with backbone with_cp=False.
-static_graph = True
+# static_graph=False: avoids DDP all-reduce timing issue that caused spconv
+# empty-voxel crash under static_graph=True.
+# backbone with_cp=True is safe: mmcv ResNet patched to use_reentrant=False
+# on remote -> non-reentrant never triggers 'marked ready twice', so
+# static_graph=False is sufficient. Saves ~20 GB vs backbone with_cp=False.
+static_graph = False
 backbone_fp16 = True
 
 # ========= model config ===============
