@@ -345,8 +345,8 @@ model = dict(
         ),
         num_decoder=num_decoder,
         num_single_frame_decoder=num_single_frame_decoder,
-        with_cp=True,  # non-reentrant (use_reentrant=False in gaussian_encoder.py)
-        # saves encoder spconv+deformable activation memory; no accuracy impact
+        with_cp=False,  # encoder produces dynamic_logits used by DynamicLoss
+        # -> with_cp=True causes 'marked ready twice' (double gradient path)
         operation_order=[
             "deformable",
             "ffn",
@@ -430,8 +430,7 @@ model = dict(
             "spconv",
             "refine",
         ] * 3,
-        with_cp=True,  # non-reentrant (use_reentrant=False in gaussian_temporal_encoder.py)
-        # saves temporal_encoder spconv activation memory; no accuracy impact
+        with_cp=False,  # same reason: temporal_encoder refine produces dynamic_logits
     ),
     head=dict(
         type='GaussianHead',
