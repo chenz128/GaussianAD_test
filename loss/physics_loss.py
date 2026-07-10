@@ -253,13 +253,6 @@ class PhysicsLoss(BaseLoss):
         if self.rigid_w > 0 and box_idx is not None:
             loss_rigid = self.rigid_w * self._rigid_variance(offset, box_idx, gt_dyn_mask)
 
-        # ====== Rigid constraint: same-box gaussians share offset ======
-        # Only meaningful with GT-box instance membership. Penalize the variance
-        # of offset within each moving box (pure-translation rigid prior).
-        loss_rigid = offset.new_tensor(0.0)
-        if self.rigid_w > 0 and box_idx is not None:
-            loss_rigid = self.rigid_w * self._rigid_variance(offset, box_idx, gt_dyn_mask)
-
         # ====== Velocity constraint: dynamic gaussians move at GT box velocity =
         # No warmup: velocity target is GT-derived, signal is reliable from
         # iter 0. Removing warmup makes the graph constant every iter

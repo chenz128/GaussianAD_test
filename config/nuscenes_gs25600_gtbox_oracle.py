@@ -133,13 +133,11 @@ loss = dict(
             weight=1.0,
             static_w=2.0,
             smooth_w=20.0,
-            rigid_w=0.0,
-            # v5: rigid_w=0 avoids _rigid_variance's Python-loop variable graph
-            # (incompatible with static_graph=True). loss_vel already covers
-            # the rigid-body effect by supervising all same-box gaussians toward
-            # the same v_box target.
+            rigid_w=10.0,
+            # v4 feature: positive velocity supervision (GT box velocity, ego
+            # compensated). No warmup -> graph constant every iter -> compatible
+            # with static_graph=True + backbone with_cp=True (v3 infrastructure).
             vel_w=1.0,
-            warmup_epoch=2,
             use_gt_box=True,
             v_thresh=0.5,
             z_margin=0.0,
@@ -191,11 +189,11 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=False + all with_cp=False: the only stable DDP config.
-# with_cp=True (backbone/encoder/temporal) all cause 'marked ready twice'
-# in this multi-image + DynamicLoss setup. ~94-96 GB memory; CPU cdist fix
-# (ba302e0) eliminates fragmentation so OOM does not occur.
-static_graph = False
+# v3 infrastructure (memory-efficient ~67 GB): the graph is identical every
+# train iter (loss_vel has no warmup-skip and is data-independent in gt-box
+# mode; vis/diag are outside autograd) -> static_graph=True is valid, which in
+# turn lets backbone with_cp=True work without 'marked ready twice'.
+static_graph = True
 backbone_fp16 = True
 
 # ========= model config ===============
@@ -270,8 +268,8 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp=False,  # with_cp=True causes 'marked ready twice' regardless of
-        # reentrant mode (24 images share backbone params -> DDP double mark).
+        with_cp=True,  # v3 setting: works because static_graph=True (which
+        # allows a param to be marked ready across the 24 checkpointed images).
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
