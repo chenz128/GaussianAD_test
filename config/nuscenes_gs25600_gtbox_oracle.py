@@ -191,11 +191,8 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=False + with_cp=False: the only confirmed-working DDP config
-# for this model with loss_vel active. with_cp=True (any combination) causes
-# spconv empty-voxel at iter 1 (DDP gradient timing issue with the temporal
-# encoder checkpoint). Memory: ~94 GB / 97.87 GB, use max_split_size_mb=512
-# to reduce OOM risk from fragmentation.
+# static_graph=False + img_backbone with_cp=False: required for stability.
+# Backbone uses mmcv ResNet's reentrant checkpoint which conflicts with DDP.\n# encoder + temporal_encoder with_cp=True is safe: they use use_reentrant=False.
 static_graph = False
 backbone_fp16 = True
 
@@ -260,11 +257,7 @@ train_dataset_config = dict(
 
 model = dict(
     img_backbone_out_indices=[0, 1, 2, 3],
-    # history_no_grad=True: run the 3 history frames' encoder under no_grad
-    # (only the current frame keeps autograd). Saves ~75% of encoder activation
-    # memory. temporal_encoder still receives all 4 frames -> no accuracy impact.
-    # This is the memory fix since with_cp=True crashes spconv at iter 1.
-    history_no_grad=True,
+    history_no_grad=False,
     img_backbone=dict(
         _delete_=True,
         type='ResNet',
@@ -348,7 +341,8 @@ model = dict(
         ),
         num_decoder=num_decoder,
         num_single_frame_decoder=num_single_frame_decoder,
-        with_cp=False,
+        with_cp=True,  # non-reentrant (use_reentrant=False in gaussian_encoder.py)
+        # saves encoder spconv+deformable activation memory; no accuracy impact
         operation_order=[
             "deformable",
             "ffn",
@@ -432,7 +426,8 @@ model = dict(
             "spconv",
             "refine",
         ] * 3,
-        with_cp=False,
+        with_cp=True,  # non-reentrant (use_reentrant=False in gaussian_temporal_encoder.py)
+        # saves temporal_encoder spconv activation memory; no accuracy impact
     ),
     head=dict(
         type='GaussianHead',
