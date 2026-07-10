@@ -254,10 +254,9 @@ class PhysicsLoss(BaseLoss):
             loss_rigid = self.rigid_w * self._rigid_variance(offset, box_idx, gt_dyn_mask)
 
         # ====== Velocity constraint: dynamic gaussians move at GT box velocity =
-        # No warmup: velocity target is GT-derived, signal is reliable from
-        # iter 0. Removing warmup makes the graph constant every iter
-        # -> compatible with static_graph=True + backbone with_cp=True.
-        # Empty-box / no-dynamic cases handled inside _velocity_target (w=0).
+        # loss_vel is ALWAYS computed (graph constant every iter -> static_graph
+        # =True compatible). smooth_l1 bounds its gradient. Empty-box / no-dynamic
+        # cases handled inside _velocity_target (w=0).
         loss_vel = offset.new_tensor(0.0)
         if (self.vel_w > 0 and box_idx is not None
                 and gt_boxes is not None and gt_dyn_mask is not None):
@@ -265,6 +264,16 @@ class PhysicsLoss(BaseLoss):
                 offset, box_idx, gt_dyn_mask, gt_boxes, ego_fut_trajs)
 
         total = loss_static + loss_smooth + loss_rigid + loss_vel
+
+        # v3-style warmup: during the first ``warmup_epoch`` epochs, ZERO the
+        # physics gradient (total * 0). At iter 0 the gaussians are randomly
+        # placed, so an immediate physics gradient (esp. loss_vel/loss_rigid)
+        # explodes grad_norm (~4.5k) and pushes gaussians out of the pc_range,
+        # making the temporal_encoder receive 0 anchors -> spconv empty crash.
+        # Multiplying by 0 (instead of skipping) keeps the graph constant so
+        # static_graph=True + backbone with_cp=True stay valid.
+        if (current_epoch is not None and current_epoch < self.warmup_epoch):
+            total = total * 0.0
 
         # Diagnostics
         self._diag_counter += 1

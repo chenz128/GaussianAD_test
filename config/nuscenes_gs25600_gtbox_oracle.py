@@ -135,9 +135,10 @@ loss = dict(
             smooth_w=20.0,
             rigid_w=10.0,
             # v4 feature: positive velocity supervision (GT box velocity, ego
-            # compensated). No warmup -> graph constant every iter -> compatible
-            # with static_graph=True + backbone with_cp=True (v3 infrastructure).
+            # compensated). smooth_l1 bounds gradient; warmup zeros physics for
+            # 2 epochs (graph stays constant via total*0 -> static_graph=True OK).
             vel_w=1.0,
+            warmup_epoch=2,
             use_gt_box=True,
             v_thresh=0.5,
             z_margin=0.0,
