@@ -253,24 +253,25 @@ class PhysicsLoss(BaseLoss):
         if self.rigid_w > 0 and box_idx is not None:
             loss_rigid = self.rigid_w * self._rigid_variance(offset, box_idx, gt_dyn_mask)
 
+        # ====== Rigid constraint: same-box gaussians share offset ======
+        # Only meaningful with GT-box instance membership. Penalize the variance
+        # of offset within each moving box (pure-translation rigid prior).
+        loss_rigid = offset.new_tensor(0.0)
+        if self.rigid_w > 0 and box_idx is not None:
+            loss_rigid = self.rigid_w * self._rigid_variance(offset, box_idx, gt_dyn_mask)
+
         # ====== Velocity constraint: dynamic gaussians move at GT box velocity =
-        # Skip during warmup: _velocity_target runs gather at iter 0, which
-        # triggers CUDA async errors if called before the context is stable.
-        # static_graph=False allows this variable graph (vel path absent in
-        # warmup, present after). Warmup zeros via total*0.0 for other terms.
-        in_warmup = (current_epoch is not None
-                     and current_epoch < self.warmup_epoch)
+        # No warmup: velocity target is GT-derived, signal is reliable from
+        # iter 0. Removing warmup makes the graph constant every iter
+        # -> compatible with static_graph=True + backbone with_cp=True.
+        # Empty-box / no-dynamic cases handled inside _velocity_target (w=0).
         loss_vel = offset.new_tensor(0.0)
-        if (self.vel_w > 0 and not in_warmup and box_idx is not None
+        if (self.vel_w > 0 and box_idx is not None
                 and gt_boxes is not None and gt_dyn_mask is not None):
             loss_vel = self.vel_w * self._velocity_target(
                 offset, box_idx, gt_dyn_mask, gt_boxes, ego_fut_trajs)
 
         total = loss_static + loss_smooth + loss_rigid + loss_vel
-
-        # Warmup: also zero the still-active static/smooth/rigid terms.
-        if in_warmup:
-            total = total * 0.0
 
         # Diagnostics
         self._diag_counter += 1

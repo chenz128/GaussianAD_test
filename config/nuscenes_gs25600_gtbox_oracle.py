@@ -191,10 +191,11 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=False: loss_vel warmup skip creates variable graph.
-# backbone with_cp=False: with_cp=True causes 'marked ready twice' crash when
-# backbone is called N times (N images) with shared params + static_graph=True.
-static_graph = False
+# static_graph=True: warmup skip removed → loss_vel always builds same graph.
+# backbone with_cp=True + use_reentrant=False (mmcv patched on remote) +
+# static_graph=True: no 'marked ready twice' check, gradient timing stable.
+# Memory: ~67 GB vs ~94 GB with backbone with_cp=False.
+static_graph = True
 backbone_fp16 = True
 
 # ========= model config ===============
@@ -269,8 +270,8 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp=False,  # with_cp=True causes DDP crash (N images x backbone
-        # shared params x checkpoint = 'marked ready twice')
+        with_cp=True,   # use_reentrant=False patched in mmcv on remote
+        # static_graph=True handles multiple-image checkpoint without crash.
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
