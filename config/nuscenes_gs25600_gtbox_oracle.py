@@ -260,7 +260,11 @@ train_dataset_config = dict(
 
 model = dict(
     img_backbone_out_indices=[0, 1, 2, 3],
-    history_no_grad=False,
+    # history_no_grad=True: run the 3 history frames' encoder under no_grad
+    # (only the current frame keeps autograd). Saves ~75% of encoder activation
+    # memory. temporal_encoder still receives all 4 frames -> no accuracy impact.
+    # This is the memory fix since with_cp=True crashes spconv at iter 1.
+    history_no_grad=True,
     img_backbone=dict(
         _delete_=True,
         type='ResNet',
