@@ -191,11 +191,10 @@ frozen_modules = ['map_decoder', 'planner_head']
 # temporal_encoder builds 3 refine modules but only the last one's dynamic head
 # is rendered/supervised → the other 2 dynamic heads are unused → need True.
 find_unused_parameters = True
-# static_graph=False: avoids DDP all-reduce timing issue that caused spconv
-# empty-voxel crash under static_graph=True.
-# backbone with_cp=True is safe: mmcv ResNet patched to use_reentrant=False
-# on remote -> non-reentrant never triggers 'marked ready twice', so
-# static_graph=False is sufficient. Saves ~20 GB vs backbone with_cp=False.
+# static_graph=False + all with_cp=False: the only stable DDP config.
+# with_cp=True (backbone/encoder/temporal) all cause 'marked ready twice'
+# in this multi-image + DynamicLoss setup. ~94-96 GB memory; CPU cdist fix
+# (ba302e0) eliminates fragmentation so OOM does not occur.
 static_graph = False
 backbone_fp16 = True
 
@@ -271,8 +270,8 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp=True,   # use_reentrant=False patched in mmcv on remote
-        # static_graph=True handles multiple-image checkpoint without crash.
+        with_cp=False,  # with_cp=True causes 'marked ready twice' regardless of
+        # reentrant mode (24 images share backbone params -> DDP double mark).
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
