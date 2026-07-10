@@ -301,7 +301,7 @@ class PhysicsLoss(BaseLoss):
 
     def _velocity_target(self, offset, box_idx, dyn_mask, gt_boxes,
                          ego_fut_trajs=None):
-        """MSE(offset, ego-compensated GT-box trajectory), masked to dynamic gaussians.
+        """Smooth-L1(offset, ego-compensated GT-box trajectory), masked to dynamic gaussians.
 
         Corrected target per gaussian g at step t:
             target[b,g,t] = v_box*(t+1)*dt - ego_cumdisp[b,t]
@@ -310,8 +310,13 @@ class PhysicsLoss(BaseLoss):
         Subtracting ego displacement converts from world-relative object velocity
         to ego-relative: a static object (v_box=0) will have offset=-ego_disp.
 
+        Uses SMOOTH-L1 (Huber, beta=1m) instead of MSE: the per-element gradient
+        is bounded to +/-1, so a large target (a fast car 3 s out can be ~30 m)
+        no longer explodes the gradient at iter 0 (MSE gave loss~24, grad~1.7e4).
+        This removes the need for a warmup on loss_vel.
+
         Uses a MULTIPLICATIVE mask over the FULL offset tensor so the autograd
-        graph is identical every iteration.
+        graph is identical every iteration (static_graph=True compatible).
         """
         with torch.no_grad():
             B, G = box_idx.shape
@@ -322,8 +327,6 @@ class PhysicsLoss(BaseLoss):
             # so w=0 and the loss is 0 regardless of target. Safe to skip gather.
             if gt_boxes.shape[1] > 0:
                 bi = box_idx.clamp(0, gt_boxes.shape[1] - 1)                  # (B, G)
-                # .contiguous() on the gather index avoids a non-contiguous
-                # expanded-index path that can trip CUDA on some spconv builds.
                 idx = bi.unsqueeze(-1).expand(B, G, 2).contiguous()          # (B, G, 2)
                 v_box = torch.gather(
                     gt_boxes[..., 7:9].contiguous(), 1, idx)                   # (B, G, 2)
@@ -335,12 +338,17 @@ class PhysicsLoss(BaseLoss):
             # ego_fut_trajs: (B, 6, 2) per-step → cumsum gives cumulative disp.
             if ego_fut_trajs is not None:
                 ego = ego_fut_trajs.to(offset.device).float()                  # (B, 6, 2)
+                if ego.dim() == 2:
+                    ego = ego[None]                                            # (1, 6, 2)
                 ego_cumdisp = ego.cumsum(dim=1)                                # (B, 6, 2)
                 target = target - ego_cumdisp[:, None, :, :]                   # broadcast (B,G,6,2)
             w = dyn_mask.float()[:, :, None]                                   # (B,G,1) const
             denom = w.sum() * offset.shape[2] + 1e-6
-        sq_err = (offset - target).pow(2).sum(-1)                             # (B,G,6) grad→offset
-        return (w * sq_err).sum() / denom
+        # Smooth-L1 per element (beta=1.0), summed over the xy dim -> (B,G,6).
+        # Bounded gradient (|grad|<=1) prevents the MSE explosion on large targets.
+        err = torch.nn.functional.smooth_l1_loss(
+            offset, target, reduction='none', beta=1.0).sum(-1)              # (B,G,6) grad→offset
+        return (w * err).sum() / denom
 
     def _rigid_variance(self, offset, box_idx, dyn_mask):
         """Mean per-box variance of offset over gaussians inside each moving box.
