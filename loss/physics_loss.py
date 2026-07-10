@@ -344,6 +344,11 @@ class PhysicsLoss(BaseLoss):
                 v_box = torch.stack([v_all[b][bi[b]] for b in range(B)], dim=0)  # (B, G, 2)
             else:
                 v_box = torch.zeros(B, G, 2, device=offset.device)
+            # Sanitize GT velocity: nan/inf here -> nan target -> nan loss.
+            # Even with warmup total*0, nan*0=nan poisons the gradient -> NaN
+            # weights -> iter-1 gaussians become NaN -> warp_anchor valid_mask
+            # all-False -> temporal_encoder gets 0 anchors -> spconv empty crash.
+            v_box = torch.nan_to_num(v_box, nan=0.0, posinf=0.0, neginf=0.0)
             target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B,G,6,2)
             # Ego compensation: subtract GT cumulative ego displacement so that
             # offset is supervised in the EGO-RELATIVE frame.
@@ -352,8 +357,12 @@ class PhysicsLoss(BaseLoss):
                 ego = ego_fut_trajs.to(offset.device).float()                  # (B, 6, 2)
                 if ego.dim() == 2:
                     ego = ego[None]                                            # (1, 6, 2)
+                ego = torch.nan_to_num(ego, nan=0.0, posinf=0.0, neginf=0.0)
                 ego_cumdisp = ego.cumsum(dim=1)                                # (B, 6, 2)
                 target = target - ego_cumdisp[:, None, :, :]                   # broadcast (B,G,6,2)
+            # Clamp target to a sane displacement range (m) as a final guard.
+            target = torch.nan_to_num(target, nan=0.0, posinf=0.0, neginf=0.0)
+            target = target.clamp(-100.0, 100.0)
             w = dyn_mask.float()[:, :, None]                                   # (B,G,1) const
             denom = w.sum() * offset.shape[2] + 1e-6
         # Smooth-L1 per element (beta=1.0), summed over the xy dim -> (B,G,6).
