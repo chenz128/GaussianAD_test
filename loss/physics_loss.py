@@ -166,8 +166,14 @@ class PhysicsLoss(BaseLoss):
                 if not sel.any():
                     continue
                 idx = sel.nonzero(as_tuple=False).squeeze(1)      # (k,)
-                dist = torch.cdist(means[b, idx], sx[b])          # (k, N)
-                nn_dist, nn_idx = dist.min(dim=1)                 # (k,)
+                # CPU cdist: k~50, N=3000. Avoids repeated ~1MB GPU allocs that
+                # fragment the CUDA reserved pool and trigger OOM at iter 250.
+                m_cpu = means[b, idx].detach().float().cpu()       # (k, 3)
+                s_cpu = sx[b].float().cpu()                        # (N, 3)
+                dist_cpu = torch.cdist(m_cpu, s_cpu)              # (k, N) on CPU
+                nn_dist_cpu, nn_idx_cpu = dist_cpu.min(dim=1)     # (k,) on CPU
+                nn_idx = nn_idx_cpu.to(means.device)
+                nn_dist = nn_dist_cpu.to(means.device)
                 nn_lbl = sl[b][nn_idx]                            # (k,)
                 movable = torch.zeros_like(nn_lbl, dtype=torch.bool)
                 ok = (nn_lbl >= 0) & (nn_lbl < lut.numel())
