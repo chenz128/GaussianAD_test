@@ -126,8 +126,18 @@ class GaussianHead(BaseTaskHead):
         means = gaussian.means
         means_fut = means[...,None,:] + offset
         pred_flow = []
-        cmd = metas['ego_fut_cmd'].argmax(dim=-1)
-        planner_res = kwargs['ego_fut_preds'].cumsum(dim=1)[0,cmd,...]
+        # Ego motion for occ_flow: use the GT ego trajectory, NOT the planner
+        # prediction. planner_head is frozen (random init) in this oracle
+        # experiment, so ego_fut_preds is garbage. GT ego keeps offset's world
+        # frame consistent with PhysicsLoss.loss_vel (target = v_box*t, no ego).
+        ego_gt = metas['ego_fut_trajs']
+        if not torch.is_tensor(ego_gt):
+            ego_gt = torch.as_tensor(ego_gt)
+        ego_gt = ego_gt.to(offset.device).float()        # (B, 6, 2) per-step
+        if ego_gt.dim() == 2:
+            ego_gt = ego_gt[None]                         # (1, 6, 2)
+        ego_gt = torch.nan_to_num(ego_gt, nan=0.0, posinf=0.0, neginf=0.0)
+        planner_res = ego_gt.cumsum(dim=1)                # (1, 6, 2) cumulative
         planner_res = torch.cat((planner_res, torch.zeros(*planner_res.shape[:-1],1).to(planner_res.device)), dim=-1)
         for i in range(6):
             origi_opa, opacities, scales, CovInv = gs
@@ -135,7 +145,7 @@ class GaussianHead(BaseTaskHead):
             mean_single = mean_single - planner_res[:,i:i+1,:]
             mean_single, mask, valid = self.get_filtered_lidar(mean_single[0])
 
-            if not valid:
+            if not valid:#valid来自于get_filtered_lidar函数，表示当前帧的预测点云是否在范围内，如果不在范围内，则将mean_single设置为原始的means，并将flow_valid_flag设置为0，表示该帧的预测流无效。
                 mean_single = means
                 metas['flow_info'][0][i]['flow_valid_flag'] = 0
             else:

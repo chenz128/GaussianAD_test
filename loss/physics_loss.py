@@ -350,17 +350,12 @@ class PhysicsLoss(BaseLoss):
             # all-False -> temporal_encoder gets 0 anchors -> spconv empty crash.
             v_box = torch.nan_to_num(v_box, nan=0.0, posinf=0.0, neginf=0.0)
             target = v_box[:, :, None, :] * tmul[None, None, :, None]          # (B,G,6,2)
-            # Ego compensation: subtract GT cumulative ego displacement so that
-            # offset is supervised in the EGO-RELATIVE frame.
-            # ego_fut_trajs: (B, 6, 2) per-step → cumsum gives cumulative disp.
-            if ego_fut_trajs is not None:
-                ego = ego_fut_trajs.to(offset.device).float()                  # (B, 6, 2)
-                if ego.dim() == 2:
-                    ego = ego[None]                                            # (1, 6, 2)
-                ego = torch.nan_to_num(ego, nan=0.0, posinf=0.0, neginf=0.0)
-                ego_cumdisp = ego.cumsum(dim=1)                                # (B, 6, 2)
-                target = target - ego_cumdisp[:, None, :, :]                   # broadcast (B,G,6,2)
-            # Clamp target to a sane displacement range (m) as a final guard.
+            # offset is defined in the WORLD frame: forward_flow (gaussian_head)
+            # subtracts the GT ego displacement separately to build occ_flow in
+            # the future-ego frame. So the vel target is the PURE object world
+            # displacement v_box*t -- NO ego term here. Adding ego would
+            # double-count (forward_flow already removes it) and make offset
+            # regress to an ego-relative quantity instead of pure motion.
             target = torch.nan_to_num(target, nan=0.0, posinf=0.0, neginf=0.0)
             target = target.clamp(-100.0, 100.0)
             w = dyn_mask.float()[:, :, None]                                   # (B,G,1) const
