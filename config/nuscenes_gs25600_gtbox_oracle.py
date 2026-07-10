@@ -134,10 +134,9 @@ loss = dict(
             static_w=2.0,
             smooth_w=20.0,
             rigid_w=10.0,
-            # v4 feature: positive velocity supervision (GT box velocity, ego
-            # compensated). smooth_l1 bounds gradient; warmup zeros physics for
-            # 2 epochs (graph stays constant via total*0 -> static_graph=True OK).
-            vel_w=1.0,
+            # DIAGNOSTIC: vel_w=0 temporarily to isolate whether the iter-1
+            # spconv crash comes from loss_vel or from static_graph+with_cp DDP.
+            vel_w=0.0,
             warmup_epoch=2,
             use_gt_box=True,
             v_thresh=0.5,
