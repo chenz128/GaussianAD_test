@@ -147,6 +147,17 @@ class GaussianHead(BaseTaskHead):
 
             if not valid:#valid来自于get_filtered_lidar函数，表示当前帧的预测点云是否在范围内，如果不在范围内，则将mean_single设置为原始的means，并将flow_valid_flag设置为0，表示该帧的预测流无效。
                 mean_single = means
+                # gs tensors carry the extra empty gaussian (G+1); means is the
+                # raw G gaussians. The valid branch drops the empty via mask
+                # (indices 0..G-1 never select it), so match that here by
+                # slicing gs to G — otherwise reshape(bs, G) on a G+1 tensor
+                # crashes. This fallback is only hit when GT-ego motion pushes
+                # all gaussians out of the grid (frozen-planner ego~0 never did).
+                g0 = means.shape[1]
+                origi_opa = origi_opa[:, :g0]
+                opacities = opacities[:, :g0]
+                scales = scales[:, :g0]
+                CovInv = CovInv[:, :g0]
                 metas['flow_info'][0][i]['flow_valid_flag'] = 0
             else:
                 origi_opa = origi_opa.squeeze(0)[mask].unsqueeze(0)
