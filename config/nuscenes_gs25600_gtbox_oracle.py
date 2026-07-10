@@ -268,7 +268,9 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=False),
         norm_eval=True,
         style='caffe',
-        with_cp=False,
+        with_cp=True,   # mmcv ResNet patched to use_reentrant=False on remote
+        # -> non-reentrant, no 'marked ready twice', safe with static_graph=False
+        # saves ~30 GB vs with_cp=False (24 images * multi-stage activations)
         dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
         stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
