@@ -263,17 +263,30 @@ class PhysicsLoss(BaseLoss):
             loss_vel = self.vel_w * self._velocity_target(
                 offset, box_idx, gt_dyn_mask, gt_boxes, ego_fut_trajs)
 
-        total = loss_static + loss_smooth + loss_rigid + loss_vel
-
-        # v3-style warmup: during the first ``warmup_epoch`` epochs, ZERO the
-        # physics gradient (total * 0). At iter 0 the gaussians are randomly
-        # placed, so an immediate physics gradient (esp. loss_vel/loss_rigid)
-        # explodes grad_norm (~4.5k) and pushes gaussians out of the pc_range,
-        # making the temporal_encoder receive 0 anchors -> spconv empty crash.
-        # Multiplying by 0 (instead of skipping) keeps the graph constant so
-        # static_graph=True + backbone with_cp=True stay valid.
-        if (current_epoch is not None and current_epoch < self.warmup_epoch):
-            total = total * 0.0
+        # Plan A selective warmup: during the first ``warmup_epoch`` epochs,
+        # keep the SUPPRESSIVE terms (loss_static, loss_smooth) active from
+        # epoch 0 while zeroing only the DRIVING terms (loss_rigid, loss_vel).
+        #
+        # Rationale: previously the ENTIRE physics loss was multiplied by 0
+        # during warmup, so offset was left completely unconstrained and grew
+        # (via OccFlowLoss) to ~24m by the end of warmup. When physics turned
+        # on at epoch 2 as a step function, loss_static = static_w * mean(24^2)
+        # ~= 700-920, a massive gradient shock into the shared encoder that
+        # collapsed mIoU. Keeping loss_static/loss_smooth on from epoch 0 pins
+        # the (>99%) static gaussians near zero offset throughout warmup, so it
+        # never blows up and there is no shock when vel/rigid activate.
+        #
+        # The iter-0 crash the old warmup guarded against was caused by the
+        # DRIVING terms (loss_vel with large GT-velocity targets, loss_rigid
+        # variance) on randomly-placed gaussians -- exactly the terms still
+        # zeroed here. loss_static/loss_smooth are bounded (offset^2, tiny at
+        # iter 0: ~0.9 / ~0.1) and safe. Using a python float 0/1 scale keeps
+        # the graph constant so static_graph=True + backbone with_cp=True stay
+        # valid.
+        in_warmup = (current_epoch is not None
+                     and current_epoch < self.warmup_epoch)
+        drive_scale = 0.0 if in_warmup else 1.0
+        total = loss_static + loss_smooth + (loss_rigid + loss_vel) * drive_scale
 
         # Diagnostics
         self._diag_counter += 1
