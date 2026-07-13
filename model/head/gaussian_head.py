@@ -105,7 +105,12 @@ class GaussianHead(BaseTaskHead):
         mask_y = (means3D_int[:, 1] >= 0) & (means3D_int[:, 1] < 120)
         mask_z = (means3D_int[:, 2] >= 0) & (means3D_int[:, 2] < 8)
         mask = mask_x & mask_y & mask_z
-        mask = torch.nonzero(mask).squeeze()
+        # squeeze(-1) not squeeze(): when exactly ONE gaussian is in the grid,
+        # nonzero returns (1,1) and squeeze() collapses it to a 0-d scalar ->
+        # len(mask) raises "len() of a 0-d tensor". squeeze(-1) keeps it 1-D
+        # for any count (0, 1, or many). Edge case exposed by GT-ego motion
+        # pushing almost all gaussians out of the grid.
+        mask = torch.nonzero(mask).squeeze(-1)
         valid = True
         if len(mask) == 0:
             valid = False
