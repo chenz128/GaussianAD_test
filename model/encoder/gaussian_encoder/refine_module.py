@@ -25,11 +25,20 @@ class SparseGaussian3DRefinementModule(BaseModule):
         semantics_activation='softmax',
         offset_dim=2*6,
         use_dynamic=False,
+        decouple_offset=False,
     ):
         super(SparseGaussian3DRefinementModule, self).__init__()
         self.embed_dims = embed_dims
         self.xyz_coordinate = xyz_coordinate
         self.use_dynamic = use_dynamic
+        # When True, the returned offset is produced by a dedicated head that
+        # reads a DETACHED copy of the shared feature. This isolates the offset
+        # (and therefore all PhysicsLoss / OccFlowLoss-via-offset gradients)
+        # from the encoder: those gradients train only self.offset_layers and
+        # never flow back into instance_feature. The occupancy semantics stay
+        # clean (no kinematic pollution). Offset is still fully supervised via
+        # its own head. See docs: gtbox_oracle v6 decoupling.
+        self.decouple_offset = decouple_offset
 
         if semantics:
             assert semantic_dim is not None
@@ -71,6 +80,14 @@ class SparseGaussian3DRefinementModule(BaseModule):
                 *linear_relu_ln(embed_dims, 1, 1),
                 nn.Linear(self.embed_dims, 1))
 
+        # Dedicated offset head (decoupled). Same small-branch pattern as
+        # dynamic_layers, but its input feature is detached in forward so the
+        # offset gradient never reaches the encoder.
+        if self.decouple_offset and self.offset_dim > 0:
+            self.offset_layers = nn.Sequential(
+                *linear_relu_ln(embed_dims, 1, 1),
+                nn.Linear(self.embed_dims, self.offset_dim))
+
     def forward(
         self,
         instance_feature: torch.Tensor,
@@ -81,6 +98,10 @@ class SparseGaussian3DRefinementModule(BaseModule):
         feat = instance_feature + anchor_embed
         output = self.layers(feat)
         dynamic_logits = self.dynamic_layers(feat) if self.use_dynamic else None
+        # Decoupled offset: read a DETACHED feature so its gradient stops at the
+        # offset head and never pollutes the encoder. Masked at the end to match
+        # the (masked) output layout, mirroring dynamic_logits.
+        offset_decoupled = self.offset_layers(feat.detach()) if self.decouple_offset else None
 
         if self.restrict_xyz:
             delta_xyz_sigmoid = output[..., :3]
@@ -146,7 +167,12 @@ class SparseGaussian3DRefinementModule(BaseModule):
             semantics_logits=semantics_logits,
             dynamic_logits=dynamic_logits,
         )
-        offset = output[..., -self.offset_dim:]
+        if self.decouple_offset:
+            offset = offset_decoupled
+            if mask is not None:
+                offset = offset[mask].unsqueeze(0)
+        else:
+            offset = output[..., -self.offset_dim:]
         return output, gaussian, offset
 
     def get_gaussian(self, output):
