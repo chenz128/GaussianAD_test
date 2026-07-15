@@ -34,13 +34,15 @@ except ImportError:
 
 
 def load_future(path):
-    """load *_future.npz -> (offset (A,6,2), planner (6,2), pred_cls (A,)) or None."""
+    """load *_future.npz -> (offset, planner, pred_cls, gt_ego_or_None) or None."""
     if not os.path.exists(path):
         return None
     d = np.load(path)
+    gt_ego = d['gt_ego'].astype(np.float32) if 'gt_ego' in d else None
     return (d['offset'].astype(np.float32),
             d['planner'].astype(np.float32),
-            d['pred_cls'].astype(np.int64))
+            d['pred_cls'].astype(np.int64),
+            gt_ego)
 
 
 def motion_score(future_path):
@@ -68,7 +70,7 @@ def motion_score(future_path):
 
 
 def future_positions(means, offset, planner, ego_comp=True, amplify=1.0,
-                     extrap=0):
+                     extrap=0, gt_ego=None, use_gt_ego=False):
     """return list of (7+extrap) (A,3) arrays: [current, f0..f5, e0..e{extrap-1}].
 
     amplify scales the per-gaussian offset (object motion) so tiny predicted
@@ -79,6 +81,9 @@ def future_positions(means, offset, planner, ego_comp=True, amplify=1.0,
     last predicted per-gaussian velocity constant. The ego planner is extended
     the same way (const last ego velocity). This is pure extrapolation, so the
     extra frames are less reliable and are labeled '(extrap)' in the slider.
+
+    use_gt_ego: if True and gt_ego is provided, use GT ego trajectory for ego
+    compensation instead of model-predicted planner (which is often near-zero).
     """
     A = means.shape[0]
     off3 = np.concatenate([offset, np.zeros((A, 6, 1), np.float32)], axis=-1)  # (A,6,3)
@@ -95,6 +100,16 @@ def future_positions(means, offset, planner, ego_comp=True, amplify=1.0,
         off3 = np.concatenate([off3, ext_off], axis=1)   # (A,6+extrap,3)
         pl3 = np.concatenate([pl3, ext_pl], axis=0)      # (6+extrap,3)
 
+    # choose ego compensation source: GT ego (cumulative, lidar frame) or predicted planner
+    if use_gt_ego and gt_ego is not None:
+        # gt_ego: (6,2) cumulative per-step; extend for extrap frames
+        gt3 = np.concatenate([gt_ego, np.zeros((gt_ego.shape[0], 1), np.float32)], axis=-1)  # (6,3)
+        if extrap > 0:
+            ve_gt = gt3[5] - gt3[4]
+            ext_gt = np.stack([gt3[5] + (k + 1) * ve_gt for k in range(extrap)], axis=0)
+            gt3 = np.concatenate([gt3, ext_gt], axis=0)  # (6+extrap, 3)
+        pl3 = gt3  # override planner with GT ego
+
     nfut = off3.shape[1]
     steps = [means.copy()]
     for i in range(nfut):
@@ -107,12 +122,13 @@ def future_positions(means, offset, planner, ego_comp=True, amplify=1.0,
 
 def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
                exclude_cls=None, max_ellip=1200, ellip_res=6, point_size=2.0,
-               dyn_thr=0.0, ego_comp=True, amplify=1.0, extrap=0):
+               dyn_thr=0.0, ego_comp=True, amplify=1.0, extrap=0,
+               use_gt_ego=False):
     means, scales, rots, opas, pred, dyn = load_attr(attr_path)
     fut = load_future(future_path)
     if fut is None:
         raise FileNotFoundError(f'missing future npz: {future_path}')
-    offset, planner, _ = fut
+    offset, planner, _, gt_ego_loaded = fut
     assert offset.shape[0] == means.shape[0], \
         f'offset A={offset.shape[0]} != means A={means.shape[0]}'
     cmap = get_nuscenes_colormap()
@@ -127,7 +143,8 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     has_dyn = d is not None
 
     steps = future_positions(m, off, pl, ego_comp=ego_comp, amplify=amplify,
-                             extrap=extrap)  # (7+extrap) x (Nkeep,3)
+                             extrap=extrap, gt_ego=gt_ego_loaded,
+                             use_gt_ego=use_gt_ego)  # (7+extrap) x (Nkeep,3)
     T = len(steps)
 
     # ellipsoid selection (subsample for size/perf)
@@ -301,7 +318,9 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
             xaxis=dict(title='x (forward)', range=xr),
             yaxis=dict(title='y (left)', range=yr),
             zaxis=dict(title='z (up)', range=zr),
-            aspectmode='data', bgcolor='white'),
+            aspectmode='cube', bgcolor='white'),
+            # 'cube': all 3 axes get the same visual length, preventing z from
+            # being squashed to a thin pancake (z~4m vs x/y~60m with 'data' mode).
         title=os.path.basename(out_html) + '  (Play=future frames, drag=rotate)'
               + amp_txt + ext_txt,
         margin=dict(l=0, r=0, t=30, b=40),
@@ -330,6 +349,9 @@ if __name__ == '__main__':
                     help='linearly extrapolate N frames beyond the model 6 (3s)')
     ap.add_argument('--no-ego-comp', action='store_true',
                     help='do NOT subtract ego motion (show raw means+offset)')
+    ap.add_argument('--use-gt-ego', action='store_true',
+                    help='use GT ego_fut_trajs for ego compensation instead of '
+                         'model-predicted planner (which is often ~0 when planner head is poor)')
     ap.add_argument('--suffix', type=str, default='_future_anim')
     ap.add_argument('--scan', action='store_true',
                     help='only print motion score per frame, pick best sample')
@@ -362,4 +384,5 @@ if __name__ == '__main__':
                    exclude_cls=args.exclude_cls, max_ellip=args.max_ellip,
                    ellip_res=args.ellip_res, point_size=args.point_size,
                    dyn_thr=args.dyn_thr, ego_comp=not args.no_ego_comp,
-                   amplify=args.amplify, extrap=args.extrap_frames)
+                   amplify=args.amplify, extrap=args.extrap_frames,
+                   use_gt_ego=args.use_gt_ego)
