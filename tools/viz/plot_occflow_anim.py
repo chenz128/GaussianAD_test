@@ -108,7 +108,17 @@ def main():
     fig.add_trace(make_trace(pred_steps[0], 'pred', True))
     fig.add_trace(make_trace(gt_steps[0], 'gt', False))
 
-    # frames: each frame updates BOTH traces (pred + gt) for that time step
+    # frames: each frame updates BOTH traces (pred + gt) for that time step.
+    # Lock the scene (fixed range + manual aspectratio) in every frame so Plotly
+    # never auto-rescales / re-derives the box shape during playback.
+    dxyz = [rng[i][1] - rng[i][0] for i in range(3)]
+    dmax = max(dxyz)
+    aspect = dict(x=dxyz[0] / dmax, y=dxyz[1] / dmax, z=dxyz[2] / dmax)
+    fixed_scene = dict(
+        xaxis=dict(range=rng[0], autorange=False),
+        yaxis=dict(range=rng[1], autorange=False),
+        zaxis=dict(range=rng[2], autorange=False),
+        aspectmode='manual', aspectratio=aspect)
     frames = []
     for t in range(nsteps):
         px, py, pz, pcol = scatter_for(xyz, pred_steps[t], args.only_movable, args.point_size)
@@ -116,7 +126,7 @@ def main():
         frames.append(go.Frame(name=str(t), data=[
             dict(type='scatter3d', x=px, y=py, z=pz, marker=dict(size=args.point_size, color=pcol, opacity=1.0)),
             dict(type='scatter3d', x=gx, y=gy, z=gz, marker=dict(size=args.point_size, color=gcol, opacity=1.0)),
-        ]))
+        ], layout=go.Layout(scene=fixed_scene)))
     fig.frames = frames
 
     steps = []
@@ -157,10 +167,10 @@ def main():
         sliders=[dict(active=0, steps=steps, x=0.15, len=0.7,
                       currentvalue=dict(prefix='t = '))],
         scene=dict(
-            xaxis=dict(range=rng[0], title='x (m)'),
-            yaxis=dict(range=rng[1], title='y (m)'),
-            zaxis=dict(range=rng[2], title='z (m)'),
-            aspectmode='data'),
+            xaxis=dict(range=rng[0], title='x (m)', autorange=False),
+            yaxis=dict(range=rng[1], title='y (m)', autorange=False),
+            zaxis=dict(range=rng[2], title='z (m)', autorange=False),
+            aspectmode='manual', aspectratio=aspect),
         margin=dict(l=0, r=0, t=40, b=0),
     )
 
