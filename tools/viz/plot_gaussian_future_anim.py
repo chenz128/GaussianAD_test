@@ -245,12 +245,18 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     for tr, vs in zip(fig.data, vis_sem):
         tr.visible = True if vs else False
 
-    # fixed axis ranges so scene doesn't rescale during playback
-    allpos = np.concatenate(steps, axis=0)
-    pad = 2.0
-    xr = [float(allpos[:, 0].min() - pad), float(allpos[:, 0].max() + pad)]
-    yr = [float(allpos[:, 1].min() - pad), float(allpos[:, 1].max() + pad)]
-    zr = [float(allpos[:, 2].min() - pad), float(allpos[:, 2].max() + pad)]
+    # fixed axis ranges so scene doesn't rescale during playback.
+    # Use only the t=0 frame (steps[0]) with percentile clipping so that
+    # amplified future offsets (which can reach tens of metres) don't blow
+    # up the axis range and shrink the visible scene to a tiny dot.
+    init_pos = steps[0]  # (N, 3) positions at t=0
+    pad = 5.0
+    xr = [float(np.percentile(init_pos[:, 0],  1) - pad),
+          float(np.percentile(init_pos[:, 0], 99) + pad)]
+    yr = [float(np.percentile(init_pos[:, 1],  1) - pad),
+          float(np.percentile(init_pos[:, 1], 99) + pad)]
+    zr = [float(init_pos[:, 2].min() - 2.0),
+          float(init_pos[:, 2].max() + 2.0)]
 
     play_menu = dict(
         type='buttons', direction='left', x=0.0, y=0.0,
