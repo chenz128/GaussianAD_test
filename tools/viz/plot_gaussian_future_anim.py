@@ -275,6 +275,19 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     zr = [float(init_pos[:, 2].min() - 2.0),
           float(init_pos[:, 2].max() + 2.0)]
 
+    # Lock scene range in every frame so Plotly never auto-rescales axes.
+    fixed_scene = dict(
+        xaxis=dict(range=xr, autorange=False),
+        yaxis=dict(range=yr, autorange=False),
+        zaxis=dict(range=zr, autorange=False),
+        aspectmode='data', bgcolor='white')
+    locked_frames = []
+    for f in frames:
+        locked_frames.append(go.Frame(
+            name=f.name, data=f.data,
+            layout=go.Layout(scene=fixed_scene)))
+    frames = locked_frames
+
     play_menu = dict(
         type='buttons', direction='left', x=0.0, y=0.0,
         xanchor='left', yanchor='top', pad=dict(l=4, r=4, t=6, b=4),
@@ -315,9 +328,9 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     ext_txt = ('  [+%d extrap frames]' % extrap) if extrap > 0 else ''
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title='x (forward)', range=xr),
-            yaxis=dict(title='y (left)', range=yr),
-            zaxis=dict(title='z (up)', range=zr),
+            xaxis=dict(title='x (forward)', range=xr, autorange=False),
+            yaxis=dict(title='y (left)', range=yr, autorange=False),
+            zaxis=dict(title='z (up)', range=zr, autorange=False),
             aspectmode='data', bgcolor='white'),
             # 'data': 1 metre = same visual length on all 3 axes -> gaussian shapes
             # are rendered with correct proportions (no distortion).
