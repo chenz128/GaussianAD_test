@@ -59,7 +59,7 @@ def motion_score(future_path):
     f = load_future(future_path)
     if f is None:
         return -1.0
-    offset, planner, pred_cls = f
+    offset, planner, pred_cls = f[0], f[1], f[2]
     med = np.median(offset, axis=0, keepdims=True)       # (1,6,2) global drift
     res = offset - med                                   # (A,6,2) per-object
     mag = np.linalg.norm(res, axis=-1).max(axis=-1)      # (A,) max over 6 frames
