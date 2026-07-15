@@ -123,7 +123,7 @@ def future_positions(means, offset, planner, ego_comp=True, amplify=1.0,
 def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
                exclude_cls=None, max_ellip=1200, ellip_res=6, point_size=2.0,
                dyn_thr=0.0, ego_comp=True, amplify=1.0, extrap=0,
-               use_gt_ego=False):
+               use_gt_ego=False, no_points=False):
     means, scales, rots, opas, pred, dyn = load_attr(attr_path)
     fut = load_future(future_path)
     if fut is None:
@@ -202,12 +202,13 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
         builders.append(verts_at)
 
     # semantic scatter (per class)
-    for cls in sem_classes:
-        sel = p == cls
-        scatter_pts(sel, rgb_str(cmap[cls]),
-                    '%d %s (%d)' % (cls, OCC_LABELS[cls], int(sel.sum())), 'sem')
+    if not no_points:
+        for cls in sem_classes:
+            sel = p == cls
+            scatter_pts(sel, rgb_str(cmap[cls]),
+                        '%d %s (%d)' % (cls, OCC_LABELS[cls], int(sel.sum())), 'sem')
     # dynamic/static scatter
-    if has_dyn:
+    if has_dyn and not no_points:
         is_dyn = d > dyn_thr
         scatter_pts(~is_dyn, rgb_str((0.20, 0.40, 0.95)),
                     'static (%d)' % int((~is_dyn).sum()), 'dyn')
@@ -366,6 +367,9 @@ if __name__ == '__main__':
     ap.add_argument('--max-ellip', type=int, default=1200)
     ap.add_argument('--ellip-res', type=int, default=6)
     ap.add_argument('--point-size', type=float, default=2.0)
+    ap.add_argument('--no-points', action='store_true',
+                    help='hide the per-gaussian-center scatter layer, keep only '
+                         'ellipsoids (+ego marker)')
     ap.add_argument('--dyn-thr', type=float, default=0.0)
     ap.add_argument('--amplify', type=float, default=1.0,
                     help='scale object offset for visibility (labeled in title)')
@@ -409,4 +413,4 @@ if __name__ == '__main__':
                    ellip_res=args.ellip_res, point_size=args.point_size,
                    dyn_thr=args.dyn_thr, ego_comp=not args.no_ego_comp,
                    amplify=args.amplify, extrap=args.extrap_frames,
-                   use_gt_ego=args.use_gt_ego)
+                   use_gt_ego=args.use_gt_ego, no_points=args.no_points)
