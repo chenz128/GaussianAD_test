@@ -275,12 +275,23 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     zr = [float(init_pos[:, 2].min() - 2.0),
           float(init_pos[:, 2].max() + 2.0)]
 
-    # Lock scene range in every frame so Plotly never auto-rescales axes.
+    # Explicit aspectratio (aspectmode='manual') so the 3D box shape is FULLY
+    # locked and cannot be recomputed from per-frame data. Ratio is proportional
+    # to the real metre spans -> keeps true 1m=1m proportions (same as 'data')
+    # but is immune to gl3d re-deriving the aspect from amplified/out-of-range
+    # gaussians during animation redraw.
+    dx = xr[1] - xr[0]
+    dy = yr[1] - yr[0]
+    dz = zr[1] - zr[0]
+    dmax = max(dx, dy, dz)
+    aspect = dict(x=dx / dmax, y=dy / dmax, z=dz / dmax)
+
+    # Lock scene range + aspect in every frame so Plotly never rescales axes.
     fixed_scene = dict(
         xaxis=dict(range=xr, autorange=False),
         yaxis=dict(range=yr, autorange=False),
         zaxis=dict(range=zr, autorange=False),
-        aspectmode='data', bgcolor='white')
+        aspectmode='manual', aspectratio=aspect, bgcolor='white')
     locked_frames = []
     for f in frames:
         locked_frames.append(go.Frame(
@@ -331,9 +342,9 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
             xaxis=dict(title='x (forward)', range=xr, autorange=False),
             yaxis=dict(title='y (left)', range=yr, autorange=False),
             zaxis=dict(title='z (up)', range=zr, autorange=False),
-            aspectmode='data', bgcolor='white'),
-            # 'data': 1 metre = same visual length on all 3 axes -> gaussian shapes
-            # are rendered with correct proportions (no distortion).
+            aspectmode='manual', aspectratio=aspect, bgcolor='white'),
+            # aspectmode='manual' + explicit aspectratio -> box shape fully locked,
+            # true metre proportions, immune to per-frame data-driven rescaling.
         title=os.path.basename(out_html) + '  (Play=future frames, drag=rotate)'
               + amp_txt + ext_txt,
         margin=dict(l=0, r=0, t=30, b=40),
