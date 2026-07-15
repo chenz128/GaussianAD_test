@@ -318,9 +318,9 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
             xaxis=dict(title='x (forward)', range=xr),
             yaxis=dict(title='y (left)', range=yr),
             zaxis=dict(title='z (up)', range=zr),
-            aspectmode='cube', bgcolor='white'),
-            # 'cube': all 3 axes get the same visual length, preventing z from
-            # being squashed to a thin pancake (z~4m vs x/y~60m with 'data' mode).
+            aspectmode='data', bgcolor='white'),
+            # 'data': 1 metre = same visual length on all 3 axes -> gaussian shapes
+            # are rendered with correct proportions (no distortion).
         title=os.path.basename(out_html) + '  (Play=future frames, drag=rotate)'
               + amp_txt + ext_txt,
         margin=dict(l=0, r=0, t=30, b=40),
