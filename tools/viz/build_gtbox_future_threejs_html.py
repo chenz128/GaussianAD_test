@@ -75,11 +75,19 @@ def load_occ(info, data_root, max_points):
     return rows.astype(np.float32).round(3).tolist()
 
 
-def build_data(info, index, data_root, max_tracks, min_motion, max_occ):
+def build_data(info, index, data_root, max_tracks, min_motion, max_occ,
+               all_dynamic=False):
     boxes, names, velocity, cum, cum_yaw, mask, extent, movable = get_track_arrays(info)
     speeds = np.linalg.norm(velocity, axis=1)
-    selected = np.flatnonzero(movable & mask.any(1) & (extent >= min_motion))
-    selected = selected[np.argsort(extent[selected])[::-1][:max_tracks]]
+    # Default: only readable, long moving tracks. --all-dynamic: every object
+    # whose current GT velocity is dynamic and that has at least one real
+    # future GT annotation. The latter is required: no future annotation means
+    # there is no GT trajectory and we must not fabricate a motion target.
+    if all_dynamic:
+        selected = np.flatnonzero((speeds > .5) & mask.any(1))
+    else:
+        selected = np.flatnonzero(movable & mask.any(1) & (extent >= min_motion))
+        selected = selected[np.argsort(extent[selected])[::-1][:max_tracks]]
     selected_set = set(selected.tolist())
     static_boxes, tracks = [], []
     for i, box in enumerate(boxes):
@@ -98,9 +106,18 @@ def build_data(info, index, data_root, max_tracks, min_motion, max_occ):
         tracks.append(dict(idx=int(i), name=str(names[i]), color=int(COLORS[local % len(COLORS)]),
                            dx=float(box[3]), dy=float(box[4]), dz=float(box[5]),
                            speed=float(speeds[i]), extent=float(extent[i]), frames=frames))
+    ego_step = np.nan_to_num(np.asarray(
+        info.get('gt_ego_fut_trajs', np.zeros((STEPS, 2))), dtype=np.float32
+    )).reshape(-1, 2)[:STEPS]
+    ego_cumulative = np.cumsum(ego_step, axis=0)
+    ego_frames = [dict(x=0.0, y=0.0)] + [
+        dict(x=float(x), y=float(y)) for x, y in ego_cumulative
+    ]
+    missing_future_dynamic = int(((speeds > .5) & ~mask.any(1)).sum())
     return dict(index=index, token=str(info.get('token', '')), scene=str(info.get('scene_name', '')),
                 pc_range=[-30, -30, -2, 30, 30, 2], occ=load_occ(info, data_root, max_occ),
-                boxes=static_boxes, tracks=tracks, n_boxes=int(len(boxes)))
+                boxes=static_boxes, tracks=tracks, ego_frames=ego_frames,
+                missing_future_dynamic=missing_future_dynamic, n_boxes=int(len(boxes)))
 
 
 TEMPLATE = r'''<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"/>
@@ -116,7 +133,7 @@ button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:5
 const DATA=__DATA__;const PAL=[[90,90,90],[255,120,50],[255,192,203],[255,255,0],[0,150,245],[0,255,255],[200,180,0],[255,0,0],[255,240,150],[135,60,0],[160,32,240],[255,0,255],[139,137,137],[75,0,75],[150,240,80],[230,230,250],[0,175,0]];
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x0d1117);const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,.1,2000);camera.up.set(0,0,1);camera.position.set(45,-45,40);const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(devicePixelRatio);document.body.appendChild(renderer.domElement);const orbit=new THREE.OrbitControls(camera,renderer.domElement);orbit.enableDamping=true;scene.add(new THREE.AmbientLight(0xffffff,.9));const light=new THREE.DirectionalLight(0xffffff,.6);light.position.set(1,1,2);scene.add(light);
 const grid=new THREE.GridHelper(60,20,0x30363d,0x21262d);grid.rotation.x=Math.PI/2;grid.position.z=-2;scene.add(grid);scene.add(new THREE.AxesHelper(4));
-const ego=new THREE.Mesh(new THREE.BoxGeometry(4.08,1.73,1.5),new THREE.MeshBasicMaterial({color:0xf0d000,transparent:true,opacity:.35}));ego.position.z=.75;scene.add(ego);const egoE=new THREE.LineSegments(new THREE.EdgesGeometry(ego.geometry),new THREE.LineBasicMaterial({color:0xf0d000}));egoE.position.copy(ego.position);scene.add(egoE);
+const egoGroup=new THREE.Group();const ego=new THREE.Mesh(new THREE.BoxGeometry(4.08,1.73,1.5),new THREE.MeshBasicMaterial({color:0xf0d000,transparent:true,opacity:.35}));ego.position.z=.75;egoGroup.add(ego);const egoE=new THREE.LineSegments(new THREE.EdgesGeometry(ego.geometry),new THREE.LineBasicMaterial({color:0xf0d000}));egoE.position.copy(ego.position);egoGroup.add(egoE);scene.add(egoGroup);const egoPts=DATA.ego_frames.map(f=>new THREE.Vector3(f.x,f.y,1.7));const egoGlow=new THREE.Line(new THREE.BufferGeometry().setFromPoints(egoPts),new THREE.LineBasicMaterial({color:0xf0d000,transparent:true,opacity:.25}));scene.add(egoGlow);const egoRay=new THREE.Line(new THREE.BufferGeometry().setFromPoints(egoPts),new THREE.LineBasicMaterial({color:0xf0d000}));scene.add(egoRay);
 const staticGroup=new THREE.Group(),trackGroup=new THREE.Group();scene.add(staticGroup);scene.add(trackGroup);const pick=[];
 // Split t=0 Occ into static background and object-local points. The latter are
 // transformed with their tracked GT box, so the visible occupancy moves too.
@@ -128,9 +145,9 @@ let occ=makePoints(backgroundOcc);if(occ)scene.add(occ);
 function makeBox(b,color,opacity=.12){const geo=new THREE.BoxGeometry(b.dx,b.dy,b.dz),mesh=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color,transparent:true,opacity}));const ed=new THREE.LineSegments(new THREE.EdgesGeometry(geo),new THREE.LineBasicMaterial({color}));const group=new THREE.Group();group.position.set(b.x,b.y,b.z);group.rotation.z=b.heading||b.yaw||0;group.add(mesh);group.add(ed);return {group,mesh}}
 DATA.boxes.forEach(b=>{const col=b.dynamic?0xf85149:0x3fb950;const o=makeBox(b,col);o.mesh.userData={box:b};pick.push(o.mesh);staticGroup.add(o.group)});
 const animated=[];DATA.tracks.forEach((t,i)=>{const first=Object.assign({},t.frames[0],t);const o=makeBox(first,t.color,.22);o.mesh.userData={box:t};pick.push(o.mesh);const movingOcc=makePoints(trackOcc[i],.42);if(movingOcc)o.group.add(movingOcc);trackGroup.add(o.group);animated.push({t,o});const pts=t.frames.map(f=>new THREE.Vector3(f.x,f.y,f.z+t.dz/2+.25));const glow=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:t.color,transparent:true,opacity:.25}));trackGroup.add(glow);const ray=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:t.color}));trackGroup.add(ray);const arr=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),pts[0],.8,t.color,.3,.2);trackGroup.add(arr)});
-function update(step){animated.forEach(({t,o})=>{const f=t.frames[step];o.group.position.set(f.x,f.y,f.z);o.group.rotation.z=f.yaw});document.getElementById('timeline').value=step;document.getElementById('time').textContent=step?`t=${step}（+${(step*.5).toFixed(1)}s）`:'t=0（当前）'}
+function update(step){animated.forEach(({t,o})=>{const f=t.frames[step];o.group.position.set(f.x,f.y,f.z);o.group.rotation.z=f.yaw});const egoF=DATA.ego_frames[step];egoGroup.position.set(egoF.x,egoF.y,0);document.getElementById('timeline').value=step;document.getElementById('time').textContent=step?`t=${step}（+${(step*.5).toFixed(1)}s）`:'t=0（当前）'}
 let timer=null;document.getElementById('timeline').oninput=e=>update(+e.target.value);document.getElementById('reset').onclick=()=>update(0);document.getElementById('play').onclick=()=>{if(timer){clearInterval(timer);timer=null;document.getElementById('play').textContent='▶ 播放';return}let s=+document.getElementById('timeline').value;timer=setInterval(()=>{s=(s+1)%7;update(s)},700);document.getElementById('play').textContent='⏸ 暂停'};
-document.getElementById('info').innerHTML=`<b>GT Box 真实未来轨迹</b><br>sample idx: ${DATA.index}<br>token: ${DATA.token.slice(0,12)}…<br>当前 GT box: <b>${DATA.n_boxes}</b><br>展示轨迹实例: <b>${DATA.tracks.length}</b><br>Occ 语义体素: <b>${DATA.occ.length}</b><br><span style="color:#8b949e">彩色实体 box 沿同一实例的未来 GT box 移动；同色光线是其中心轨迹。</span>`;
+document.getElementById('info').innerHTML=`<b>GT Box 真实未来轨迹</b><br>sample idx: ${DATA.index}<br>token: ${DATA.token.slice(0,12)}…<br>当前 GT box: <b>${DATA.n_boxes}</b><br>展示轨迹实例: <b>${DATA.tracks.length}</b><br>动态但无 future GT: <b>${DATA.missing_future_dynamic}</b><br>Occ 语义体素: <b>${DATA.occ.length}</b><br><span style="color:#8b949e">彩色实体 box、其内部 Occ、黄色 ego 均按 GT future trajectory 移动；光线是对应中心轨迹。</span>`;
 addEventListener('keydown',e=>{if(e.key.toLowerCase()==='o'&&occ)occ.visible=!occ.visible;if(e.key.toLowerCase()==='b')staticGroup.visible=!staticGroup.visible});const raycaster=new THREE.Raycaster(),mouse=new THREE.Vector2(),tip=document.getElementById('tip');renderer.domElement.addEventListener('mousemove',e=>{mouse.x=e.clientX/innerWidth*2-1;mouse.y=-(e.clientY/innerHeight)*2+1;raycaster.setFromCamera(mouse,camera);const h=raycaster.intersectObjects(pick,false);if(h.length){const b=h[0].object.userData.box;tip.style.display='block';tip.style.left=e.clientX+12+'px';tip.style.top=e.clientY+12+'px';tip.innerHTML=`<b>${b.name}</b><br>GT instance #${b.idx}<br>速度 ${b.speed.toFixed(2)} m/s${b.extent?`<br>3秒轨迹 ${b.extent.toFixed(1)} m`:''}`}else tip.style.display='none'});addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});(function loop(){requestAnimationFrame(loop);orbit.update();renderer.render(scene,camera)})();
 </script></body></html>'''
 
@@ -144,10 +161,15 @@ def main():
     parser.add_argument('--max-tracks', type=int, default=6)
     parser.add_argument('--min-motion', type=float, default=1.)
     parser.add_argument('--max-occ', type=int, default=60000)
+    parser.add_argument('--all-dynamic', action='store_true',
+                        help='track every currently dynamic GT box with a real future GT annotation; '
+                        'ignores --max-tracks and --min-motion')
     args = parser.parse_args()
     infos = load_infos(args.pkl)
     index = args.index if args.index >= 0 else auto_index(infos, args.max_tracks, args.min_motion)
-    data = build_data(infos[index], index, args.data_root, args.max_tracks, args.min_motion, args.max_occ)
+    data = build_data(
+        infos[index], index, args.data_root, args.max_tracks, args.min_motion,
+        args.max_occ, all_dynamic=args.all_dynamic)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, 'w') as handle:
         handle.write(TEMPLATE.replace('__DATA__', json.dumps(data, separators=(',', ':'))))
