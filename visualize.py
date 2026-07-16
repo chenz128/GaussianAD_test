@@ -136,6 +136,23 @@ def main(local_rank, args):
     if args.vis_occ or args.vis_gaussian:
         os.makedirs(os.path.join(args.work_dir, 'vis'), exist_ok=True)
 
+    # Exact dynamic/static probe: reuse the same GT-box membership and optional
+    # GT semantic gate as DynamicLoss, then collect raw logits for threshold-
+    # independent PR/F1 analysis. This is deliberately evaluation-only.
+    dyn_probe = None
+    dyn_logits_all, dyn_target_all = [], []
+    if args.eval_dynamic:
+        from loss.dynamic_loss import DynamicLoss
+        dyn_cfg = next(
+            (item.copy() for item in cfg.loss.loss_cfgs
+             if item.get('type') == 'DynamicLoss'),
+            None,
+        )
+        if dyn_cfg is None or not dyn_cfg.get('use_gt_box', False):
+            raise ValueError('--eval-dynamic requires use_gt_box=True DynamicLoss')
+        dyn_cfg.pop('type')
+        dyn_probe = DynamicLoss(**dyn_cfg).cuda().eval()
+
     with torch.no_grad():
         for i_iter_val, data in enumerate(val_dataset_loader):
             
@@ -144,6 +161,17 @@ def main(local_rank, args):
                     data[k] = data[k].cuda()
             input_imgs = data.pop('img')
             result_dict = my_model(imgs=input_imgs, metas=data)
+
+            if dyn_probe is not None:
+                gaussian = result_dict.get('gaussian')
+                logits = getattr(gaussian, 'dynamic_logits', None)
+                if logits is not None:
+                    sampled_xyz = result_dict.get('sampled_xyz', data.get('sampled_xyz'))
+                    sampled_label = result_dict.get('sampled_label', data.get('sampled_label'))
+                    target = dyn_probe._gt_box_membership(
+                        gaussian.means, data['gt_boxes'], sampled_xyz, sampled_label)
+                    dyn_logits_all.append(logits[..., 0].detach().flatten().cpu())
+                    dyn_target_all.append(target.detach().flatten().cpu())
 
             for idx, pred in enumerate(result_dict['pred_occ'][-1]):
                 pred_occ = pred.argmax(0)
@@ -228,6 +256,46 @@ def main(local_rank, args):
                     
     miou, iou2 = miou_metric._after_epoch()
     logger.info(f'mIoU: {miou}, iou2: {iou2}')
+    if dyn_logits_all:
+        logits = torch.cat(dyn_logits_all).float()
+        target = torch.cat(dyn_target_all).bool()
+        logger.info(
+            f'[DynamicEval] gaussians={target.numel()} gt_dynamic={target.sum().item()} '
+            f'({target.float().mean().item():.3%})')
+        candidates = torch.unique(torch.cat([
+            torch.tensor([-4., -2., -1., -.5, 0., .5, 1., 2., 4.]), logits
+        ])).sort().values
+        # A dense percentile grid finds calibration optimum without retaining any
+        # gradients or changing the model.
+        quantiles = torch.linspace(0., 1., 401)
+        candidates = torch.unique(torch.cat([candidates, torch.quantile(logits, quantiles)])).sort().values
+        best = None
+        for threshold in candidates.tolist():
+            pred = logits > threshold
+            tp = int((pred & target).sum().item())
+            fp = int((pred & ~target).sum().item())
+            fn = int((~pred & target).sum().item())
+            precision = tp / max(tp + fp, 1)
+            recall = tp / max(tp + fn, 1)
+            f1 = 2 * precision * recall / max(precision + recall, 1e-12)
+            if best is None or f1 > best[-1]:
+                best = (threshold, tp, fp, fn, precision, recall, f1)
+        for threshold in (0.,):
+            pred = logits > threshold
+            tp = int((pred & target).sum().item())
+            fp = int((pred & ~target).sum().item())
+            fn = int((~pred & target).sum().item())
+            precision = tp / max(tp + fp, 1)
+            recall = tp / max(tp + fn, 1)
+            f1 = 2 * precision * recall / max(precision + recall, 1e-12)
+            logger.info(
+                f'[DynamicEval @logit>0] TP={tp} FP={fp} FN={fn} '
+                f'P={precision:.3%} R={recall:.3%} F1={f1:.3%} '
+                f'pred_dynamic={pred.float().mean().item():.3%}')
+        threshold, tp, fp, fn, precision, recall, f1 = best
+        logger.info(
+            f'[DynamicEval best-F1] threshold={threshold:.4f} TP={tp} FP={fp} FN={fn} '
+            f'P={precision:.3%} R={recall:.3%} F1={f1:.3%}')
     miou_metric.reset()
     
     if writer is not None:
@@ -245,6 +313,9 @@ if __name__ == '__main__':
     parser.add_argument('--vis-gaussian', action='store_true', default=False)
     parser.add_argument('--vis-index', type=int, nargs='+', default=[])
     parser.add_argument('--num-samples', type=int, default=1)
+    parser.add_argument('--eval-dynamic', action='store_true',
+                        help='report dynamic_logits precision/recall/F1 against the '
+                        'same GT-box target used by DynamicLoss')
     args = parser.parse_args()
     
     ngpus = torch.cuda.device_count()
