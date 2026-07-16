@@ -39,6 +39,7 @@ class PhysicsLoss(BaseLoss):
         smooth_w=50.0,
         rigid_w=0.0,
         vel_w=0.0,
+        traj_w=0.0,
         warmup_epoch=2,
         dyn_threshold=0.5,
         use_gt_box=False,
@@ -62,6 +63,10 @@ class PhysicsLoss(BaseLoss):
                 input_dict['gaussian'] = 'gaussian'
                 input_dict['gt_boxes'] = 'gt_boxes'
                 input_dict['ego_fut_trajs'] = 'ego_fut_trajs'
+                if traj_w > 0:
+                    # per-instance GT future trajectory (aligned to gt_boxes
+                    # rows via the same mask/selected/range_mask filtering).
+                    input_dict['attr_labels_planner'] = 'attr_labels_planner'
                 if use_gt_semantic_gate:
                     # per-gaussian GT occ labels for the semantic gate
                     input_dict['sampled_xyz'] = 'sampled_xyz'
@@ -78,6 +83,13 @@ class PhysicsLoss(BaseLoss):
         # box velocity (offset[t] ~= v_box * (t+1) * dt). This is the only term
         # that actively DRIVES motion; the others only suppress. 0 -> disabled.
         self.vel_w = vel_w
+        # Trajectory supervision (v7): instead of extrapolating the current
+        # instantaneous box velocity as a straight constant-velocity line
+        # (loss_vel), regress each dynamic gaussian's offset onto the instance's
+        # REAL future trajectory (gt_agent_fut_trajs, cumulative). This captures
+        # acceleration / braking / turning / lane-change that loss_vel cannot.
+        # loss_traj is meant to REPLACE loss_vel (set vel_w=0, traj_w>0).
+        self.traj_w = traj_w
         self.warmup_epoch = warmup_epoch
         self.dyn_threshold = dyn_threshold
         self.use_gt_box = use_gt_box
@@ -193,7 +205,8 @@ class PhysicsLoss(BaseLoss):
 
     def loss_func(self, offset, dynamic_logits, current_epoch=None,
                   gaussian=None, gt_boxes=None, ego_fut_trajs=None,
-                  sampled_xyz=None, sampled_label=None):
+                  sampled_xyz=None, sampled_label=None,
+                  attr_labels_planner=None):
         """
         Args:
             offset:          (B, G, 6, 2) or flat tensor needing reshape
@@ -204,6 +217,10 @@ class PhysicsLoss(BaseLoss):
             ego_fut_trajs:   (B, 6, 2) GT ego per-step displacements (LIDAR frame)
             sampled_xyz:     (B, N, 3) occ-GT points (GT semantic gate)
             sampled_label:   (B, N) occ-GT labels (GT semantic gate)
+            attr_labels_planner: (B, T, 34) per-instance planner labels aligned
+                             to gt_boxes rows. [0:12]=fut_traj (6 steps x 2,
+                             per-step delta), [12:18]=fut_mask (6). Used by
+                             loss_traj (v7).
         """
         if offset is None or dynamic_logits is None:
             return torch.tensor(0.0, requires_grad=False)
@@ -263,6 +280,19 @@ class PhysicsLoss(BaseLoss):
             loss_vel = self.vel_w * self._velocity_target(
                 offset, box_idx, gt_dyn_mask, gt_boxes, ego_fut_trajs)
 
+        # ====== Trajectory constraint (v7): dynamic gaussians follow the GT ===
+        # instance future trajectory (real cumulative displacement), replacing
+        # the constant-velocity straight-line assumption of loss_vel. Also a
+        # DRIVING term (zeroed during warmup with vel/rigid). Computed with a
+        # multiplicative mask over the full offset tensor -> graph constant
+        # every iter (static_graph=True compatible).
+        loss_traj = offset.new_tensor(0.0)
+        if (self.traj_w > 0 and box_idx is not None
+                and gt_dyn_mask is not None
+                and attr_labels_planner is not None):
+            loss_traj = self.traj_w * self._trajectory_target(
+                offset, box_idx, gt_dyn_mask, attr_labels_planner)
+
         # Plan A selective warmup: during the first ``warmup_epoch`` epochs,
         # keep the SUPPRESSIVE terms (loss_static, loss_smooth) active from
         # epoch 0 while zeroing only the DRIVING terms (loss_rigid, loss_vel).
@@ -286,7 +316,8 @@ class PhysicsLoss(BaseLoss):
         in_warmup = (current_epoch is not None
                      and current_epoch < self.warmup_epoch)
         drive_scale = 0.0 if in_warmup else 1.0
-        total = loss_static + loss_smooth + (loss_rigid + loss_vel) * drive_scale
+        total = loss_static + loss_smooth + (
+            loss_rigid + loss_vel + loss_traj) * drive_scale
 
         # Diagnostics
         self._diag_counter += 1
@@ -312,6 +343,7 @@ class PhysicsLoss(BaseLoss):
                 f'loss_smooth={loss_smooth.item():.4f} '
                 f'loss_rigid={loss_rigid.item():.4f} '
                 f'loss_vel={loss_vel.item():.4f} '
+                f'loss_traj={loss_traj.item():.4f} '
                 f'total={total.item():.4f}'
             )
             if (not torch.distributed.is_available()
@@ -320,6 +352,67 @@ class PhysicsLoss(BaseLoss):
                 print(_msg, flush=True)
 
         return total
+
+    def _trajectory_target(self, offset, box_idx, dyn_mask, attr_labels_planner):
+        """Smooth-L1(offset, GT instance future trajectory), masked to dynamic gaussians.
+
+        Unlike ``_velocity_target`` (which extrapolates the current instantaneous
+        box velocity as a constant-velocity straight line), this regresses each
+        dynamic gaussian's offset onto the instance's REAL future trajectory,
+        so acceleration / braking / turning / lane-change are all supervised.
+
+        ``attr_labels_planner`` is (B, T, 34), aligned to gt_boxes rows:
+            [0:12]  = fut_traj  (6 steps x 2, PER-STEP delta displacement)
+            [12:18] = fut_mask  (6, 1 = step has a valid future annotation)
+        The cumulative displacement d_t = cumsum(delta) is the offset target;
+        it lives in the same LIDAR / world frame as offset (pure object motion,
+        no ego term -- forward_flow removes ego separately, matching loss_vel).
+
+        Per-step validity comes from the instance's fut_mask, so steps beyond
+        the object's last annotation (occlusion / leaving the scene) are not
+        supervised. Uses SMOOTH-L1 (bounded gradient) and a MULTIPLICATIVE mask
+        over the FULL offset tensor -> graph constant every iter
+        (static_graph=True compatible).
+
+        Args:
+            offset:   (B, G, 6, 2) predicted displacements (grad flows here)
+            box_idx:  (B, G) long, containing-box index (-1 background)
+            dyn_mask: (B, G) bool, True for gaussians inside a moving box
+            attr_labels_planner: (B, T, 34) per-instance planner labels
+        Returns:
+            scalar tensor
+        """
+        with torch.no_grad():
+            B, G = box_idx.shape
+            attr = attr_labels_planner
+            if not torch.is_tensor(attr):
+                attr = torch.as_tensor(attr)
+            attr = attr.to(offset.device).float()
+            if attr.dim() == 2:
+                attr = attr[None]                                 # (B, T, 34)
+            T = attr.shape[1]
+            # Empty attr (no annotations) -> no dynamic supervision.
+            if T == 0:
+                return offset.new_tensor(0.0)
+            fut_delta = attr[..., 0:12].reshape(B, T, 6, 2)       # per-step delta
+            fut_mask = attr[..., 12:18].reshape(B, T, 6)          # (B, T, 6)
+            fut_delta = torch.nan_to_num(fut_delta, nan=0.0, posinf=0.0, neginf=0.0)
+            fut_mask = torch.nan_to_num(fut_mask, nan=0.0, posinf=0.0, neginf=0.0)
+            # cumulative displacement (offset target) in LIDAR frame
+            cum_traj = torch.cumsum(fut_delta, dim=2)             # (B, T, 6, 2)
+            cum_traj = cum_traj.clamp(-100.0, 100.0)
+            # per-batch advanced indexing: cum_traj[b][bi[b]] -> (G, 6, 2)
+            bi = box_idx.clamp(0, T - 1)                          # (B, G)
+            target = torch.stack(
+                [cum_traj[b][bi[b]] for b in range(B)], dim=0)    # (B, G, 6, 2)
+            step_valid = torch.stack(
+                [fut_mask[b][bi[b]] for b in range(B)], dim=0)    # (B, G, 6)
+            # combine: gaussian is dynamic AND that future step is annotated
+            w = dyn_mask.float()[:, :, None] * step_valid          # (B, G, 6)
+            denom = w.sum() * offset.shape[-1] + 1e-6
+        err = torch.nn.functional.smooth_l1_loss(
+            offset, target, reduction='none', beta=1.0).sum(-1)   # (B, G, 6) grad→offset
+        return (w * err).sum() / denom
 
     def _velocity_target(self, offset, box_idx, dyn_mask, gt_boxes,
                          ego_fut_trajs=None):
