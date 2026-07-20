@@ -42,6 +42,9 @@ class SparseGaussian3DRefinementModule(BaseModule):
         # clean (no kinematic pollution). Offset is still fully supervised via
         # its own head. See docs: gtbox_oracle v6 decoupling.
         self.decouple_offset = decouple_offset
+        # v8: fraction of the offset-head gradient allowed to leak back into the
+        # shared encoder feature. 0.0 == full detach (v7 behaviour).
+        self.offset_grad_scale = offset_grad_scale
         # v9: offset parametrization.
         #   'free'      -> the head outputs offset_dim (=6*2) FREE numbers; the
         #                  6 future xy displacements are unconstrained (v7/v8).
