@@ -176,7 +176,7 @@ class MapTRv2(MVXTwoStageDetector):
         #         losses[key + "_one2many"] = value * lambda_one2many
         # import ipdb;ipdb.set_trace()
         batch_dict.update(outs)
-        return batch_dict
+        return batch_dict#batch_dict是一个字典，里面包含了模型的输出结果，包括预测的边界框、分数、标签等信息
 
     # def forward_dummy(self, img):
     #     dummy_metas = None

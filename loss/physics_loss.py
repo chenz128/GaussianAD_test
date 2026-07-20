@@ -40,6 +40,7 @@ class PhysicsLoss(BaseLoss):
         rigid_w=0.0,
         vel_w=0.0,
         traj_w=0.0,
+        traj_smooth_beta=1.0,
         warmup_epoch=2,
         dyn_threshold=0.5,
         use_gt_box=False,
@@ -90,6 +91,12 @@ class PhysicsLoss(BaseLoss):
         # acceleration / braking / turning / lane-change that loss_vel cannot.
         # loss_traj is meant to REPLACE loss_vel (set vel_w=0, traj_w>0).
         self.traj_w = traj_w
+        # SmoothL1 beta for loss_traj. beta=1 saturates the per-element gradient
+        # to +/-1 once the error exceeds 1 m, so fast movers (horizon
+        # displacement up to ~27 m at p99) learn extremely slowly. A larger beta
+        # (e.g. 3) keeps the loss quadratic (linear-growing gradient) over a
+        # wider range, letting large real displacements drive the offset head.
+        self.traj_smooth_beta = traj_smooth_beta
         self.warmup_epoch = warmup_epoch
         self.dyn_threshold = dyn_threshold
         self.use_gt_box = use_gt_box
@@ -411,7 +418,8 @@ class PhysicsLoss(BaseLoss):
             w = dyn_mask.float()[:, :, None] * step_valid          # (B, G, 6)
             denom = w.sum() * offset.shape[-1] + 1e-6
         err = torch.nn.functional.smooth_l1_loss(
-            offset, target, reduction='none', beta=1.0).sum(-1)   # (B, G, 6) grad→offset
+            offset, target, reduction='none',
+            beta=self.traj_smooth_beta).sum(-1)   # (B, G, 6) grad→offset
         return (w * err).sum() / denom
 
     def _velocity_target(self, offset, box_idx, dyn_mask, gt_boxes,

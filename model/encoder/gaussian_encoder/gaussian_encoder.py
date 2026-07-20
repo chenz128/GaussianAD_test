@@ -121,7 +121,7 @@ class GaussianOccEncoder(BaseEncoder):
                 identity = instance_feature
             elif op == "add":
                 instance_feature = instance_feature + identity
-            elif op == "deformable":#deformable是一个字符串，表示在高斯编码器中使用可变形卷积操作。可变形卷积是一种增强卷积神经网络的能力的方法，它允许卷积核在输入特征图上进行灵活的采样，从而更好地捕捉输入数据的几何变形和局部结构信息。在高斯编码器中，使用deformable操作可以提高模型对输入数据的适应性和鲁棒性，从而实现更准确的特征提取和表示。
+            elif op == "deformable":
                 if self.with_cp and self.training:
                     def _deform_forward(_feat, _anc, _anc_emb, _fmaps, _metas, _enc=self.anchor_encoder, _layer=self.layers[i]):
                         return _layer(_feat, _anc, _anc_emb, _fmaps, _metas, anchor_encoder=_enc)
