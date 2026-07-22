@@ -23,10 +23,10 @@ feat.detach()，新增的运动条件输入也只进 offset_layers，梯度永�
 【推理】oracle 模式：测试同样用 GT 框的速度/朝向做条件（量上界）。落地时把 GT
 换成检测头 vel/rot 预测值（另做，train/test gap 用 scheduled sampling 处理）。
 
-【暖启】offset_layers 形状变化（输入 128→131、输出 12→2），load_from 以 strict=False
-加载 v8 epoch_15：encoder/occ/det 全部暖启（当前帧从第 0 步即 ≈v8），仅 offset_layers
-重新 init 训练。且因 v0=观测速度、omega/accel 初始 tanh(0)=0，offset 从第 0 步就 ≈
-恒速外推（合理值），无冷启动塌缩。
+【初始化】与 v8 相同，从 ImageNet/FCOS3D 预训练 backbone 从头训 15 epoch（继承 v8 的
+load_from=pretrain，不从 v8 暖启——因为 offset_layers 形状变化，strict=False 无法跳过
+同名不同形状的键，且从头训是与 v8 更公平的单变量对照）。虽从头训，但 v0=观测速度、
+omega/accel 初始 tanh(0)=0，offset 从第 0 步就 ≈ 恒速外推（合理值），无冷启动塌缩。
 
 其余（loss 权重 static_w=1/rigid_w=1/traj_w=4、GT-box 门控、3000 子集、冻结 map/plan、
 decouple_offset=True/offset_grad_scale=0.0）与 v8 完全相同。
@@ -34,9 +34,6 @@ GPU：h20-new 后 4 张（4,5,6,7）或 h20-old 空闲卡。
 """
 
 _base_ = ['./nuscenes_gs25600_gtbox_oracle_v8.py']
-
-# 从 v8 最优 checkpoint 暖启（当前帧直接 ≈12.8；offset 头因形状变化 strict=False 重 init）
-load_from = 'out/nuscenes_gs25600_gtbox_oracle_v8/checkpoints/epoch_15.pth'
 
 # 唯一自变量：temporal encoder 的 offset 头改为“运动条件化 + 有界 CTRA”。
 # dict 深合并：decouple_offset=True / offset_grad_scale=0.0 从 v8 继承保留。
