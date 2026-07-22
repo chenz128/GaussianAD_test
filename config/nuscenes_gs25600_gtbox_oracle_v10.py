@@ -48,4 +48,11 @@ model = dict(
             motion_v_thresh=0.5,  # 观测速度 <0.5m/s 视为静止，offset 置 0
         ),
     ),
+    # v10 的条件化 offset 头让每次迭代的计算图不再被 static_graph 认定为完全一致
+    # （membership 依赖 means、条件 cat、CTRA rollout）→ DDP static_graph=True 会崩
+    # （单卡不检查故冒烟能过，4 卡 iter1 空 spconv）。关掉 static_graph；随之必须把
+    # backbone 的 with_cp 关掉，否则激活重计算会触发 'marked ready twice'。
+    img_backbone=dict(with_cp=False),
 )
+
+static_graph = False
