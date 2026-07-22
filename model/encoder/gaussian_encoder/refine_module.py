@@ -29,6 +29,10 @@ class SparseGaussian3DRefinementModule(BaseModule):
         offset_grad_scale=0.0,
         offset_mode='free',
         kin_dt=0.5,
+        motion_cond=False,
+        kin_omega_max=0.5,
+        kin_accel_max=3.0,
+        motion_v_thresh=0.5,
     ):
         super(SparseGaussian3DRefinementModule, self).__init__()
         self.embed_dims = embed_dims
@@ -59,9 +63,20 @@ class SparseGaussian3DRefinementModule(BaseModule):
         #                  / PhysicsLoss) is unchanged: it still receives (6, 2).
         self.offset_mode = offset_mode
         self.kin_dt = kin_dt
-        # number of future steps = offset_dim // 2; kinematic head param count = 3
+        # v10: condition the offset head on the object's OBSERVED motion state
+        # ([vx, vy, heading], broadcast from the containing GT box). When on, the
+        # kinematic head predicts only the EVOLUTION [omega, accel] and a bounded
+        # CTRA rollout integrates it from the observed initial velocity v0, so
+        # magnitude + initial direction are given and turning cannot blow up.
+        self.motion_cond = motion_cond
+        self.kin_omega_max = kin_omega_max
+        self.kin_accel_max = kin_accel_max
+        self.motion_v_thresh = motion_v_thresh
+        # number of future steps = offset_dim // 2
         self.kin_steps = offset_dim // 2
-        self.kin_param_dim = 3
+        # kinematic head param count: motion-conditioned CTRA=2 [omega, accel];
+        # legacy CTRV=3 [vx, vy, omega].
+        self.kin_param_dim = 2 if motion_cond else 3
 
         if semantics:
             assert semantic_dim is not None
@@ -109,32 +124,46 @@ class SparseGaussian3DRefinementModule(BaseModule):
         if self.decouple_offset and self.offset_dim > 0:
             head_out = (self.kin_param_dim if self.offset_mode == 'kinematic'
                         else self.offset_dim)
+            # v10: concat the 3-dim motion state ([vx, vy, heading]) onto the
+            # detached feature -> the first Linear consumes embed_dims + 3.
+            in_dim = self.embed_dims + (3 if self.motion_cond else 0)
             self.offset_layers = nn.Sequential(
-                *linear_relu_ln(embed_dims, 1, 1),
+                *linear_relu_ln(embed_dims, 1, 1, input_dims=in_dim),
                 nn.Linear(self.embed_dims, head_out))
 
-    def _kinematic_rollout(self, kin):
-        """CTRV (constant-turn-rate, constant-speed) rollout.
+    def _kinematic_rollout(self, kin, v0=None):
+        """Differentiable kinematic rollout -> (..., kin_steps*2) cumulative xy.
 
-        Args:
-            kin: (..., 3) raw params per gaussian = [vx, vy, omega], where
-                 (vx, vy) is the initial velocity vector (m/s, world/lidar xy)
-                 and omega is the yaw rate (rad/s).
-        Returns:
-            (..., kin_steps*2) cumulative xy displacement for steps 1..kin_steps,
-            matching the free-mode offset layout (reshape(...,6,2) -> [step, xy]).
-
-        Displacement of step j is v0 rotated by (omega*dt*j) times dt; the
-        cumulative sum over j gives an arc. omega=0 degenerates to a straight
-        line, so the head can express both, but turning is now a single scalar
-        (omega) instead of 12 free numbers -> far easier under sparse GT.
+        Two modes:
+          * v10 bounded CTRA (v0 given): kin=[omega_raw, accel_raw]. The initial
+            velocity v0=[vx0, vy0] comes from the OBSERVED motion state, so speed
+            and initial heading are given; the head only predicts a BOUNDED yaw
+            rate (omega = omega_max*tanh) and longitudinal accel (a = a_max*tanh).
+            This cannot spin into circles (v9) and can brake (a < 0).
+          * legacy CTRV (v0 None): kin=[vx, vy, omega], constant-speed arc (v9).
         """
-        vx = kin[..., 0]
-        vy = kin[..., 1]
-        omega = kin[..., 2]
         dt = self.kin_dt
         steps = self.kin_steps
         j = torch.arange(1, steps + 1, device=kin.device, dtype=kin.dtype)  # (S,)
+        if v0 is not None:
+            vx0 = v0[..., 0]
+            vy0 = v0[..., 1]
+            s0 = torch.sqrt(vx0 * vx0 + vy0 * vy0 + 1e-8)          # (...) speed
+            head0 = torch.atan2(vy0, vx0)                          # (...) heading
+            omega = self.kin_omega_max * torch.tanh(kin[..., 0])   # (...) bounded
+            accel = self.kin_accel_max * torch.tanh(kin[..., 1])   # (...) bounded
+            t = j * dt                                             # (S,)
+            hj = head0[..., None] + omega[..., None] * t           # (..., S)
+            sj = torch.relu(s0[..., None] + accel[..., None] * t)  # (..., S) >=0
+            vjx = sj * torch.cos(hj)
+            vjy = sj * torch.sin(hj)
+            dispx = torch.cumsum(vjx * dt, dim=-1)
+            dispy = torch.cumsum(vjy * dt, dim=-1)
+            off = torch.stack([dispx, dispy], dim=-1)              # (..., S, 2)
+            return off.reshape(*off.shape[:-2], steps * 2)
+        vx = kin[..., 0]
+        vy = kin[..., 1]
+        omega = kin[..., 2]
         ang = omega[..., None] * dt * j          # (..., S) heading after j steps
         cos_a = torch.cos(ang)
         sin_a = torch.sin(ang)
@@ -151,7 +180,8 @@ class SparseGaussian3DRefinementModule(BaseModule):
         instance_feature: torch.Tensor,
         anchor: torch.Tensor,
         anchor_embed: torch.Tensor,
-        mask=None
+        mask=None,
+        motion_state=None,
     ):
         feat = instance_feature + anchor_embed
         output = self.layers(feat)
@@ -162,7 +192,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
         # offset_grad_scale>0, leak that fraction of gradient into the encoder
         # via a straight-through blend: s*feat + (1-s)*feat.detach() has value
         # == feat but gradient scaled by s.
-        if self.decouple_offset:
+        if self.decouple_offset and not self.motion_cond:
             s = self.offset_grad_scale
             if s and s > 0:
                 feat_off = s * feat + (1.0 - s) * feat.detach()
@@ -175,6 +205,9 @@ class SparseGaussian3DRefinementModule(BaseModule):
             else:
                 offset_decoupled = raw_off
         else:
+            # v10 motion_cond computes the offset later (needs the masked,
+            # current-frame layout aligned with means); non-decoupled uses the
+            # output tail slice.
             offset_decoupled = None
 
         if self.restrict_xyz:
@@ -242,12 +275,41 @@ class SparseGaussian3DRefinementModule(BaseModule):
             dynamic_logits=dynamic_logits,
         )
         if self.decouple_offset:
-            offset = offset_decoupled
-            if mask is not None:
-                offset = offset[mask].unsqueeze(0)
+            if self.motion_cond:
+                offset = self._motion_offset(feat, mask, motion_state)
+            else:
+                offset = offset_decoupled
+                if mask is not None:
+                    offset = offset[mask].unsqueeze(0)
         else:
             offset = output[..., -self.offset_dim:]
         return output, gaussian, offset
+
+    def _motion_offset(self, feat, mask, motion_state):
+        """v10: motion-conditioned bounded-CTRA offset for current-frame gaussians.
+
+        ``feat`` is the (num_valid, C) pre-mask feature; we select the current
+        frame with ``mask`` so the offset aligns with the masked means/gaussian.
+        ``motion_state`` (Gc, 3)=[vx, vy, heading] comes from the temporal encoder
+        (GT-box membership), in the same masked order. Detached so the offset
+        gradient never reaches the encoder (current-frame protection).
+        """
+        feat_c = feat[mask] if mask is not None else feat
+        if motion_state is None:
+            motion_state = feat_c.new_zeros((feat_c.shape[0], 3))
+        motion_state = motion_state.to(feat_c.dtype)
+        s = self.offset_grad_scale
+        if s and s > 0:
+            feat_off = s * feat_c + (1.0 - s) * feat_c.detach()
+        else:
+            feat_off = feat_c.detach()
+        raw = self.offset_layers(torch.cat([feat_off, motion_state], dim=-1))
+        off = self._kinematic_rollout(raw, v0=motion_state[..., :2])
+        # static gate: gaussians whose OBSERVED speed ~0 get exactly zero offset,
+        # so the background never drifts (makes loss_static redundant).
+        s0 = motion_state[..., :2].norm(dim=-1)
+        off = off * (s0 > self.motion_v_thresh).to(off.dtype).unsqueeze(-1)
+        return off.unsqueeze(0) if mask is not None else off
 
     def get_gaussian(self, output):
         if self.phi_activation == 'sigmoid':
