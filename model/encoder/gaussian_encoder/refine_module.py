@@ -79,9 +79,11 @@ class SparseGaussian3DRefinementModule(BaseModule):
         self.motion_v_thresh = motion_v_thresh
         # number of future steps = offset_dim // 2
         self.kin_steps = offset_dim // 2
-        # kinematic head param count: motion-conditioned CTRA=2 [omega, accel];
-        # legacy CTRV=3 [vx, vy, omega].
-        self.kin_param_dim = 2 if motion_cond else 3
+        # kinematic head param count: motion-conditioned CTRA=4 [vx, vy, omega,
+        # accel] (velocity is PREDICTED, guided by the observed conditioning, so
+        # a zero-init head gives offset=0 at iter 0 -> no OccFlowLoss shock on the
+        # untrained encoder); legacy CTRV=3 [vx, vy, omega].
+        self.kin_param_dim = 4 if motion_cond else 3
 
         if semantics:
             assert semantic_dim is not None
@@ -146,23 +148,30 @@ class SparseGaussian3DRefinementModule(BaseModule):
         """Differentiable kinematic rollout -> (..., kin_steps*2) cumulative xy.
 
         Two modes:
-          * v10 bounded CTRA (v0 given): kin=[omega_raw, accel_raw]. The initial
-            velocity v0=[vx0, vy0] comes from the OBSERVED motion state, so speed
-            and initial heading are given; the head only predicts a BOUNDED yaw
-            rate (omega = omega_max*tanh) and longitudinal accel (a = a_max*tanh).
-            This cannot spin into circles (v9) and can brake (a < 0).
-          * legacy CTRV (v0 None): kin=[vx, vy, omega], constant-speed arc (v9).
+          * v10 bounded CTRA (kin=[vx, vy, omega_raw, accel_raw], 4 params): the
+            head PREDICTS the initial velocity (vx, vy) (guided by the observed
+            motion conditioning), plus a BOUNDED yaw rate (omega_max*tanh) and
+            longitudinal accel (accel_max*tanh). A zero-init head => velocity=0,
+            omega=accel=0 => offset=0 at iter 0 (no OccFlowLoss shock). Cannot
+            spin into circles (bounded omega) and can brake (accel<0).
+          * legacy CTRV (kin=[vx, vy, omega], 3 params): constant-speed arc (v9).
         """
         dt = self.kin_dt
         steps = self.kin_steps
         j = torch.arange(1, steps + 1, device=kin.device, dtype=kin.dtype)  # (S,)
-        if v0 is not None:
-            vx0 = v0[..., 0]
-            vy0 = v0[..., 1]
-            s0 = torch.sqrt(vx0 * vx0 + vy0 * vy0 + 1e-8)          # (...) speed
-            head0 = torch.atan2(vy0, vx0)                          # (...) heading
-            omega = self.kin_omega_max * torch.tanh(kin[..., 0])   # (...) bounded
-            accel = self.kin_accel_max * torch.tanh(kin[..., 1])   # (...) bounded
+        if kin.shape[-1] == 4:
+            vx0 = kin[..., 0]
+            vy0 = kin[..., 1]
+            omega = self.kin_omega_max * torch.tanh(kin[..., 2])   # bounded
+            accel = self.kin_accel_max * torch.tanh(kin[..., 3])   # bounded
+            s0 = torch.sqrt(vx0 * vx0 + vy0 * vy0 + 1e-8)          # speed
+            # guard atan2(0, 0): its gradient is NaN, which would propagate even
+            # through a zero static gate (0 * NaN = NaN). Route near-zero-velocity
+            # gaussians to a constant heading (no grad to vx/vy there).
+            near0 = (vx0 * vx0 + vy0 * vy0) < 1e-8
+            vx0g = torch.where(near0, torch.ones_like(vx0), vx0)
+            vy0g = torch.where(near0, torch.zeros_like(vy0), vy0)
+            head0 = torch.atan2(vy0g, vx0g)                        # heading
             t = j * dt                                             # (S,)
             hj = head0[..., None] + omega[..., None] * t           # (..., S)
             sj = torch.relu(s0[..., None] + accel[..., None] * t)  # (..., S) >=0
@@ -352,7 +361,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
         else:
             feat_off = feat_c.detach()
         raw = self.offset_layers(torch.cat([feat_off, motion_state], dim=-1))
-        off = self._kinematic_rollout(raw, v0=motion_state[..., :2])
+        off = self._kinematic_rollout(raw)
         # static gate: gaussians whose OBSERVED speed ~0 get exactly zero offset,
         # so the background never drifts (makes loss_static redundant).
         s0 = motion_state[..., :2].norm(dim=-1)
