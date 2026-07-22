@@ -48,11 +48,10 @@ model = dict(
             motion_v_thresh=0.5,  # 观测速度 <0.5m/s 视为静止，offset 置 0
         ),
     ),
-    # v10 的条件化 offset 头让每次迭代的计算图不再被 static_graph 认定为完全一致
-    # （membership 依赖 means、条件 cat、CTRA rollout）→ DDP static_graph=True 会崩
-    # （单卡不检查故冒烟能过，4 卡 iter1 空 spconv）。关掉 static_graph；随之必须把
-    # backbone 的 with_cp 关掉，否则激活重计算会触发 'marked ready twice'。
-    img_backbone=dict(with_cp=False),
 )
 
-static_graph = False
+# v10 的 membership 在 no_grad 下只生成数据条件；offset head 每轮使用的参数集合
+# 不变，因此继续沿用 v8 已验证的 static_graph + backbone checkpoint 组合。
+# 之前为排查 empty-spconv 临时关闭这两项，导致显存贴近 96GB，并在 iter 550
+# 的 DDP output clone 阶段 OOM；empty-spconv 的真实根因是未清理的 NaN velocity。
+static_graph = True
