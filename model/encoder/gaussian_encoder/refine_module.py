@@ -374,6 +374,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
             ms = self._motion_state_from_boxes(means, gt_boxes)   # (B, Gc, 3)
             if ms is not None:
                 motion_state = ms.reshape(-1, 3)
+                motion_state = motion_state * 0.0  # DIAG: compute but zero values
         if motion_state is None:
             motion_state = feat_c.new_zeros((feat_c.shape[0], 3))
         motion_state = motion_state.to(feat_c.dtype)
