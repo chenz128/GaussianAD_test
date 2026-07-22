@@ -308,26 +308,27 @@ class SparseGaussian3DRefinementModule(BaseModule):
     @torch.no_grad()
     def _motion_state_from_boxes(self, means, gt_boxes):
         """Per-gaussian observed motion state [vx, vy, heading] from the containing
-        GT box. Uses a pure-PyTorch rotated-box test (NOT the custom CUDA op
-        points_in_boxes_gpu, which is unsafe to call inside the DDP forward and
-        caused a 4-GPU iter-1 empty-spconv crash). Background -> zeros.
+        GT box, computed ON CPU. Doing per-gaussian box tests on the GPU INSIDE
+        the DDP-wrapped forward corrupts the CUDA stream and crashes the next
+        spconv (empty tensor) on 4-GPU (confirmed by bisection); CPU keeps it off
+        the CUDA stream. Detached + no_grad -> pure data. Background -> zeros.
         means: (B, G, 3); gt_boxes: (B, T, >=9) [x,y,z,dx,dy,dz,heading,vx,vy,...].
         """
         if gt_boxes is None:
             return None
         m = torch.nan_to_num(means.detach().float(), nan=0.0,
-                             posinf=0.0, neginf=0.0)
+                             posinf=0.0, neginf=0.0).cpu()
         gt = gt_boxes
         if not torch.is_tensor(gt):
             gt = torch.as_tensor(gt)
-        gt = gt.to(m.device).float()
+        gt = gt.float().cpu()
         if gt.dim() == 2:
             gt = gt[None]
         B, G = m.shape[0], m.shape[1]
         T = gt.shape[1]
-        ms = m.new_zeros((B, G, 3))
+        ms = torch.zeros((B, G, 3), dtype=torch.float32)
         if T == 0:
-            return ms
+            return ms.to(means.device)
         cx, cy, cz = gt[..., 0], gt[..., 1], gt[..., 2]        # (B, T)
         dx, dy, dz = gt[..., 3], gt[..., 4], gt[..., 5]        # (B, T)
         yaw = gt[..., 6]                                       # (B, T)
@@ -355,26 +356,23 @@ class SparseGaussian3DRefinementModule(BaseModule):
                 ms[b, sel, 0] = gt[b, bi, 7]                  # vx
                 ms[b, sel, 1] = gt[b, bi, 8]                  # vy
                 ms[b, sel, 2] = gt[b, bi, 6]                  # heading
-        return ms
+        return ms.to(means.device)
 
     def _motion_offset(self, feat, mask, means, gt_boxes):
         """v10: motion-conditioned bounded-CTRA offset for current-frame gaussians.
 
         ``feat`` is the (num_valid, C) pre-mask feature; we select the current
         frame with ``mask`` so the offset aligns with the masked means/gaussian.
-        The observed motion state [vx, vy, heading] is derived here from the
-        (masked) ``means`` + ``gt_boxes`` (same membership as physics_loss).
+        The observed motion state [vx, vy, heading] is derived from the (masked)
+        ``means`` + ``gt_boxes`` via _motion_state_from_boxes (CPU membership).
         Detached so the offset gradient never reaches the encoder.
         """
         feat_c = feat[mask] if mask is not None else feat
-        # means is (B, Gc, 3) after mask (unsqueezed) or (B, G, 3); flatten batch
-        # to align row-for-row with feat_c (num_current, C).
         motion_state = None
         if gt_boxes is not None and mask is not None:
             ms = self._motion_state_from_boxes(means, gt_boxes)   # (B, Gc, 3)
             if ms is not None:
                 motion_state = ms.reshape(-1, 3)
-                motion_state = motion_state * 0.0  # DIAG: compute but zero values
         if motion_state is None:
             motion_state = feat_c.new_zeros((feat_c.shape[0], 3))
         motion_state = motion_state.to(feat_c.dtype)
