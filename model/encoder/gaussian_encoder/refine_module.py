@@ -308,14 +308,15 @@ class SparseGaussian3DRefinementModule(BaseModule):
     @torch.no_grad()
     def _motion_state_from_boxes(self, means, gt_boxes):
         """Per-gaussian observed motion state [vx, vy, heading] from the containing
-        GT box, using the SAME means physics_loss uses (safe for points_in_boxes).
-        means: (B, G, 3); gt_boxes: (B, T, >=9) [.,.,.,.,.,.,heading, vx, vy, ...].
-        Returns (B, G, 3); background (no box) -> zeros.
+        GT box. Uses a pure-PyTorch rotated-box test (NOT the custom CUDA op
+        points_in_boxes_gpu, which is unsafe to call inside the DDP forward and
+        caused a 4-GPU iter-1 empty-spconv crash). Background -> zeros.
+        means: (B, G, 3); gt_boxes: (B, T, >=9) [x,y,z,dx,dy,dz,heading,vx,vy,...].
         """
-        if points_in_boxes_gpu is None or gt_boxes is None:
+        if gt_boxes is None:
             return None
         m = torch.nan_to_num(means.detach().float(), nan=0.0,
-                             posinf=0.0, neginf=0.0).contiguous()
+                             posinf=0.0, neginf=0.0)
         gt = gt_boxes
         if not torch.is_tensor(gt):
             gt = torch.as_tensor(gt)
@@ -323,16 +324,37 @@ class SparseGaussian3DRefinementModule(BaseModule):
         if gt.dim() == 2:
             gt = gt[None]
         B, G = m.shape[0], m.shape[1]
-        boxes7 = gt[..., :7].contiguous()                     # (B, T, 7)
-        box_idx = points_in_boxes_gpu(m, boxes7).long()       # (B, G), -1 bg
+        T = gt.shape[1]
         ms = m.new_zeros((B, G, 3))
+        if T == 0:
+            return ms
+        cx, cy, cz = gt[..., 0], gt[..., 1], gt[..., 2]        # (B, T)
+        dx, dy, dz = gt[..., 3], gt[..., 4], gt[..., 5]        # (B, T)
+        yaw = gt[..., 6]                                       # (B, T)
+        cos = torch.cos(-yaw)[:, None, :]                      # (B, 1, T)
+        sin = torch.sin(-yaw)[:, None, :]
+        px = m[..., 0:1]                                       # (B, G, 1)
+        py = m[..., 1:2]
+        pz = m[..., 2:3]
+        ddx = px - cx[:, None, :]                             # (B, G, T)
+        ddy = py - cy[:, None, :]
+        ddz = pz - cz[:, None, :]
+        lx = ddx * cos - ddy * sin                            # box-frame x
+        ly = ddx * sin + ddy * cos                            # box-frame y
+        eps = 1e-4
+        inside = ((lx.abs() <= dx[:, None, :] * 0.5)
+                  & (ly.abs() <= dy[:, None, :] * 0.5)
+                  & (ddz.abs() <= dz[:, None, :] * 0.5)
+                  & (dx[:, None, :] > eps))                    # (B, G, T)
+        any_in = inside.any(dim=-1)                           # (B, G)
+        box_idx = inside.float().argmax(dim=-1)               # (B, G) first match
         for b in range(B):
-            valid = box_idx[b] >= 0
-            if valid.any():
-                bi = box_idx[b, valid]
-                ms[b, valid, 0] = gt[b, bi, 7]                 # vx
-                ms[b, valid, 1] = gt[b, bi, 8]                 # vy
-                ms[b, valid, 2] = gt[b, bi, 6]                 # heading
+            sel = any_in[b]
+            if sel.any():
+                bi = box_idx[b, sel]
+                ms[b, sel, 0] = gt[b, bi, 7]                  # vx
+                ms[b, sel, 1] = gt[b, bi, 8]                  # vy
+                ms[b, sel, 2] = gt[b, bi, 6]                  # heading
         return ms
 
     def _motion_offset(self, feat, mask, means, gt_boxes):
@@ -348,9 +370,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
         # means is (B, Gc, 3) after mask (unsqueezed) or (B, G, 3); flatten batch
         # to align row-for-row with feat_c (num_current, C).
         motion_state = None
-        # DIAGNOSTIC(v10): bypass GT-box membership to isolate whether the
-        # in-forward points_in_boxes_gpu call is the 4-GPU iter-1 crash source.
-        if False and gt_boxes is not None and mask is not None:
+        if gt_boxes is not None and mask is not None:
             ms = self._motion_state_from_boxes(means, gt_boxes)   # (B, Gc, 3)
             if ms is not None:
                 motion_state = ms.reshape(-1, 3)
