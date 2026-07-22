@@ -348,7 +348,9 @@ class SparseGaussian3DRefinementModule(BaseModule):
         # means is (B, Gc, 3) after mask (unsqueezed) or (B, G, 3); flatten batch
         # to align row-for-row with feat_c (num_current, C).
         motion_state = None
-        if gt_boxes is not None and mask is not None:
+        # DIAGNOSTIC(v10): bypass GT-box membership to isolate whether the
+        # in-forward points_in_boxes_gpu call is the 4-GPU iter-1 crash source.
+        if False and gt_boxes is not None and mask is not None:
             ms = self._motion_state_from_boxes(means, gt_boxes)   # (B, Gc, 3)
             if ms is not None:
                 motion_state = ms.reshape(-1, 3)
