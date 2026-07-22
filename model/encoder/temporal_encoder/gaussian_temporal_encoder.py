@@ -104,46 +104,6 @@ class GaussianTemporalEncoder(BaseModule):
 
         return anchors_warp, instance_feature_warp, anchors_indices
 
-    @torch.no_grad()
-    def _compute_motion_state(self, anchors, mask, batch_indices, gt_boxes):
-        """v10: per-current-gaussian OBSERVED motion state [vx, vy, heading].
-
-        Each current-frame gaussian is assigned to the GT box that contains it,
-        and inherits that box's observed velocity (cols 7:9) and heading (col 6).
-        Background gaussians (in no box) get zeros. The result is aligned to
-        ``anchors[mask]`` order (== feat[mask] inside the refine module). Uses
-        only observed current-frame quantities (no future) -> no label leakage.
-        """
-        if points_in_boxes_gpu is None or gt_boxes is None:
-            return None
-        xyz = self.get_xyz(anchors)                    # (num_valid, 3)
-        xyz_c = xyz[mask].float()                       # (Gc, 3) current frame
-        b_c = batch_indices[mask][:, 0].long()          # (Gc,) batch id
-        gt = gt_boxes
-        if not torch.is_tensor(gt):
-            gt = torch.as_tensor(gt)
-        gt = gt.to(xyz_c.device).float()
-        if gt.dim() == 2:
-            gt = gt[None]
-        B = gt.shape[0]
-        ms = xyz_c.new_zeros((xyz_c.shape[0], 3))
-        for b in range(B):
-            sel = (b_c == b)
-            if not sel.any():
-                continue
-            pts = xyz_c[sel][None].contiguous()               # (1, n, 3)
-            boxes7 = gt[b:b + 1, :, :7].contiguous()          # (1, T, 7)
-            box_idx = points_in_boxes_gpu(pts, boxes7)[0].long()  # (n,)
-            valid = box_idx >= 0
-            if valid.any():
-                bi = box_idx[valid]
-                vals = xyz_c.new_zeros((int(sel.sum()), 3))
-                vals[valid, 0] = gt[b, bi, 7]                 # vx
-                vals[valid, 1] = gt[b, bi, 8]                 # vy
-                vals[valid, 2] = gt[b, bi, 6]                 # heading
-                ms[sel] = vals
-        return ms
-
     def forward(self, anchors, instance_feature, metas, **kwargs):
         # TODO: 输入anchors shape需要对齐为 [B, F, N, C], instance_feature同理
         gt_boxes = kwargs.get('gt_boxes', None)
@@ -179,18 +139,16 @@ class GaussianTemporalEncoder(BaseModule):
                     mask = (batch_indices[:, 1] == batch_indices[:, 1].max())
                 else:
                     mask = None
-                motion_state = None
-                if (mask is not None
-                        and getattr(self.layers[i], 'motion_cond', False)
-                        and gt_boxes is not None):
-                    motion_state = self._compute_motion_state(
-                        anchors, mask, batch_indices, gt_boxes)
+                # v10: pass gt_boxes only to the offset-producing (last) refine
+                # layer; membership is computed inside it from gaussian.means.
+                gtb = gt_boxes if (mask is not None
+                                   and getattr(self.layers[i], 'motion_cond', False)) else None
                 anchors, gaussian, offset = self.layers[i](
                     instance_feature,
                     anchors,
                     anchor_embed,
                     mask,
-                    motion_state=motion_state
+                    gt_boxes=gtb
                 )
 
                 prediction.append({'gaussian': gaussian})

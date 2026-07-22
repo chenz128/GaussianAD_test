@@ -6,6 +6,11 @@ import torch.nn.functional as F
 from .utils import linear_relu_ln, GaussianPrediction
 from model.utils.safe_ops import safe_sigmoid
 
+try:
+    from model.ops.roiaware_pool3d.roiaware_pool3d_utils import points_in_boxes_gpu
+except Exception:  # pragma: no cover - only needed when motion_cond=True
+    points_in_boxes_gpu = None
+
 
 @MODELS.register_module()
 class SparseGaussian3DRefinementModule(BaseModule):
@@ -130,6 +135,12 @@ class SparseGaussian3DRefinementModule(BaseModule):
             self.offset_layers = nn.Sequential(
                 *linear_relu_ln(embed_dims, 1, 1, input_dims=in_dim),
                 nn.Linear(self.embed_dims, head_out))
+            if self.motion_cond:
+                # zero-init the last Linear so initial omega=accel=0 -> the
+                # offset starts as pure constant-velocity extrapolation v0*t
+                # (GT-scale, no random overshoot that would shock OccFlowLoss).
+                nn.init.zeros_(self.offset_layers[-1].weight)
+                nn.init.zeros_(self.offset_layers[-1].bias)
 
     def _kinematic_rollout(self, kin, v0=None):
         """Differentiable kinematic rollout -> (..., kin_steps*2) cumulative xy.
@@ -181,7 +192,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
         anchor: torch.Tensor,
         anchor_embed: torch.Tensor,
         mask=None,
-        motion_state=None,
+        gt_boxes=None,
     ):
         feat = instance_feature + anchor_embed
         output = self.layers(feat)
@@ -276,7 +287,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
         )
         if self.decouple_offset:
             if self.motion_cond:
-                offset = self._motion_offset(feat, mask, motion_state)
+                offset = self._motion_offset(feat, mask, gaussian.means, gt_boxes)
             else:
                 offset = offset_decoupled
                 if mask is not None:
@@ -285,16 +296,53 @@ class SparseGaussian3DRefinementModule(BaseModule):
             offset = output[..., -self.offset_dim:]
         return output, gaussian, offset
 
-    def _motion_offset(self, feat, mask, motion_state):
+    @torch.no_grad()
+    def _motion_state_from_boxes(self, means, gt_boxes):
+        """Per-gaussian observed motion state [vx, vy, heading] from the containing
+        GT box, using the SAME means physics_loss uses (safe for points_in_boxes).
+        means: (B, G, 3); gt_boxes: (B, T, >=9) [.,.,.,.,.,.,heading, vx, vy, ...].
+        Returns (B, G, 3); background (no box) -> zeros.
+        """
+        if points_in_boxes_gpu is None or gt_boxes is None:
+            return None
+        m = torch.nan_to_num(means.detach().float(), nan=0.0,
+                             posinf=0.0, neginf=0.0).contiguous()
+        gt = gt_boxes
+        if not torch.is_tensor(gt):
+            gt = torch.as_tensor(gt)
+        gt = gt.to(m.device).float()
+        if gt.dim() == 2:
+            gt = gt[None]
+        B, G = m.shape[0], m.shape[1]
+        boxes7 = gt[..., :7].contiguous()                     # (B, T, 7)
+        box_idx = points_in_boxes_gpu(m, boxes7).long()       # (B, G), -1 bg
+        ms = m.new_zeros((B, G, 3))
+        for b in range(B):
+            valid = box_idx[b] >= 0
+            if valid.any():
+                bi = box_idx[b, valid]
+                ms[b, valid, 0] = gt[b, bi, 7]                 # vx
+                ms[b, valid, 1] = gt[b, bi, 8]                 # vy
+                ms[b, valid, 2] = gt[b, bi, 6]                 # heading
+        return ms
+
+    def _motion_offset(self, feat, mask, means, gt_boxes):
         """v10: motion-conditioned bounded-CTRA offset for current-frame gaussians.
 
         ``feat`` is the (num_valid, C) pre-mask feature; we select the current
         frame with ``mask`` so the offset aligns with the masked means/gaussian.
-        ``motion_state`` (Gc, 3)=[vx, vy, heading] comes from the temporal encoder
-        (GT-box membership), in the same masked order. Detached so the offset
-        gradient never reaches the encoder (current-frame protection).
+        The observed motion state [vx, vy, heading] is derived here from the
+        (masked) ``means`` + ``gt_boxes`` (same membership as physics_loss).
+        Detached so the offset gradient never reaches the encoder.
         """
         feat_c = feat[mask] if mask is not None else feat
+        # means is (B, Gc, 3) after mask (unsqueezed) or (B, G, 3); flatten batch
+        # to align row-for-row with feat_c (num_current, C).
+        motion_state = None
+        if gt_boxes is not None and mask is not None:
+            ms = self._motion_state_from_boxes(means, gt_boxes)   # (B, Gc, 3)
+            if ms is not None:
+                motion_state = ms.reshape(-1, 3)
         if motion_state is None:
             motion_state = feat_c.new_zeros((feat_c.shape[0], 3))
         motion_state = motion_state.to(feat_c.dtype)
