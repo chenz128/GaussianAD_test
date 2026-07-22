@@ -1468,9 +1468,13 @@ class NuScenesDataset(Dataset):
             })
 
         if self.set_nan_velocity_to_zeros and 'gt_boxes' in data_dict:
-            gt_boxes = data_dict['gt_boxes']
-            gt_boxes[np.isnan(gt_boxes)] = 0
-            data_dict['gt_boxes'] = gt_boxes
+            # nuScenes may encode unavailable velocities as NaN.  Clean both
+            # geometry and velocity before concatenating them below; cleaning
+            # gt_boxes alone leaves NaN velocity in the final box tensor.
+            data_dict['gt_boxes'] = np.nan_to_num(
+                data_dict['gt_boxes'], nan=0.0, posinf=0.0, neginf=0.0)
+            data_dict['gt_velocity'] = np.nan_to_num(
+                data_dict['gt_velocity'], nan=0.0, posinf=0.0, neginf=0.0)
 
         if data_dict.get('gt_boxes', None) is not None:
             data_dict['gt_boxes'] = np.concatenate((data_dict['gt_boxes'], data_dict['gt_velocity']), axis=1)

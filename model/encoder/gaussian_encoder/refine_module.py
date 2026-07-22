@@ -321,7 +321,12 @@ class SparseGaussian3DRefinementModule(BaseModule):
         gt = gt_boxes
         if not torch.is_tensor(gt):
             gt = torch.as_tensor(gt)
-        gt = gt.float().cpu()
+        # The dataset normally sanitizes unavailable nuScenes velocities, but
+        # keep this model boundary defensive for old PKLs and external callers.
+        # A single NaN on one DDP rank otherwise poisons the all-reduced gradient
+        # and makes all anchors non-finite on the next iteration.
+        gt = torch.nan_to_num(gt.float().cpu(), nan=0.0,
+                      posinf=0.0, neginf=0.0)
         if gt.dim() == 2:
             gt = gt[None]
         B, G = m.shape[0], m.shape[1]
@@ -375,7 +380,9 @@ class SparseGaussian3DRefinementModule(BaseModule):
                 motion_state = ms.reshape(-1, 3)
         if motion_state is None:
             motion_state = feat_c.new_zeros((feat_c.shape[0], 3))
-        motion_state = motion_state.to(feat_c.dtype)
+        motion_state = torch.nan_to_num(
+            motion_state.to(device=feat_c.device, dtype=feat_c.dtype),
+            nan=0.0, posinf=0.0, neginf=0.0)
         s = self.offset_grad_scale
         if s and s > 0:
             feat_off = s * feat_c + (1.0 - s) * feat_c.detach()
