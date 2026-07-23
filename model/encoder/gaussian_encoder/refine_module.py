@@ -79,11 +79,14 @@ class SparseGaussian3DRefinementModule(BaseModule):
         self.motion_v_thresh = motion_v_thresh
         # number of future steps = offset_dim // 2
         self.kin_steps = offset_dim // 2
-        # Kinematic head param count: motion-conditioned CTRA predicts only
-        # [omega, accel] and starts from the observed box velocity. Predicting
-        # [vx, vy] from an all-zero final layer creates a dead point: both the
-        # speed norm and guarded atan2 have zero gradient at vx=vy=0, so those
-        # two output rows can never leave zero. Legacy CTRV remains 3 params.
+        # kinematic head param count: motion-conditioned CTRA=2 [omega, accel]
+        # ONLY. The initial velocity v0 is the OBSERVED GT-box velocity (passed
+        # into the rollout), NOT predicted. A zero-init head => omega=accel=0 =>
+        # offset = v0*t (real constant-velocity extrapolation, non-zero for
+        # movers, no OccFlowLoss shock). Predicting v0 instead put the head at a
+        # zero-gradient fixed point (at v=0, d|v|/dv=0 AND atan2 routes to a
+        # constant heading, so vx,vy never receive gradient) -> offset stuck at
+        # 0 forever. legacy CTRV=3 [vx, vy, omega].
         self.kin_param_dim = 2 if motion_cond else 3
 
         if semantics:
@@ -139,31 +142,65 @@ class SparseGaussian3DRefinementModule(BaseModule):
                 *linear_relu_ln(embed_dims, 1, 1, input_dims=in_dim),
                 nn.Linear(self.embed_dims, head_out))
             if self.motion_cond:
-                # Zero-init gives omega=accel=0, hence a physically sensible
-                # constant-velocity extrapolation from the observed v0.
+                # zero-init the last Linear so initial omega=accel=0 -> the
+                # offset starts as pure constant-velocity extrapolation v0*t
+                # (GT-scale, no random overshoot that would shock OccFlowLoss).
                 nn.init.zeros_(self.offset_layers[-1].weight)
                 nn.init.zeros_(self.offset_layers[-1].bias)
 
     def _kinematic_rollout(self, kin, v0=None):
         """Differentiable kinematic rollout -> (..., kin_steps*2) cumulative xy.
 
-                Two modes:
-                    * v10 bounded CTRA (kin=[omega_raw, accel_raw], v0=[vx, vy]): the head
-                        predicts bounded yaw rate and longitudinal acceleration, while the
-                        initial velocity comes directly from the observed GT-box state. A
-                        zero-init head therefore starts as constant-velocity extrapolation.
-                    * legacy CTRV (kin=[vx, vy, omega], 3 params): constant-speed arc (v9).
+        Modes (selected by args):
+          * v10 motion-conditioned CTRA (v0 given, kin=[omega_raw, accel_raw],
+            2 params): the initial velocity v0 is the OBSERVED GT-box velocity
+            (constant, no grad); the head predicts only a BOUNDED yaw rate
+            (omega_max*tanh) and longitudinal accel (accel_max*tanh). Zero-init
+            head => omega=accel=0 => offset=v0*t (real constant-velocity
+            extrapolation, non-zero for movers). Cannot spin into circles
+            (bounded omega), can brake (accel<0), and has NO zero-gradient dead
+            point (v0 is provided, not predicted).
+          * legacy predicted-v0 CTRA (kin=[vx, vy, omega_raw, accel_raw], 4
+            params): head predicts v0 too. UNUSED -- kept for back-compat; it
+            has a zero-gradient fixed point at v=0 (offset stays 0 forever).
+          * legacy CTRV (kin=[vx, vy, omega], 3 params): constant-speed arc (v9).
         """
         dt = self.kin_dt
         steps = self.kin_steps
         j = torch.arange(1, steps + 1, device=kin.device, dtype=kin.dtype)  # (S,)
-        if v0 is not None:
-            if kin.shape[-1] != 2 or v0.shape[-1] != 2:
-                raise ValueError('motion-conditioned CTRA expects kin (...,2) and v0 (...,2)')
+        if v0 is not None and kin.shape[-1] == 2:
+            # v10 motion-conditioned CTRA: the initial velocity v0=[vx, vy] is
+            # the OBSERVED GT-box velocity (a constant, no grad); the head
+            # predicts ONLY [omega, accel]. With omega=accel=0 (zero-init) the
+            # offset is exactly v0*t. Because s0=|v0| is the REAL speed (not ~0),
+            # the gradient to omega/accel is well-scaled from the first iter, so
+            # the head can immediately learn turning / braking. There is no dead
+            # fixed point because v0 is provided, not predicted.
             vx0 = v0[..., 0]
             vy0 = v0[..., 1]
             omega = self.kin_omega_max * torch.tanh(kin[..., 0])   # bounded
             accel = self.kin_accel_max * torch.tanh(kin[..., 1])   # bounded
+            s0 = torch.sqrt(vx0 * vx0 + vy0 * vy0 + 1e-8)          # observed speed
+            # atan2(0,0) has NaN grad; static gaussians (v0=0) are zero-gated
+            # downstream anyway, so route them to a constant heading here.
+            near0 = (vx0 * vx0 + vy0 * vy0) < 1e-8
+            vx0g = torch.where(near0, torch.ones_like(vx0), vx0)
+            vy0g = torch.where(near0, torch.zeros_like(vy0), vy0)
+            head0 = torch.atan2(vy0g, vx0g)                        # observed heading
+            t = j * dt                                             # (S,)
+            hj = head0[..., None] + omega[..., None] * t           # (..., S)
+            sj = torch.relu(s0[..., None] + accel[..., None] * t)  # (..., S) >=0
+            vjx = sj * torch.cos(hj)
+            vjy = sj * torch.sin(hj)
+            dispx = torch.cumsum(vjx * dt, dim=-1)
+            dispy = torch.cumsum(vjy * dt, dim=-1)
+            off = torch.stack([dispx, dispy], dim=-1)              # (..., S, 2)
+            return off.reshape(*off.shape[:-2], steps * 2)
+        if kin.shape[-1] == 4:
+            vx0 = kin[..., 0]
+            vy0 = kin[..., 1]
+            omega = self.kin_omega_max * torch.tanh(kin[..., 2])   # bounded
+            accel = self.kin_accel_max * torch.tanh(kin[..., 3])   # bounded
             s0 = torch.sqrt(vx0 * vx0 + vy0 * vy0 + 1e-8)          # speed
             # guard atan2(0, 0): its gradient is NaN, which would propagate even
             # through a zero static gate (0 * NaN = NaN). Route near-zero-velocity
@@ -389,7 +426,11 @@ class SparseGaussian3DRefinementModule(BaseModule):
         else:
             feat_off = feat_c.detach()
         raw = self.offset_layers(torch.cat([feat_off, motion_state], dim=-1))
-        off = self._kinematic_rollout(raw, v0=motion_state[..., :2])
+        # observed GT-box velocity is the CTRA initial velocity (constant, no
+        # grad); the head's raw output is only [omega, accel]. This fixes the
+        # zero-gradient dead point of the previous predicted-v0 head.
+        v0 = motion_state[..., :2]
+        off = self._kinematic_rollout(raw, v0=v0)
         # static gate: gaussians whose OBSERVED speed ~0 get exactly zero offset,
         # so the background never drifts (makes loss_static redundant).
         s0 = motion_state[..., :2].norm(dim=-1)
