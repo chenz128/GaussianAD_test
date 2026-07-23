@@ -46,6 +46,10 @@ model = dict(
             kin_omega_max=0.5,    # rad/s，3s 最多转 ~86°，覆盖真值 p90(38°)
             kin_accel_max=3.0,    # m/s²，支持刹车/加速
             motion_v_thresh=0.5,  # 观测速度 <0.5m/s 视为静止，offset 置 0
+            # 解耦 dynamic 头：dynamic_layers 读 feat.detach()，DynamicLoss 只训
+            # dynamic 头、梯度不回流编码器 → 当前帧 occ 结构性 == base（offset
+            # 头本就已解耦，这里补上最后一条 base 没有的编码器梯度泄漏）。
+            decouple_dynamic=True,
         ),
     ),
 )

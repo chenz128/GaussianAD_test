@@ -30,6 +30,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
         semantics_activation='softmax',
         offset_dim=2*6,
         use_dynamic=False,
+        decouple_dynamic=False,
         decouple_offset=False,
         offset_grad_scale=0.0,
         offset_mode='free',
@@ -43,6 +44,12 @@ class SparseGaussian3DRefinementModule(BaseModule):
         self.embed_dims = embed_dims
         self.xyz_coordinate = xyz_coordinate
         self.use_dynamic = use_dynamic
+        # v10: when True, the dynamic head reads a DETACHED feature so
+        # DynamicLoss trains only dynamic_layers and never leaks gradient into
+        # the shared encoder -> current-frame occ stays == base (the offset head
+        # is already decoupled; this closes the last encoder-touching path that
+        # base did not have).
+        self.decouple_dynamic = decouple_dynamic
         # When True, the returned offset is produced by a dedicated head that
         # reads a DETACHED copy of the shared feature. This isolates the offset
         # (and therefore all PhysicsLoss / OccFlowLoss-via-offset gradients)
@@ -242,7 +249,11 @@ class SparseGaussian3DRefinementModule(BaseModule):
     ):
         feat = instance_feature + anchor_embed
         output = self.layers(feat)
-        dynamic_logits = self.dynamic_layers(feat) if self.use_dynamic else None
+        # v10: optionally decouple the dynamic head from the encoder (read a
+        # DETACHED feature) so DynamicLoss trains only dynamic_layers and never
+        # perturbs the shared encoder -> current-frame occ stays == base.
+        dyn_in = feat.detach() if self.decouple_dynamic else feat
+        dynamic_logits = self.dynamic_layers(dyn_in) if self.use_dynamic else None
         # Decoupled offset: read a DETACHED feature so its gradient stops at the
         # offset head and never pollutes the encoder. Masked at the end to match
         # the (masked) output layout, mirroring dynamic_logits. When
