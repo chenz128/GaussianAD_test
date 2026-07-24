@@ -51,14 +51,20 @@ class MotionCrossAttention(nn.Module):
         nn.init.zeros_(self.o_proj.bias)
 
     def _attn(self, q, k, v):
-        # q: (Nc, C); k, v: (Nk, C) -> (Nc, C)
+        # q: (Nc, C); k, v: (Nk, C) -> (Nc, C). Manual attention (matmul +
+        # softmax) rather than F.scaled_dot_product_attention: the fused flash
+        # backward kernel raised 'CUDA illegal instruction' on this torch/Hopper
+        # build. Q is capped upstream (top movers) so the (H, Nc, Nk) score
+        # matrix stays bounded.
         Nc, Nk = q.shape[0], k.shape[0]
         H, D = self.num_heads, self.head_dim
-        q = q.reshape(Nc, H, D).transpose(0, 1).unsqueeze(0)  # (1, H, Nc, D)
-        k = k.reshape(Nk, H, D).transpose(0, 1).unsqueeze(0)  # (1, H, Nk, D)
-        v = v.reshape(Nk, H, D).transpose(0, 1).unsqueeze(0)
-        o = F.scaled_dot_product_attention(q, k, v)           # (1, H, Nc, D)
-        return o.squeeze(0).transpose(0, 1).reshape(Nc, self.embed_dims)
+        q = q.reshape(Nc, H, D).transpose(0, 1)              # (H, Nc, D)
+        k = k.reshape(Nk, H, D).transpose(0, 1)              # (H, Nk, D)
+        v = v.reshape(Nk, H, D).transpose(0, 1)              # (H, Nk, D)
+        attn = torch.matmul(q, k.transpose(-1, -2)) * (D ** -0.5)  # (H, Nc, Nk)
+        attn = attn.softmax(dim=-1)
+        o = torch.matmul(attn, v)                            # (H, Nc, D)
+        return o.transpose(0, 1).reshape(Nc, self.embed_dims)
 
     def forward(self, q_feat, q_pos, kv_feat, kv_pos, kv_dt,
                 q_bidx=None, kv_bidx=None):
@@ -110,6 +116,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
         motion_v_thresh=0.5,
         use_motion_attn=False,
         motion_attn_heads=4,
+        motion_attn_max_q=1024,
     ):
         super(SparseGaussian3DRefinementModule, self).__init__()
         self.embed_dims = embed_dims
@@ -160,6 +167,11 @@ class SparseGaussian3DRefinementModule(BaseModule):
         # that the v10 raw motion_state concat could not provide.
         self.use_motion_attn = use_motion_attn
         self.motion_attn_heads = motion_attn_heads
+        # cap the number of query gaussians for the motion attention: only the
+        # fastest-moving current gaussians need motion context (static ones are
+        # zero-gated). A FIXED cap keeps the autograd graph constant every iter
+        # (static_graph=True compatible) and bounds the score-matrix memory.
+        self.motion_attn_max_q = motion_attn_max_q
         # number of future steps = offset_dim // 2
         self.kin_steps = offset_dim // 2
         # kinematic head param count: motion-conditioned CTRA=2 [omega, accel]
@@ -553,10 +565,18 @@ class SparseGaussian3DRefinementModule(BaseModule):
                                 - lo) / span
                     fmax = batch_indices[:, 1].max()
                     dt = (fmax - batch_indices[hist, 1]).to(feat_off.dtype)
-                    attn_out = self.motion_attn(
-                        feat_off, cur_pos, feat_h, hist_pos, dt,
-                        q_bidx=batch_indices[mask, 0],
-                        kv_bidx=batch_indices[hist, 0])
+                    # Only the fastest-moving current gaussians need motion
+                    # context (static ones are zero-gated downstream). Take a
+                    # FIXED top-K by observed speed so the attention memory is
+                    # bounded and the graph is constant (static_graph safe).
+                    s0_all = motion_state[..., :2].norm(dim=-1)   # (Nc,)
+                    kq = min(self.motion_attn_max_q, s0_all.shape[0])
+                    topk = torch.topk(s0_all, kq).indices          # (kq,)
+                    q_bidx = batch_indices[mask, 0]
+                    attn_k = self.motion_attn(
+                        feat_off[topk], cur_pos[topk], feat_h, hist_pos, dt,
+                        q_bidx=q_bidx[topk], kv_bidx=batch_indices[hist, 0])
+                    attn_out = attn_out.index_copy(0, topk, attn_k)
             head_in = feat_off + attn_out
         else:
             head_in = torch.cat([feat_off, motion_state], dim=-1)
