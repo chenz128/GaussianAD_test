@@ -143,12 +143,19 @@ class GaussianTemporalEncoder(BaseModule):
                 # layer; membership is computed inside it from gaussian.means.
                 gtb = gt_boxes if (mask is not None
                                    and getattr(self.layers[i], 'motion_cond', False)) else None
+                # v11c: give the offset-producing (last) refine layer the
+                # batch/frame indices so MotionCrossAttention can pair current
+                # gaussians with their same-sample historical gaussians.
+                bidx = (batch_indices if (mask is not None
+                        and getattr(self.layers[i], 'use_motion_attn', False))
+                        else None)
                 anchors, gaussian, offset = self.layers[i](
                     instance_feature,
                     anchors,
                     anchor_embed,
                     mask,
-                    gt_boxes=gtb
+                    gt_boxes=gtb,
+                    batch_indices=bidx,
                 )
 
                 prediction.append({'gaussian': gaussian})

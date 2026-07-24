@@ -3,13 +3,82 @@ from mmengine.model import BaseModule
 from mmcv.cnn import Scale
 import torch.nn as nn, torch
 import torch.nn.functional as F
-from .utils import linear_relu_ln, GaussianPrediction
+from .utils import linear_relu_ln, GaussianPrediction, cartesian
 from model.utils.safe_ops import safe_sigmoid
 
 try:
     from model.ops.roiaware_pool3d.roiaware_pool3d_utils import points_in_boxes_gpu
 except Exception:  # pragma: no cover - only needed when motion_cond=True
     points_in_boxes_gpu = None
+
+
+class MotionCrossAttention(nn.Module):
+    """v11c: current-frame gaussians attend to their historical-frame gaussians
+    to gather object-motion context (position-sequence curvature -> turn rate)
+    for the offset head. Association is GEOMETRIC: position is embedded into both
+    Q and K, so a current gaussian focuses on the spatially-consistent history of
+    the same object (the lifter tiles a SPATIAL anchor set across frames, so a
+    moving object occupies different anchor indices per frame -> per-index
+    temporal attention would not track it; position-keyed attention does).
+
+    Memory-efficient via scaled_dot_product_attention (no N_q x N_k matrix
+    materialized). The output projection is zero-initialized so at init the
+    attention contributes 0 -> motion_feat == feat and the offset head starts
+    exactly as the v10 constant-velocity CTRA rollout (no shock).
+    """
+
+    def __init__(self, embed_dims, num_heads=4):
+        super().__init__()
+        assert embed_dims % num_heads == 0, \
+            'embed_dims must be divisible by num_heads'
+        self.embed_dims = embed_dims
+        self.num_heads = num_heads
+        self.head_dim = embed_dims // num_heads
+        self.q_proj = nn.Linear(embed_dims, embed_dims)
+        self.k_proj = nn.Linear(embed_dims, embed_dims)
+        self.v_proj = nn.Linear(embed_dims, embed_dims)
+        self.o_proj = nn.Linear(embed_dims, embed_dims)
+        # position (xyz, normalized to ~[0,1]) and time-gap (dt in frames)
+        # embeddings, added into Q/K so attention is geometric + time-aware.
+        self.pos_mlp = nn.Sequential(
+            nn.Linear(3, embed_dims), nn.ReLU(inplace=True),
+            nn.Linear(embed_dims, embed_dims))
+        self.dt_mlp = nn.Sequential(
+            nn.Linear(1, embed_dims), nn.ReLU(inplace=True),
+            nn.Linear(embed_dims, embed_dims))
+        # zero-init output: attention contributes 0 at init -> == v10 start.
+        nn.init.zeros_(self.o_proj.weight)
+        nn.init.zeros_(self.o_proj.bias)
+
+    def _attn(self, q, k, v):
+        # q: (Nc, C); k, v: (Nk, C) -> (Nc, C)
+        Nc, Nk = q.shape[0], k.shape[0]
+        H, D = self.num_heads, self.head_dim
+        q = q.reshape(Nc, H, D).transpose(0, 1).unsqueeze(0)  # (1, H, Nc, D)
+        k = k.reshape(Nk, H, D).transpose(0, 1).unsqueeze(0)  # (1, H, Nk, D)
+        v = v.reshape(Nk, H, D).transpose(0, 1).unsqueeze(0)
+        o = F.scaled_dot_product_attention(q, k, v)           # (1, H, Nc, D)
+        return o.squeeze(0).transpose(0, 1).reshape(Nc, self.embed_dims)
+
+    def forward(self, q_feat, q_pos, kv_feat, kv_pos, kv_dt,
+                q_bidx=None, kv_bidx=None):
+        """q_feat/kv_feat: (Nq/Nk, C); q_pos/kv_pos: (.,3) normalized; kv_dt: (Nk,)
+        q_bidx/kv_bidx: (.,) real batch id so a current gaussian only attends to
+        history of the SAME sample. Returns (Nq, C) additive residual."""
+        q = self.q_proj(q_feat) + self.pos_mlp(q_pos)
+        k = (self.k_proj(kv_feat) + self.pos_mlp(kv_pos)
+             + self.dt_mlp(kv_dt[:, None]))
+        v = self.v_proj(kv_feat)
+        if q_bidx is None or kv_bidx is None:
+            out = self._attn(q, k, v)
+        else:
+            out = torch.zeros_like(q)
+            for b in torch.unique(q_bidx):
+                qm = q_bidx == b
+                km = kv_bidx == b
+                if km.any():
+                    out[qm] = self._attn(q[qm], k[km], v[km])
+        return self.o_proj(out)
 
 
 @MODELS.register_module()
@@ -39,6 +108,8 @@ class SparseGaussian3DRefinementModule(BaseModule):
         kin_omega_max=0.5,
         kin_accel_max=3.0,
         motion_v_thresh=0.5,
+        use_motion_attn=False,
+        motion_attn_heads=4,
     ):
         super(SparseGaussian3DRefinementModule, self).__init__()
         self.embed_dims = embed_dims
@@ -84,6 +155,11 @@ class SparseGaussian3DRefinementModule(BaseModule):
         self.kin_omega_max = kin_omega_max
         self.kin_accel_max = kin_accel_max
         self.motion_v_thresh = motion_v_thresh
+        # v11c: current<-historical gaussian cross-attention feeds the offset
+        # head real object-motion context (position-sequence curvature -> omega)
+        # that the v10 raw motion_state concat could not provide.
+        self.use_motion_attn = use_motion_attn
+        self.motion_attn_heads = motion_attn_heads
         # number of future steps = offset_dim // 2
         self.kin_steps = offset_dim // 2
         # kinematic head param count: motion-conditioned CTRA=2 [omega, accel]
@@ -144,7 +220,13 @@ class SparseGaussian3DRefinementModule(BaseModule):
                         else self.offset_dim)
             # v10: concat the 3-dim motion state ([vx, vy, heading]) onto the
             # detached feature -> the first Linear consumes embed_dims + 3.
-            in_dim = self.embed_dims + (3 if self.motion_cond else 0)
+            # v11c: when use_motion_attn, motion context is injected as an
+            # additive residual by MotionCrossAttention (not the raw concat), so
+            # the head consumes just embed_dims.
+            if self.use_motion_attn:
+                in_dim = self.embed_dims
+            else:
+                in_dim = self.embed_dims + (3 if self.motion_cond else 0)
             self.offset_layers = nn.Sequential(
                 *linear_relu_ln(embed_dims, 1, 1, input_dims=in_dim),
                 nn.Linear(self.embed_dims, head_out))
@@ -154,6 +236,9 @@ class SparseGaussian3DRefinementModule(BaseModule):
                 # (GT-scale, no random overshoot that would shock OccFlowLoss).
                 nn.init.zeros_(self.offset_layers[-1].weight)
                 nn.init.zeros_(self.offset_layers[-1].bias)
+            if self.use_motion_attn:
+                self.motion_attn = MotionCrossAttention(
+                    self.embed_dims, num_heads=self.motion_attn_heads)
 
     def _kinematic_rollout(self, kin, v0=None):
         """Differentiable kinematic rollout -> (..., kin_steps*2) cumulative xy.
@@ -246,6 +331,7 @@ class SparseGaussian3DRefinementModule(BaseModule):
         anchor_embed: torch.Tensor,
         mask=None,
         gt_boxes=None,
+        batch_indices=None,
     ):
         feat = instance_feature + anchor_embed
         output = self.layers(feat)
@@ -344,7 +430,9 @@ class SparseGaussian3DRefinementModule(BaseModule):
         )
         if self.decouple_offset:
             if self.motion_cond:
-                offset = self._motion_offset(feat, mask, gaussian.means, gt_boxes)
+                offset = self._motion_offset(
+                    feat, mask, gaussian.means, gt_boxes,
+                    anchor=anchor, batch_indices=batch_indices)
             else:
                 offset = offset_decoupled
                 if mask is not None:
@@ -411,14 +499,19 @@ class SparseGaussian3DRefinementModule(BaseModule):
                 ms[b, sel, 2] = gt[b, bi, 6]                  # heading
         return ms.to(means.device)
 
-    def _motion_offset(self, feat, mask, means, gt_boxes):
-        """v10: motion-conditioned bounded-CTRA offset for current-frame gaussians.
+    def _motion_offset(self, feat, mask, means, gt_boxes, anchor=None,
+                       batch_indices=None):
+        """v10/v11c: motion-conditioned bounded-CTRA offset for current-frame
+        gaussians.
 
-        ``feat`` is the (num_valid, C) pre-mask feature; we select the current
-        frame with ``mask`` so the offset aligns with the masked means/gaussian.
-        The observed motion state [vx, vy, heading] is derived from the (masked)
-        ``means`` + ``gt_boxes`` via _motion_state_from_boxes (CPU membership).
-        Detached so the offset gradient never reaches the encoder.
+        v10: the offset head reads feat.detach() concatenated with the observed
+        motion state [vx, vy, heading] from the containing GT box.
+        v11c (use_motion_attn): the concat is REPLACED by a MotionCrossAttention
+        residual -- current-frame gaussians attend to their historical-frame
+        gaussians (geometric, position-keyed) to gather real object-motion
+        context (curvature -> turn rate). v0 + the static gate are still taken
+        from the observed motion state. Both Q and the historical K/V feature
+        paths carry the same offset_grad_scale blend; positions are detached.
         """
         feat_c = feat[mask] if mask is not None else feat
         motion_state = None
@@ -431,12 +524,44 @@ class SparseGaussian3DRefinementModule(BaseModule):
         motion_state = torch.nan_to_num(
             motion_state.to(device=feat_c.device, dtype=feat_c.dtype),
             nan=0.0, posinf=0.0, neginf=0.0)
+
         s = self.offset_grad_scale
-        if s and s > 0:
-            feat_off = s * feat_c + (1.0 - s) * feat_c.detach()
+
+        def _blend(x):
+            # straight-through: forward == x, gradient to encoder scaled by s.
+            if s and s > 0:
+                return s * x + (1.0 - s) * x.detach()
+            return x.detach()
+
+        feat_off = _blend(feat_c)
+
+        if self.use_motion_attn:
+            # current-frame gaussians attend to their historical-frame
+            # counterparts to gather object-motion context for omega/accel.
+            attn_out = torch.zeros_like(feat_off)
+            if (anchor is not None and batch_indices is not None
+                    and mask is not None):
+                hist = ~mask
+                if hist.any():
+                    feat_h = _blend(feat[hist])
+                    lo = feat_off.new_tensor(self.pc_range[:3])
+                    span = feat_off.new_tensor(
+                        [self.pc_range[i + 3] - self.pc_range[i]
+                         for i in range(3)])
+                    cur_pos = (means.reshape(-1, 3).detach() - lo) / span
+                    hist_pos = (cartesian(anchor[hist], self.pc_range).detach()
+                                - lo) / span
+                    fmax = batch_indices[:, 1].max()
+                    dt = (fmax - batch_indices[hist, 1]).to(feat_off.dtype)
+                    attn_out = self.motion_attn(
+                        feat_off, cur_pos, feat_h, hist_pos, dt,
+                        q_bidx=batch_indices[mask, 0],
+                        kv_bidx=batch_indices[hist, 0])
+            head_in = feat_off + attn_out
         else:
-            feat_off = feat_c.detach()
-        raw = self.offset_layers(torch.cat([feat_off, motion_state], dim=-1))
+            head_in = torch.cat([feat_off, motion_state], dim=-1)
+
+        raw = self.offset_layers(head_in)
         # observed GT-box velocity is the CTRA initial velocity (constant, no
         # grad); the head's raw output is only [omega, accel]. This fixes the
         # zero-gradient dead point of the previous predicted-v0 head.

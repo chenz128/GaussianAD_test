@@ -1,4 +1,5 @@
 import logging
+import math
 import torch
 import torch.nn as nn
 from . import OPENOCC_LOSS
@@ -340,12 +341,23 @@ class PhysicsLoss(BaseLoss):
                 off_mag = offset.pow(2).sum(-1).sqrt().mean().item()
                 if gt_dyn_mask is not None and gt_dyn_mask.any():
                     off_dyn = offset.pow(2).sum(-1).sqrt()[gt_dyn_mask].mean().item()
+                    # v11c: mean total heading change (deg) of the dynamic
+                    # offset trajectory over its 6 steps -> quantifies whether
+                    # the CTRA turn rate has revived (v10 collapsed to ~0-2deg).
+                    od = offset[gt_dyn_mask]                       # (Nd, 6, 2)
+                    step = od[:, 1:, :] - od[:, :-1, :]            # (Nd, 5, 2)
+                    hd = torch.atan2(step[..., 1], step[..., 0])   # (Nd, 5)
+                    dh = hd[:, 1:] - hd[:, :-1]                     # (Nd, 4)
+                    dh = (dh + math.pi) % (2 * math.pi) - math.pi
+                    turn_deg = dh.abs().sum(-1).mean().item() * 180.0 / math.pi
                 else:
                     off_dyn = 0.0
+                    turn_deg = 0.0
             _msg = (
                 f'[PhysicsLoss Diag] iter={self._diag_counter} | '
                 f'gt_box={self.use_gt_box} static={n_static} dyn={n_dyn} | '
-                f'offset_rms={off_mag:.4f} offset_dyn_rms={off_dyn:.4f} | '
+                f'offset_rms={off_mag:.4f} offset_dyn_rms={off_dyn:.4f} '
+                f'turn_deg={turn_deg:.2f} | '
                 f'loss_static={loss_static.item():.4f} '
                 f'loss_smooth={loss_smooth.item():.4f} '
                 f'loss_rigid={loss_rigid.item():.4f} '
