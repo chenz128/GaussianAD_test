@@ -20,6 +20,7 @@ class GaussianHead(BaseTaskHead):
         dataset_type='nusc',
         empty_label=17,
         render_config=None,
+        flow_grad_scale=1.0,
         **kwargs,
     ):
         super().__init__(init_cfg)
@@ -45,6 +46,19 @@ class GaussianHead(BaseTaskHead):
 
         self.register_buffer('zero_tensor', torch.zeros(1, dtype=torch.float))
 
+        # v12 (P1): fraction of the OccFlowLoss gradient allowed to reach the
+        # CURRENT-frame gaussians (means / opacity / semantics / scales) through
+        # the future-occ branch. The future occ is built as
+        # ``current gaussians (+offset) - ego``, so without this gate the future
+        # loss also reshapes the current-frame representation -- a coupling that
+        # ``decouple_offset`` does NOT cover (it only gates offset -> encoder).
+        #   1.0 -> legacy behaviour (fully coupled)
+        #   0.0 -> the future branch trains ONLY the offset; the current frame
+        #          is decided solely by OccupancyLoss + DetectionLoss.
+        # Straight-through: the forward value is unchanged, only the backward
+        # pass is scaled, so the future prediction still uses the real gaussians.
+        self.flow_grad_scale = flow_grad_scale
+
         # 2D Gaussian splatting renderer (pseudo-label supervision)
         self.rasterizer_2d = None
         if render_config is not None:
@@ -55,6 +69,21 @@ class GaussianHead(BaseTaskHead):
         for m in self.modules():
             if hasattr(m, "init_weight"):
                 m.init_weight()
+
+    def _flow_blend(self, x):
+        """Straight-through gradient scaling for the future-occ branch (v12/P1).
+
+        ``s*x + (1-s)*x.detach()`` has the SAME forward value as ``x`` but its
+        gradient is scaled by ``s``, so the future-occ loss can be prevented
+        from reshaping the current-frame gaussians without changing what the
+        future branch actually sees.
+        """
+        s = self.flow_grad_scale
+        if s >= 1.0:
+            return x
+        if s <= 0.0:
+            return x.detach()
+        return s * x + (1.0 - s) * x.detach()
 
     def _sampling(self, gt_xyz, gt_label, gt_mask=None):
         if gt_mask is None:
@@ -128,7 +157,11 @@ class GaussianHead(BaseTaskHead):
         offset = torch.cat((offset, zeros), dim=-1)
 
         gaussian = representation_temp['gaussian']
-        means = gaussian.means
+        # v12 (P1): gate the gradient the future branch sends back into the
+        # current-frame gaussians (see self.flow_grad_scale). Forward values are
+        # untouched, so the future occ is still built from the real gaussians.
+        means = self._flow_blend(gaussian.means)
+        gs = tuple(self._flow_blend(t) for t in gs)
         means_fut = means[...,None,:] + offset
         pred_flow = []
         # Ego motion for occ_flow: use the GT ego trajectory, NOT the planner
