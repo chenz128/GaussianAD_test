@@ -139,7 +139,7 @@ def main():
     )
     empty_ratio = float((np.stack(pred_steps) == EMPTY_LABEL).mean())
         print(f"[OK] wrote {out_path}; empty_scalar={empty_scalar:.4f}; "
-            f"future predicted-empty ratio={empty_ratio:.2%}")
+                    f"future predicted-empty ratio={empty_ratio:.2%}")
 
 
 if __name__ == "__main__":
