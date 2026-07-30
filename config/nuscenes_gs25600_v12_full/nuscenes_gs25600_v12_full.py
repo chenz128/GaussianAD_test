@@ -16,6 +16,9 @@ _base_ = ['../nuscenes_gs25600_gtbox_oracle_v12.py']
 
 max_epochs = 20
 
+# 全量 val 每轮多花几十分钟；改 4 轮一次（epoch 4/8/12/16/20 评估）
+eval_every_epochs = 4
+
 # num_samples=0 -> dataset 不做子采样，使用 pkl 中的全部 keyframe
 train_dataset_config = dict(num_samples=0)
 val_dataset_config = dict(num_samples=0)
