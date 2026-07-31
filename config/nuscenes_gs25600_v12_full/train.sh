@@ -6,8 +6,7 @@
 #   train 3000 子集 → 全量、val 2000 子集 → 全量、max_epochs 15 → 20
 #   （20 epoch 对齐 out/nuscenes_gs25600_4gpu_v4 那次 4 卡全量实验）
 #
-# 机器：h20-old  ssh -p 30300 root@8.130.174.55
-# GPU ：4,5,6,7
+# GPU ：单节点 8 卡
 # 用法：tmux new -s train_v12_full
 #       bash config/nuscenes_gs25600_v12_full/train.sh
 # ============================================================================
@@ -15,12 +14,19 @@ set -euo pipefail
 
 EXP_NAME="nuscenes_gs25600_v12_full"
 REPO="/data/chenz/GaussianAD"
-PY="/data/chenz/conda_env/splatting/bin/torchrun"
+ENV_DIR="/data/chenz/conda_env/splatting"
+PY="${ENV_DIR}/bin/torchrun"
 CONFIG="config/${EXP_NAME}/${EXP_NAME}.py"
 WORK_DIR="out/${EXP_NAME}"
-GPUS="4,5,6,7"
-NPROC=4
-MASTER_PORT=12481
+GPUS="0,1,2,3,4,5,6,7"
+NPROC=8
+MASTER_PORT=12345
+
+if [[ ! -x "${PY}" ]]; then
+  echo "[FATAL] Training environment not found: ${ENV_DIR}" >&2
+  exit 1
+fi
+export PATH="${ENV_DIR}/bin:${PATH}"
 
 cd "${REPO}"
 mkdir -p "${WORK_DIR}"
