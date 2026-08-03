@@ -1,3 +1,29 @@
+# Large directories
 data/
 exp/
 assets/
+ckpts/
+
+# Training outputs
+out/
+*.log
+
+# Build artifacts
+build/
+*.egg-info/
+
+# Compiled Python and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Auto-generated build version
+model/ops/version.py
