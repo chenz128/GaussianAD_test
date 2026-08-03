@@ -1,7 +1,7 @@
 #!/bin/bash
 set -x
 set -e
-
+conda activate /data/chenz/conda_env/splatting
 export PYTHONPATH=./src:$PYTHONPATH
 
 export CUDA_VISIBLE_DEVICES=1,2,3
