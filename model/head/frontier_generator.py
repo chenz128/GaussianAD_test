@@ -56,9 +56,10 @@ class FrontierGenerator(nn.Module):
         self._init_head(init_scale, init_opacity)
 
     def _init_head(self, init_scale, init_opacity):
-        # Zero-init so the first forward emits the geometric prior verbatim.
+        # Near-zero (not zero) weights: the first forward still emits the
+        # geometric prior, but gradient can reach the trunk from step one.
         head = self.net[-1]
-        nn.init.zeros_(head.weight)
+        nn.init.normal_(head.weight, std=1e-3)
         nn.init.zeros_(head.bias)
         lo, hi = float(self.scale_range[0]), float(self.scale_range[1])
         ratio = min(max((init_scale - lo) / (hi - lo), 1e-4), 1 - 1e-4)
