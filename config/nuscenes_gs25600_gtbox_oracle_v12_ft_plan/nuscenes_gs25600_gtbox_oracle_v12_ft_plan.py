@@ -31,7 +31,7 @@ load_from = 'exp/nuscenes_gs25600_v12_fixempty/checkpoints/epoch_15.pth'
 max_epochs = 15   # load_from 下 epoch 从 0 计数，训 15 轮（stage2）
 
 # ============ 学习率：续训用更小 lr，避免打坏已收敛的 encoder ============
-lr = float(os.environ.get("LR", 2e-5))
+lr = float(os.environ.get("LR", 2e-4))
 optimizer = dict(
     optimizer=dict(type="AdamW", lr=lr, weight_decay=0.01),
     paramwise_cfg=dict(custom_keys={'img_backbone': dict(lr_mult=0.1)}),
