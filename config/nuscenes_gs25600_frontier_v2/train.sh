@@ -2,7 +2,7 @@
 set -euo pipefail
 
 EXP_NAME="nuscenes_gs25600_frontier_v2"
-REPO="/data/chenz/GaussianAD"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TORCHRUN="/data/chenz/conda_env/splatting/bin/torchrun"
 CONFIG="config/${EXP_NAME}/${EXP_NAME}.py"
 WORK_DIR="out/${EXP_NAME}"
