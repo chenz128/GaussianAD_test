@@ -21,9 +21,4 @@ __pycache__/
 # IDE / editor
 .vscode/
 .idea/
-
-# OS
-.DS_Store
-
-# Auto-generated build version
-model/ops/version.py
+.conda/
