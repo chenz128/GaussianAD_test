@@ -122,7 +122,10 @@ class FrontierGenerator(nn.Module):
         out = self.net(torch.cat([norm_xyz, norm_ego, t], dim=-1))
 
         means = xyz + torch.tanh(out[..., :3]) * self.max_position_delta
-        means = torch.max(torch.min(means, hi), lo)
+        # Clamp to [lo, hi) -- NOT [lo, hi]. The aggregator indexes voxels as
+        # int((x - pc_min) / grid_size) and asserts idx < H/W/D, so a point sitting
+        # exactly on the upper bound maps to index H (out of range) and crashes.
+        means = torch.max(torch.min(means, hi - 1e-3), lo)
         scales = self.scale_range[0] + torch.sigmoid(out[..., 3:6]) * (
             self.scale_range[1] - self.scale_range[0])
         rotations = F.normalize(
