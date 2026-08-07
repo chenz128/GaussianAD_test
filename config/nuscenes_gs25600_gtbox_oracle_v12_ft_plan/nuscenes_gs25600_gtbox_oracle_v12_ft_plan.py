@@ -40,6 +40,7 @@ optimizer = dict(
 # ============ 解冻 map / plan（覆盖 v8 的 ['map_decoder','planner_head']）============
 # 默认不冻结 Gaussian 部分；如需冻结把对应模块名加入下表。
 frozen_modules = []
+find_unused_parameters = False  # 对齐 base_plan；with_cp=True 与 find_unused_parameters=True 冲突
 
 # ============ 用 planner 预测的 ego 轨迹替换 GT 做 occ_flow 补偿 ============
 model = dict(
@@ -85,7 +86,7 @@ _map_loss_cfg = dict(
 )
 _plan_loss_cfg = dict(
     type='PlanLoss',
-    weight=1.0,   # 续训从 1.0 起步，避免压制 occ/flow；稳定后可加大
+    weight=10.0,  # 对齐 base_plan，planner 需要足够梯度信号
 )
 
 # 复用 v12（=v8）已定义的 6 个 loss，再追加 Map / Plan 两项。
