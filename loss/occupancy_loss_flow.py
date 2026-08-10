@@ -99,6 +99,13 @@ class OccupancyFlowLoss(BaseLoss):
         pred_occ = inputs['pred_flow'].unsqueeze(0)
         sampled_label = torch.from_numpy(inputs['sampled_label']).to(pred_occ.device).reshape(1, -1)
         flow_weight=inputs['flow_valid_flag']
+        class_weights = self.class_weights.type_as(pred_occ)
+        dynamic_multiplier = inputs.get('dynamic_class_multiplier', 1.0)
+        if dynamic_multiplier != 1.0:
+            class_weights = class_weights.clone()
+            dynamic_classes = class_weights.new_tensor(
+                [2, 3, 4, 5, 6, 7, 9, 10], dtype=torch.long)
+            class_weights[dynamic_classes] *= dynamic_multiplier
 
         tot_loss = 0.
         for semantics in pred_occ:
@@ -106,10 +113,10 @@ class OccupancyFlowLoss(BaseLoss):
             # semantics = semantics.transpose(0, 1).unsqueeze(0)
             if self.use_focal_loss:
                 loss_dict['loss_voxel_ce'] = self.loss_voxel_ce_weight * \
-                    self.focal_loss(semantics, sampled_label, sampled_xyz, self.class_weights.type_as(semantics), ignore_index=255)
+                    self.focal_loss(semantics, sampled_label, sampled_xyz, class_weights, ignore_index=255)
             else:
                 loss_dict['loss_voxel_ce'] = self.loss_voxel_ce_weight * \
-                    CE_ssc_loss(semantics, sampled_label, self.class_weights.type_as(semantics), ignore_index=255)
+                    CE_ssc_loss(semantics, sampled_label, class_weights, ignore_index=255)
             if self.use_sem_geo_scal_loss:
                 loss_dict['loss_voxel_sem_scal'] = self.loss_voxel_sem_scal_weight * sem_scal_loss(semantics, sampled_label, ignore_index=255)
                 loss_dict['loss_voxel_geo_scal'] = self.loss_voxel_geo_scal_weight * geo_scal_loss(semantics, sampled_label, ignore_index=255, non_empty_idx=self.empty_label)

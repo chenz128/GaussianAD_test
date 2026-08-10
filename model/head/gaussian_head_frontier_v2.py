@@ -12,9 +12,13 @@ class GaussianHeadFrontierV2(GaussianHead):
     """Future head with exactly 25,600 real slots plus one empty Gaussian."""
 
     def __init__(self, target_num_gaussians=25600, frontier_context=None,
+                 current_frame_index=-1,
+                 min_current_gaussian_ratio=0.0,
                  **kwargs):
         super().__init__(**kwargs)
         self.target_num_gaussians = target_num_gaussians
+        self.current_frame_index = current_frame_index
+        self.min_current_gaussian_ratio = min_current_gaussian_ratio
         config = dict(frontier_context or {})
         config.setdefault('pc_range', tuple(self.pc_range))
         config.setdefault(
@@ -28,19 +32,19 @@ class GaussianHeadFrontierV2(GaussianHead):
                 & (grid[..., 1] >= 0) & (grid[..., 1] < 120)
                 & (grid[..., 2] >= 0) & (grid[..., 2] < 8))
 
-    @staticmethod
-    def _current_camera_inputs(ms_img_feats, metas, batch_size):
+    def _current_camera_inputs(self, ms_img_feats, metas, batch_size):
         feature = ms_img_feats[0]
         frames = feature.shape[0] // batch_size
+        current_index = self.current_frame_index % frames
         feature = feature.reshape(
-            batch_size, frames, *feature.shape[1:])[:, -1]
+            batch_size, frames, *feature.shape[1:])[:, current_index]
         projection = metas['projection_mat']
         cameras = feature.shape[1]
         projection = projection.reshape(
-            batch_size, -1, cameras, 4, 4)[:, -1]
+            batch_size, -1, cameras, 4, 4)[:, current_index]
         image_wh = metas['image_wh']
         image_wh = image_wh.reshape(
-            batch_size, -1, cameras, 2)[:, -1]
+            batch_size, -1, cameras, 2)[:, current_index]
         return feature.detach(), projection, image_wh
 
     def forward_flow(self, sampled_xyz, representation_temp, metas=None,
@@ -49,6 +53,13 @@ class GaussianHeadFrontierV2(GaussianHead):
         means = self._flow_blend(gaussian.means)
         gs = tuple(self._flow_blend(tensor) for tensor in gs)
         batch_size, current_count = means.shape[:2]
+        min_current_count = int(
+            self.target_num_gaussians * self.min_current_gaussian_ratio)
+        if current_count < min_current_count:
+            raise AssertionError(
+                f'current Gaussian count {current_count} is below the '
+                f'minimum {min_current_count}; check temporal frame order '
+                f'for a cropped current-frame bank')
         if current_count > self.target_num_gaussians:
             raise AssertionError(
                 f'current Gaussian count {current_count} exceeds target '

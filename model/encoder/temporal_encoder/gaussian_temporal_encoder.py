@@ -31,6 +31,7 @@ class GaussianTemporalEncoder(BaseModule):
         init_cfg = None,
         num_frames = 4,
         with_cp: bool = False,
+        current_frame_index: int = -1,
     ):
         super().__init__(init_cfg)
         self.get_xyz = partial(cartesian, pc_range=pc_range)
@@ -43,6 +44,7 @@ class GaussianTemporalEncoder(BaseModule):
         self.operation_order = operation_order
         self.num_frames = num_frames
         self.with_cp = with_cp
+        self.current_frame_index = current_frame_index
 
         # =========== build modules ===========
         def build(cfg):
@@ -85,7 +87,10 @@ class GaussianTemporalEncoder(BaseModule):
         lidar2global = torch.tensor(metas['lidar2global'][0], dtype=anchors.dtype, device=anchors.device)
         B, F, N, _ = anchors.shape
         xyz = self.get_xyz(anchors) # bs, f, n, 3
-        prev2cur = torch.matmul(torch.linalg.inv(lidar2global[0]), lidar2global[:F])[None, :, None] # bs, f, 1, 4, 4
+        current_index = self.current_frame_index % F
+        prev2cur = torch.matmul(
+            torch.linalg.inv(lidar2global[current_index]),
+            lidar2global[:F])[None, :, None] # bs, f, 1, 4, 4
         new_xyz = torch.matmul(prev2cur, torch.cat([xyz, torch.ones_like(xyz[..., :1])], dim=-1)[..., None])[..., :3, 0]     # bs, f, g, 3
 
         # get anchor indices
@@ -111,6 +116,7 @@ class GaussianTemporalEncoder(BaseModule):
         instance_feature = instance_feature.reshape(-1, self.num_frames, *instance_feature.shape[1:])
         ### warp anchors from previous to current frame
         anchors, instance_feature, batch_indices = self.warp_anchor(anchors, instance_feature, metas)
+        temporal_context = None
 
         # ### refine
         # instance_feature = self.instance_encoder(anchors)
@@ -136,7 +142,10 @@ class GaussianTemporalEncoder(BaseModule):
                 instance_feature = instance_feature + identity
             elif "refine" in op:
                 if i == len(self.operation_order) - 1:
-                    mask = (batch_indices[:, 1] == batch_indices[:, 1].max())
+                    current_index = self.current_frame_index % self.num_frames
+                    mask = batch_indices[:, 1] == current_index
+                    temporal_context = (
+                        instance_feature, anchors, batch_indices)
                 else:
                     mask = None
                 # v10: pass gt_boxes only to the offset-producing (last) refine
@@ -164,5 +173,14 @@ class GaussianTemporalEncoder(BaseModule):
             else:
                 raise NotImplementedError(f"{op} is not supported.")
 
-        return {"representation_temp": prediction[-1], "rep_features": instance_feature,
-                "offset": offset}
+        if temporal_context is None:
+            temporal_context = instance_feature, anchors, batch_indices
+        context_features, context_anchors, context_indices = temporal_context
+        return {
+            "representation_temp": prediction[-1],
+            "rep_features": instance_feature,
+            "offset": offset,
+            "temporal_context_features": context_features,
+            "temporal_context_anchors": context_anchors,
+            "temporal_context_indices": context_indices,
+        }
