@@ -335,6 +335,20 @@ def main(args):
             state_dict = ckpt['state_dict']
         else:
             state_dict = ckpt
+        # Drop params whose shape differs from the current model so that newly
+        # added/widened modules keep their random init instead of raising a
+        # size-mismatch error (e.g. VADHeadFutGaussian widens
+        # planner_head.ego_fut_decoder from 3*embed_dims to 4*embed_dims).
+        # NOTE: strict=False only skips missing/unexpected keys, NOT same-name
+        # shape mismatches, so we must filter them out explicitly here.
+        model_sd = raw_model.state_dict()
+        shape_skipped = [k for k in list(state_dict.keys())
+                         if k in model_sd and state_dict[k].shape != model_sd[k].shape]
+        for k in shape_skipped:
+            del state_dict[k]
+        if shape_skipped:
+            print(f'[load_from] skip {len(shape_skipped)} shape-mismatched params '
+                  f'(kept random init): {shape_skipped}')
         try:
             print(raw_model.load_state_dict(state_dict, strict=False))
         except:

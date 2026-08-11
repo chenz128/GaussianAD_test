@@ -15,6 +15,8 @@ class PlanLoss(BaseLoss):
         self,
         weight=1,
         loss_weights=None,
+        col_loss_weight=0.0,
+        col_safe_margin=0.5,
         input_dict=None):
         super().__init__()
 
@@ -26,6 +28,14 @@ class PlanLoss(BaseLoss):
         self.plan_reg_loss = L1Loss()
         self.plan_bound_loss = PlanMapBoundLoss(loss_weight=1.0, dis_thresh=1.0)
         self.plan_dir_loss = PlanMapDirectionLoss(loss_weight=0.5)
+        # Collision-avoidance constraint (opt-in). Default weight 0.0 keeps every
+        # existing config (base_plan etc.) numerically unchanged; a config that
+        # wants it (e.g. futgau_detach_false_col) passes col_loss_weight>0.
+        self.col_loss_weight = col_loss_weight
+        self.plan_col_loss = (
+            PlanAgentCollisionLoss(loss_weight=col_loss_weight,
+                                   safe_margin=col_safe_margin)
+            if col_loss_weight and col_loss_weight > 0 else None)
 
     def get_loss(self, inputs):
         """"Loss function.
@@ -93,12 +103,134 @@ class PlanLoss(BaseLoss):
         loss_plan_bound = torch.nan_to_num(loss_plan_bound)
         loss_plan_dir = torch.nan_to_num(loss_plan_dir)
 
-        return loss_plan_l1 + loss_plan_bound + loss_plan_dir
+        total = loss_plan_l1 + loss_plan_bound + loss_plan_dir
+
+        # Collision-avoidance constraint (opt-in): push the command-selected ego
+        # trajectory outside every valid GT agent's future footprint. It is
+        # differentiable w.r.t. ego_fut_preds; the agent GT is a fixed target.
+        if self.plan_col_loss is not None:
+            metas = inputs.get('metas', None)
+            if metas is not None:
+                ego_cmd_pred = ego_fut_preds[ego_fut_cmd == 1]  # (B, fut_ts, 2)
+                loss_plan_col = self.plan_col_loss(
+                    ego_cmd_pred,
+                    metas.get('attr_labels_planner', None),
+                    metas.get('fut_valid_flag', None),
+                    ego_fut_masks)
+                total = total + torch.nan_to_num(loss_plan_col)
+
+        return total
 
     def forward(self, inputs):
         loss = self.weight * self.get_loss(inputs)
         return loss
 
+
+@OPENOCC_LOSS.register_module()
+class PlanAgentCollisionLoss(nn.Module):
+    """Differentiable collision-avoidance loss (ego <-> GT agents).
+
+    For every future timestep the predicted ego position (cumulative sum of the
+    per-step displacement, same convention as ``plan_map_bound_loss``) is pushed
+    outside a safety circle around each valid agent's future centre. A circle
+    (bounding radius) approximation of both footprints keeps the loss cheap and
+    yaw-free while directly targeting the ``plan_obj_box_col`` metric.
+
+    The agent ground truth (positions / sizes / masks) is a fixed target, so the
+    gradient flows only into ``ego_fut_preds``.
+
+    Args:
+        loss_weight (float): weight of the collision loss.
+        safe_margin (float): extra clearance (metres) added on top of the sum of
+            the ego and agent bounding-circle radii.
+        fut_ts (int): number of future timesteps (default 6).
+        ego_width / ego_length (float): ego footprint used for the ego radius.
+    """
+
+    def __init__(self, loss_weight=1.0, safe_margin=0.5, fut_ts=6,
+                 ego_width=1.85, ego_length=4.084):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.safe_margin = safe_margin
+        self.fut_ts = fut_ts
+        # Mean half-extent (isotropic) radius. This is deliberately smaller
+        # than the circumscribed half-diagonal so the constraint only fires for
+        # genuine near-collisions instead of every normally-spaced neighbour.
+        self.ego_radius = 0.25 * (ego_width + ego_length)
+
+    @staticmethod
+    def _sample_valid(fut_valid_flag, b):
+        if fut_valid_flag is None:
+            return True
+        v = fut_valid_flag
+        if isinstance(v, (list, tuple)):
+            v = v[b] if b < len(v) else v[0]
+        elif torch.is_tensor(v) and v.dim() >= 1 and v.shape[0] > b:
+            v = v[b]
+        if torch.is_tensor(v):
+            v = v.reshape(-1)
+            return bool(v[0].item()) if v.numel() > 0 else True
+        return bool(v)
+
+    def forward(self, ego_fut_preds, attr_labels, fut_valid_flag, ego_fut_masks):
+        # ego_fut_preds: (B, fut_ts, 2) per-step displacement (command mode)
+        # attr_labels:   (B, A, 34) padded agent GT (layout: dataset.py)
+        # ego_fut_masks: (B, fut_ts) valid-timestep mask
+        if (ego_fut_preds is None or not torch.is_tensor(ego_fut_preds)
+                or ego_fut_preds.numel() == 0):
+            return torch.zeros((), device=getattr(ego_fut_preds, 'device', None))
+        if attr_labels is None or not torch.is_tensor(attr_labels):
+            return ego_fut_preds.new_zeros(())
+
+        device = ego_fut_preds.device
+        attr = attr_labels.to(device).float()
+        if attr.dim() == 2:
+            attr = attr[None]
+        B = ego_fut_preds.shape[0]
+        T = min(self.fut_ts, ego_fut_preds.shape[1])
+        t2, t3 = self.fut_ts * 2, self.fut_ts * 3   # 12, 18
+
+        total = ego_fut_preds.new_zeros(())
+        count = 0
+        for b in range(min(B, attr.shape[0])):
+            if not self._sample_valid(fut_valid_flag, b):
+                continue
+            attr_b = attr[b]                                    # (A, 34)
+            if attr_b.shape[-1] < t3 + 10:
+                continue
+            fut_trajs = attr_b[:, :t2].reshape(-1, self.fut_ts, 2)[:, :T]  # (A,T,2)
+            fut_mask = attr_b[:, t2:t3][:, :T]                  # (A, T)
+            lcf = attr_b[:, t3 + 1:t3 + 10]                     # (A, 9)
+            agent_xy = lcf[:, 0:2]                              # (A, 2)
+            agent_w = lcf[:, 5].clamp(min=0.0)                  # (A,)
+            agent_l = lcf[:, 6].clamp(min=0.0)                  # (A,)
+
+            if fut_mask.sum() == 0:
+                continue
+
+            # absolute future centres (same lidar frame as the ego trajectory)
+            agent_fut = agent_xy[:, None, :] + fut_trajs.cumsum(dim=1)   # (A,T,2)
+            ego_fut = ego_fut_preds[b, :T].cumsum(dim=0)                 # (T, 2)
+
+            dist = torch.linalg.norm(
+                ego_fut[None, :, :] - agent_fut, dim=-1)                 # (A, T)
+            agent_radius = 0.25 * (agent_l + agent_w)                     # (A,)
+            thresh = agent_radius[:, None] + self.ego_radius + self.safe_margin
+
+            penalty = torch.relu(thresh - dist)                          # (A, T)
+            mask = fut_mask
+            if ego_fut_masks is not None and torch.is_tensor(ego_fut_masks):
+                em = ego_fut_masks.to(device).float()
+                em = em[b] if em.dim() >= 2 else em
+                mask = mask * em[:T][None, :]
+            penalty = penalty * mask
+            denom = mask.sum().clamp(min=1.0)
+            total = total + penalty.sum() / denom
+            count += 1
+
+        if count > 0:
+            total = total / count
+        return self.loss_weight * total
 
 
 class PlanMapBoundLoss(nn.Module):
