@@ -13,13 +13,19 @@ class GaussianHeadFrontierV3(GaussianHead):
 
     def __init__(self, target_num_gaussians=25600, direct_generator=None,
                  current_frame_index=0, min_current_gaussian_ratio=0.99,
-                 dynamic_class_multiplier=3.0,
+                 dynamic_class_multiplier=3.0, future_pose_mode='translation',
+                 strict_range_mask=False,
                  **kwargs):
         super().__init__(**kwargs)
         self.target_num_gaussians = target_num_gaussians
         self.current_frame_index = current_frame_index
         self.min_current_gaussian_ratio = min_current_gaussian_ratio
         self.dynamic_class_multiplier = dynamic_class_multiplier
+        if future_pose_mode not in ('translation', 'se3'):
+            raise ValueError(
+                f'unsupported future_pose_mode={future_pose_mode!r}')
+        self.future_pose_mode = future_pose_mode
+        self.strict_range_mask = strict_range_mask
         config = dict(direct_generator or {})
         config.setdefault('pc_range', tuple(self.pc_range))
         config.setdefault(
@@ -30,6 +36,8 @@ class GaussianHeadFrontierV3(GaussianHead):
 
     def get_in_range_mask(self, points):
         grid = ((points - self.pc_min) / self.grid_size).to(torch.int)
+        if self.strict_range_mask:
+            grid = (points - self.pc_min) / self.grid_size
         return ((grid[..., 0] >= 0) & (grid[..., 0] < 120)
                 & (grid[..., 1] >= 0) & (grid[..., 1] < 120)
                 & (grid[..., 2] >= 0) & (grid[..., 2] < 8))
@@ -63,24 +71,35 @@ class GaussianHeadFrontierV3(GaussianHead):
         offset = torch.cat(
             [offset, offset.new_zeros(*offset.shape[:-1], 1)], dim=-1)
         means_future = means[..., None, :] + offset
-
-        ego = metas['ego_fut_trajs']
-        if not torch.is_tensor(ego):
-            ego = torch.as_tensor(ego)
-        ego = ego.to(offset.device).float()
-        if ego.dim() == 2:
-            ego = ego[None]
-        ego = torch.nan_to_num(ego).cumsum(dim=1)
-        ego = torch.cat(
-            [ego, ego.new_zeros(*ego.shape[:-1], 1)], dim=-1)
+        provided_transforms = kwargs.get('future_lidar_transforms')
+        if self.future_pose_mode == 'se3' or provided_transforms is not None:
+            future_transforms = self.get_future_lidar_transforms(
+                metas, means, provided_transforms=provided_transforms)
+        else:
+            ego = metas['ego_fut_trajs']
+            if not torch.is_tensor(ego):
+                ego = torch.as_tensor(ego)
+            ego = torch.nan_to_num(ego.to(means).float()).cumsum(dim=1)
+            future_transforms = torch.eye(
+                4, device=means.device, dtype=means.dtype
+            ).reshape(1, 1, 4, 4).repeat(batch_size, 6, 1, 1)
+            future_transforms[..., :2, 3] = -ego
+        if future_transforms.shape[1] != 6:
+            raise ValueError(
+                'GaussianHeadFrontierV3 requires 6 future transforms, got '
+                f'{future_transforms.shape[1]}')
+        future_to_current = torch.linalg.inv(future_transforms)
+        future_origins = future_to_current[..., :3, 3]
 
         generated = self.future_generator(
-            ego_cumulative=ego,
+            ego_cumulative=future_origins,
             temporal_features=kwargs['temporal_context_features'],
             temporal_indices=kwargs['temporal_context_indices'],
             ms_img_feats=kwargs['ms_img_feats'],
             metas=metas,
-            batch_size=batch_size)
+            batch_size=batch_size,
+            future_to_current_rotations=(
+                future_to_current[..., :3, :3]))
 
         original_opacity, semantics_all, scales_all, cov_all = gs
         generated_semantics = generated['semantics']
@@ -92,12 +111,19 @@ class GaussianHeadFrontierV3(GaussianHead):
 
         predictions = []
         for step in range(6):
-            warped_old = means_future[..., step, :] - ego[:, step:step + 1]
+            transform = future_transforms[:, step]
+            warped_old = self.transform_points(
+                means_future[..., step, :], transform)
             old_inside = self.get_in_range_mask(warped_old)[0]
-            new_means = generated['means'] - ego[:, step:step + 1]
+            new_means = self.transform_points(generated['means'], transform)
             new_inside = self.get_in_range_mask(new_means)[0]
             entered = generated['enter_time'][0] <= ((step + 1) / 6.0)
             new_active = new_inside & entered
+
+            old_cov = self.rotate_covariances(
+                cov_all[:, :current_count], transform)
+            new_cov = self.rotate_covariances(
+                generated['cov_inv'], transform)
 
             means_step = torch.cat([
                 warped_old[:, old_inside],
@@ -112,8 +138,8 @@ class GaussianHeadFrontierV3(GaussianHead):
                 scales_all[:, :current_count][:, old_inside],
                 generated['scales'][:, new_active]], dim=1)
             cov_step = torch.cat([
-                cov_all[:, :current_count][:, old_inside],
-                generated['cov_inv'][:, new_active]], dim=1)
+                old_cov[:, old_inside],
+                new_cov[:, new_active]], dim=1)
 
             if self.with_emtpy and self.flow_include_empty:
                 means_step = torch.cat(

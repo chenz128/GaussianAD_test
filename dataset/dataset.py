@@ -1710,6 +1710,12 @@ class NuScenesDataset(Dataset):
         input_dict = self.get_data_info(info)
         sweeps_prev = self.collect_sweeps(scene_token ,index)
         flow_info = self.collect_flow_sweeps(scene_token, index)
+        current_lidar2global = np.asarray(input_dict['lidar2global'])
+        input_dict['future_lidar2global'] = np.stack([
+            np.asarray(frame['lidar2global'])
+            if frame['flow_valid_flag'] else current_lidar2global
+            for frame in flow_info
+        ]).astype(np.float32)
         input_dict['sweeps'] = {'prev': sweeps_prev}
         input_dict['flow_info'] = flow_info
 

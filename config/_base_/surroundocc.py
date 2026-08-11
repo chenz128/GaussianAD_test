@@ -24,6 +24,7 @@ collect_keys = [
     'projection_mat',
     'lidar2img',
     'lidar2global',
+    'future_lidar2global',
     'image_wh',
     'occ_label',
     'occ_xyz',

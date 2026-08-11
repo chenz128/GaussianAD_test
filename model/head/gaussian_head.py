@@ -99,6 +99,59 @@ class GaussianHead(BaseTaskHead):
             return x.detach()
         return s * x + (1.0 - s) * x.detach()
 
+    def get_future_lidar_transforms(self, metas, reference,
+                                    provided_transforms=None):
+        """Return current-LiDAR to future-LiDAR transforms, shape (B,T,4,4)."""
+        if provided_transforms is not None:
+            transforms = provided_transforms
+            if not torch.is_tensor(transforms):
+                transforms = torch.as_tensor(transforms)
+            transforms = transforms.to(reference)
+        else:
+            if 'future_lidar2global' not in metas:
+                raise KeyError(
+                    'future_lidar2global is required when no planner-provided '
+                    'future_lidar_transforms are available')
+            current = metas['lidar2global']
+            future = metas['future_lidar2global']
+            if not torch.is_tensor(current):
+                current = torch.as_tensor(current)
+            if not torch.is_tensor(future):
+                future = torch.as_tensor(future)
+            current = current.to(reference)
+            future = future.to(reference)
+            if current.dim() == 3:
+                current = current[:, None]
+            elif current.dim() == 4:
+                frame_index = getattr(self, 'current_frame_index', 0)
+                current = current[:, frame_index:frame_index + 1]
+            else:
+                raise ValueError(
+                    f'unsupported lidar2global shape {tuple(current.shape)}')
+            transforms = torch.linalg.inv(future) @ current
+
+        if transforms.dim() == 3:
+            transforms = transforms[None]
+        if transforms.dim() != 4 or transforms.shape[-2:] != (4, 4):
+            raise ValueError(
+                'future_lidar_transforms must have shape (B,T,4,4), got '
+                f'{tuple(transforms.shape)}')
+        return transforms
+
+    @staticmethod
+    def transform_points(points, transforms):
+        """Apply one transform per batch item to batched 3D points."""
+        rotation = transforms[:, :3, :3]
+        translation = transforms[:, :3, 3]
+        return torch.matmul(
+            points, rotation.transpose(-1, -2)) + translation[:, None]
+
+    @staticmethod
+    def rotate_covariances(covariances, transforms):
+        """Rotate covariance or inverse-covariance matrices."""
+        rotation = transforms[:, None, :3, :3]
+        return rotation @ covariances @ rotation.transpose(-1, -2)
+
     def _sampling(self, gt_xyz, gt_label, gt_mask=None):
         if gt_mask is None:
             gt_label = gt_label.flatten(1)

@@ -77,7 +77,8 @@ class FutureGaussianDirectGenerator(nn.Module):
             self.fusion[-1].bias[10] = math.log(
                 initial_opacity / (1.0 - initial_opacity))
 
-    def _sample_responsibility_regions(self, ego_cumulative):
+    def _sample_responsibility_regions(self, ego_cumulative,
+                                       future_to_current_rotations=None):
         """Create deterministic future-strip regions in current coordinates."""
         batch = ego_cumulative.shape[0]
         device, dtype = ego_cumulative.device, ego_cumulative.dtype
@@ -92,7 +93,18 @@ class FutureGaussianDirectGenerator(nn.Module):
         gather_index = step[..., None].expand(-1, -1, 3)
         ego = torch.gather(ego_cumulative, 1, gather_index)
 
-        dx, dy = ego[..., 0], ego[..., 1]
+        if future_to_current_rotations is None:
+            future_to_current_rotations = torch.eye(
+                3, device=device, dtype=dtype
+            ).reshape(1, 1, 3, 3).expand(batch, 6, -1, -1)
+        rotation_index = step[..., None, None].expand(-1, -1, 3, 3)
+        future_to_current = torch.gather(
+            future_to_current_rotations, 1, rotation_index)
+        motion_future = torch.matmul(
+            future_to_current.transpose(-1, -2), ego[..., None]
+        ).squeeze(-1)
+
+        dx, dy = motion_future[..., 0], motion_future[..., 1]
         band_x = dx.abs().clamp(self.min_band, float(span[0]))
         band_y = dy.abs().clamp(self.min_band, float(span[1]))
         dominant_x = dx.abs() >= dy.abs()
@@ -117,8 +129,12 @@ class FutureGaussianDirectGenerator(nn.Module):
             use_x, lo[1] + lateral * span[1],
             y_local_lo + u * (y_local_hi - y_local_lo))
 
-        # Store the shared future bank in current/world coordinates.
-        center_xy = torch.stack([x_future + dx, y_future + dy], dim=-1)
+        local_center = torch.stack(
+            [x_future, y_future, torch.zeros_like(x_future)], dim=-1)
+        center = torch.matmul(
+            future_to_current, local_center[..., None]
+        ).squeeze(-1) + ego
+        center_xy = center[..., :2]
         half = center_xy.new_full(center_xy.shape, self.responsibility_size / 2)
         region_lo = center_xy - half
         region_hi = center_xy + half
@@ -207,9 +223,11 @@ class FutureGaussianDirectGenerator(nn.Module):
         return rotation.transpose(-1, -2) @ inverse_scale @ rotation
 
     def forward(self, ego_cumulative, temporal_features, temporal_indices,
-                ms_img_feats, metas, batch_size):
+                ms_img_feats, metas, batch_size,
+                future_to_current_rotations=None):
         center_xy, region_lo, region_hi, enter_time = (
-            self._sample_responsibility_regions(ego_cumulative))
+            self._sample_responsibility_regions(
+                ego_cumulative, future_to_current_rotations))
         center_z = center_xy.new_zeros(*center_xy.shape[:-1], 1)
         center = torch.cat([center_xy, center_z], dim=-1)
         ego_flat = ego_cumulative[..., :2].reshape(batch_size, 1, 12)
