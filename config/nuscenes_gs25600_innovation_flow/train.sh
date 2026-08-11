@@ -11,8 +11,7 @@
 set -euo pipefail
 
 EXP_NAME="nuscenes_gs25600_innovation_flow"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="${REPO:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+REPO="${REPO:-/data/chenz/GaussianAD}"
 ENV_DIR="${ENV_DIR:-/data/chenz/conda_env/splatting}"
 PY="${ENV_DIR}/bin/torchrun"
 CONFIG="config/${EXP_NAME}/${EXP_NAME}.py"
@@ -30,8 +29,8 @@ export PATH="${ENV_DIR}/bin:${PATH}"
 cd "${REPO}"
 BRANCH="$(git branch --show-current)"
 if [[ "${BRANCH}" != "splatting" ]]; then
-  echo "[FATAL] Expected user branch 'splatting', got '${BRANCH}'." >&2
-  exit 1
+  echo "[WARN] NAS checkout branch is '${BRANCH}', expected 'splatting'." >&2
+  echo "[WARN] Continuing from the explicitly configured NAS path: ${REPO}" >&2
 fi
 mkdir -p "${WORK_DIR}"
 
