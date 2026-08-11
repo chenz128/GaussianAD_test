@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================================
-# nuscenes_gs25600_innovation_flow -- full-data private-cloud training
+# nuscenes_gs25600_innovation_flow -- v3-protocol private-cloud training
 #
-# Trains from scratch under the same backbone-pretraining convention as v3.
-# This launcher does not load the v3 checkpoint and uses all eight cloud GPUs.
+# Trains from scratch with v3's data subset, schedule, losses, and backbone
+# pretraining. This launcher only follows v12-full's shell organization.
 #
 # Usage: tmux new -s train_innovation_flow
 #        bash config/nuscenes_gs25600_innovation_flow/train.sh
@@ -39,7 +39,7 @@ mkdir -p "${WORK_DIR}"
   echo "exp        : ${EXP_NAME}"
   echo "git branch : ${BRANCH}"
   echo "git commit : $(git rev-parse HEAD)"
-  echo "config     : ${CONFIG}  (innovation latent FM, full data, 20 epochs)"
+  echo "config     : ${CONFIG}  (innovation latent FM, v3 data/schedule protocol)"
   echo "init       : from scratch except inherited backbone pretraining"
   echo "gpus       : ${GPUS}  (nproc=${NPROC}, port=${MASTER_PORT})"
 } | tee -a "${WORK_DIR}/launch_history.log"

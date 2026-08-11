@@ -1,9 +1,9 @@
-"""Full-data innovation latent flow matching experiment.
+"""Innovation latent flow matching experiment under the v3 data protocol.
 
 The current/retained branch and all original GaussianAD task losses are
 inherited from v3.  The direct future generator is replaced with conditional
 flow matching over a 6x64x30x30 innovation OCC latent.  No v3 checkpoint is
-loaded; the experiment keeps only the same backbone pretraining as its base.
+loaded; data sampling, schedule, losses, and backbone pretraining follow v3.
 """
 
 _base_ = ['../nuscenes_gs25600_v3/nuscenes_gs25600_v3.py']
@@ -47,8 +47,4 @@ loss_input_convertion.update(
     flow_matching_loss='flow_matching_loss',
 )
 
-train_dataset_config = dict(num_samples=0)
-val_dataset_config = dict(num_samples=0)
-max_epochs = 20
-eval_every_epochs = 4
 static_graph = True
