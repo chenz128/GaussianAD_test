@@ -17,6 +17,7 @@ class PlanLoss(BaseLoss):
         loss_weights=None,
         col_loss_weight=0.0,
         col_safe_margin=0.5,
+        col_sat=False,
         input_dict=None):
         super().__init__()
 
@@ -32,10 +33,18 @@ class PlanLoss(BaseLoss):
         # existing config (base_plan etc.) numerically unchanged; a config that
         # wants it (e.g. futgau_detach_false_col) passes col_loss_weight>0.
         self.col_loss_weight = col_loss_weight
-        self.plan_col_loss = (
-            PlanAgentCollisionLoss(loss_weight=col_loss_weight,
-                                   safe_margin=col_safe_margin)
-            if col_loss_weight and col_loss_weight > 0 else None)
+        self.col_sat = col_sat
+        if col_loss_weight and col_loss_weight > 0:
+            if col_sat:
+                # SAT (Separating Axis Theorem) collision: ego + agent as
+                # oriented boxes, overlap depth via axis projections.
+                self.plan_col_loss = PlanAgentSATCollisionLoss(
+                    loss_weight=col_loss_weight, safe_margin=col_safe_margin)
+            else:
+                self.plan_col_loss = PlanAgentCollisionLoss(
+                    loss_weight=col_loss_weight, safe_margin=col_safe_margin)
+        else:
+            self.plan_col_loss = None
 
     def get_loss(self, inputs):
         """"Loss function.
@@ -116,7 +125,8 @@ class PlanLoss(BaseLoss):
                     ego_cmd_pred,
                     metas.get('attr_labels_planner', None),
                     metas.get('fut_valid_flag', None),
-                    ego_fut_masks)
+                    ego_fut_masks,
+                    metas.get('gt_boxes', None))
                 total = total + torch.nan_to_num(loss_plan_col)
 
         return total
@@ -172,7 +182,10 @@ class PlanAgentCollisionLoss(nn.Module):
             return bool(v[0].item()) if v.numel() > 0 else True
         return bool(v)
 
-    def forward(self, ego_fut_preds, attr_labels, fut_valid_flag, ego_fut_masks):
+    def forward(self, ego_fut_preds, attr_labels, fut_valid_flag, ego_fut_masks,
+                agent_boxes=None):
+        # agent_boxes is accepted for a common call signature with the SAT loss.
+        del agent_boxes
         # ego_fut_preds: (B, fut_ts, 2) per-step displacement (command mode)
         # attr_labels:   (B, A, 34) padded agent GT (layout: dataset.py)
         # ego_fut_masks: (B, fut_ts) valid-timestep mask
@@ -218,6 +231,202 @@ class PlanAgentCollisionLoss(nn.Module):
             thresh = agent_radius[:, None] + self.ego_radius + self.safe_margin
 
             penalty = torch.relu(thresh - dist)                          # (A, T)
+            mask = fut_mask
+            if ego_fut_masks is not None and torch.is_tensor(ego_fut_masks):
+                em = ego_fut_masks.to(device).float()
+                em = em[b] if em.dim() >= 2 else em
+                mask = mask * em[:T][None, :]
+            penalty = penalty * mask
+            denom = mask.sum().clamp(min=1.0)
+            total = total + penalty.sum() / denom
+            count += 1
+
+        if count > 0:
+            total = total / count
+        return self.loss_weight * total
+
+
+@OPENOCC_LOSS.register_module()
+class PlanAgentSATCollisionLoss(nn.Module):
+    """Differentiable collision-avoidance loss using Separating Axis Theorem (SAT).
+
+    Unlike the circle-based :class:`PlanAgentCollisionLoss`, this treats ego and
+    each agent as **oriented boxes** (cx, cy, w, l, yaw) and computes the overlap
+    depth via SAT axis projections. This matches the ``plan_obj_box_col`` metric
+    semantics (oriented/axis-aligned rectangles rasterised on the occupancy grid)
+    far more closely than the isotropic-circle approximation, and produces a
+    gradient that pushes the ego box out of the agent box along the actual
+    penetration direction.
+
+    Gradient policy:
+        - ego box centre is differentiable (flows back to ``ego_fut_preds``). Its
+          yaw is taken from the GT ego yaw (or trajectory tangent) and **fixed**
+          (detached) so the loss only pushes the ego *position* out, which keeps
+          training stable and matches the metric where ego is an axis-aligned box.
+        - agent boxes are GT targets (fixed), including their future yaw.
+
+    Args:
+        loss_weight (float): weight of the collision loss.
+        safe_margin (float): extra clearance (m) added on top of the SAT overlap.
+        fut_ts (int): number of future timesteps (default 6).
+        ego_width / ego_length (float): ego footprint dims.
+    """
+
+    def __init__(self, loss_weight=1.0, safe_margin=0.5, fut_ts=6,
+                 ego_width=1.85, ego_length=4.084):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.safe_margin = safe_margin
+        self.fut_ts = fut_ts
+        self.ego_hw = 0.5 * ego_width
+        self.ego_hl = 0.5 * ego_length
+
+    @staticmethod
+    def _sample_valid(fut_valid_flag, b):
+        if fut_valid_flag is None:
+            return True
+        v = fut_valid_flag
+        if isinstance(v, (list, tuple)):
+            v = v[b] if b < len(v) else v[0]
+        elif torch.is_tensor(v) and v.dim() >= 1 and v.shape[0] > b:
+            v = v[b]
+        if torch.is_tensor(v):
+            v = v.reshape(-1)
+            return bool(v[0].item()) if v.numel() > 0 else True
+        return bool(v)
+
+    def forward(self, ego_fut_preds, attr_labels, fut_valid_flag, ego_fut_masks,
+                agent_boxes=None):
+        # ego_fut_preds: (B, fut_ts, 2) per-step displacement (command mode)
+        # attr_labels:   (B, A, 34) padded agent GT (layout below)
+        # agent_boxes:   (B, A, >=7) current GT boxes in dataset box convention
+        #                 (x, y, z, width, length, height, yaw, ...)
+        # ego_fut_masks: (B, fut_ts) valid-timestep mask
+        if (ego_fut_preds is None or not torch.is_tensor(ego_fut_preds)
+                or ego_fut_preds.numel() == 0):
+            return torch.zeros((), device=getattr(ego_fut_preds, 'device', None))
+        if attr_labels is None or not torch.is_tensor(attr_labels):
+            return ego_fut_preds.new_zeros(())
+
+        device = ego_fut_preds.device
+        attr = attr_labels.to(device).float()
+        if attr.dim() == 2:
+            attr = attr[None]
+        B = ego_fut_preds.shape[0]
+        T = min(self.fut_ts, ego_fut_preds.shape[1])
+        t2, t3 = self.fut_ts * 2, self.fut_ts * 3   # 12, 18
+
+        # Ego is treated as an axis-aligned box (yaw fixed to 0), which matches
+        # the ``plan_obj_box_col`` metric and keeps the gradient pushing only the
+        # ego *position* out (stable, differentiable w.r.t. ego_fut_preds).
+        total = ego_fut_preds.new_zeros(())
+        count = 0
+        for b in range(min(B, attr.shape[0])):
+            if not self._sample_valid(fut_valid_flag, b):
+                continue
+            attr_b = attr[b]                                    # (A, 34)
+            if attr_b.shape[-1] < t3 + 10:
+                continue
+            fut_trajs = attr_b[:, :t2].reshape(-1, self.fut_ts, 2)[:, :T]  # (A,T,2)
+            fut_mask = attr_b[:, t2:t3][:, :T]                  # (A, T)
+            lcf = attr_b[:, t3 + 1:t3 + 10]                     # (A, 9)
+            fut_yaw_delta = attr_b[:, t3 + 10:t3 + 10 + T]     # (A, T)
+
+            # Match PlanningMetric.get_birds_eye_view_label exactly.  ``gt_boxes``
+            # uses (x, y, z, width, length, height, yaw, ...); its yaw is converted
+            # to the LiDAR convention used by the rasterised metric.  The future
+            # yaw label stores per-step deltas, so it must be accumulated.
+            boxes_b = None
+            if torch.is_tensor(agent_boxes):
+                boxes_b = agent_boxes.to(device).float()
+                if boxes_b.dim() >= 3:
+                    boxes_b = boxes_b[b]
+                if boxes_b.dim() != 2 or boxes_b.shape[-1] < 7:
+                    boxes_b = None
+            if boxes_b is not None:
+                agent_count = min(attr_b.shape[0], boxes_b.shape[0])
+                attr_b = attr_b[:agent_count]
+                fut_trajs = fut_trajs[:agent_count]
+                fut_mask = fut_mask[:agent_count]
+                lcf = lcf[:agent_count]
+                fut_yaw_delta = fut_yaw_delta[:agent_count]
+                boxes_b = boxes_b[:agent_count]
+                agent_xy = boxes_b[:, 0:2]
+                agent_w = boxes_b[:, 3].clamp(min=0.0)
+                agent_l = boxes_b[:, 4].clamp(min=0.0)
+                agent_yaw = -(boxes_b[:, 6] + math.pi / 2)
+            else:
+                # Fallback for callers without gt_boxes. lcf uses the same
+                # (width, length) layout, but cannot guarantee metric-perfect yaw.
+                agent_xy = lcf[:, 0:2]
+                agent_w = lcf[:, 5].clamp(min=0.0)
+                agent_l = lcf[:, 6].clamp(min=0.0)
+                agent_yaw = -(lcf[:, 2] + math.pi / 2)
+
+            if fut_mask.sum() == 0:
+                continue
+
+            agent_fut = agent_xy[:, None, :] + fut_trajs.cumsum(dim=1)   # (A,T,2)
+            # PlanningMetric evaluates a fixed, axis-aligned ego rectangle with
+            # centre (traj_x + 0.5, traj_y), length on x and width on y.
+            ego_fut = ego_fut_preds[b, :T].cumsum(dim=0)
+            ego_fut = ego_fut + ego_fut.new_tensor([0.5, 0.0])
+
+            # ---- SAT overlap depth between ego box and each agent box ----
+            # Both conventions below match PlanningMetric: x is vehicle length,
+            # y is vehicle width; agent yaw is an absolute LiDAR-frame yaw.
+            ego_hx = self.ego_hl
+            ego_hy = self.ego_hw
+            ahx = 0.5 * agent_l[:, None, None]                # (A,1,1)
+            ahy = 0.5 * agent_w[:, None, None]                # (A,1,1)
+            ay = agent_yaw[:, None] + fut_yaw_delta.cumsum(dim=1)  # (A,T)
+
+            # rotation matrices for agent boxes
+            cos_a = torch.cos(ay)                              # (A,T)
+            sin_a = torch.sin(ay)
+
+            # delta between centres: ego_fut (T,2) - agent_fut (A,T,2)
+            # d = (dx, dy) in lidar frame
+            dx = ego_fut[:, 0][None, :, None] - agent_fut[..., 0][..., None]  # (A,T,1)
+            dy = ego_fut[:, 1][None, :, None] - agent_fut[..., 1][..., None]
+
+            # Rotate the delta into each agent's local frame:
+            #   d_local = R^T(-yaw) * d  (world->agent)
+            dlx = cos_a[..., None] * dx + sin_a[..., None] * dy  # (A,T,1)
+            dly = -sin_a[..., None] * dx + cos_a[..., None] * dy
+
+            # SAT separation check on the two axes of the agent box (in agent frame,
+            # ego is a box with half-extents that must be rotated into agent frame).
+            # Ego half-extents in agent frame: rotate (ego_hx, ego_hy) by (yaw_agent - yaw_ego)
+            # Since yaw_ego=0, rotation is by -yaw_agent.
+            # ego corners half-extent projection onto agent axes:
+            ca = cos_a[..., None]   # (A,T,1)
+            sa = sin_a[..., None]
+            # half-extent of ego box projected on agent x-axis (world->agent rotate by -yaw)
+            proj_ego_x = ego_hx * torch.abs(ca) + ego_hy * torch.abs(sa)
+            proj_ego_y = ego_hx * torch.abs(sa) + ego_hy * torch.abs(ca)
+
+            # separation on each agent axis
+            sep_x = torch.abs(dlx) - (ahx + proj_ego_x)
+            sep_y = torch.abs(dly) - (ahy + proj_ego_y)
+
+            # Now check the two axes of the ego box (axis-aligned):
+            # project agent's extent onto world x/y axes and compare with ego half-extent.
+            # agent half-extent projected onto world x = ahx*|cos| + ahy*|sin|
+            proj_agent_x = ahx * torch.abs(ca) + ahy * torch.abs(sa)
+            proj_agent_y = ahx * torch.abs(sa) + ahy * torch.abs(ca)
+            sep_wx = torch.abs(dx) - (ego_hx + proj_agent_x)
+            sep_wy = torch.abs(dy) - (ego_hy + proj_agent_y)
+
+            # Boxes overlap only when every SAT axis overlaps. Therefore the
+            # largest separation is the active minimum-translation axis; its
+            # negative is the penetration depth (positive iff all axes overlap).
+            seps = torch.stack([sep_x, sep_y, sep_wx, sep_wy], dim=-1)  # (A,T,4)
+            max_sep = seps.max(dim=-1).values                          # (A,T)
+            overlap = -max_sep                                          # >0 when colliding
+
+            penalty = torch.relu(overlap + self.safe_margin)           # (A,T)
+
             mask = fut_mask
             if ego_fut_masks is not None and torch.is_tensor(ego_fut_masks):
                 em = ego_fut_masks.to(device).float()

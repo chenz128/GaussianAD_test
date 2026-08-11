@@ -119,47 +119,42 @@ def load_cam_images(data):
 
 
 # ---------------------------------------------------------------------------
-# occupancy -> BEV class map (topmost non-free voxel per column)
-# ---------------------------------------------------------------------------
-def _scatter_topmost(cls, xyz):
-    """cls (N,), xyz (N,3) -> (GRID,GRID) class map, init FREE."""
+# occupancy -> BEV class map.
+# BOTH pred and GT are dense voxel grids (115200 = 120x120x8), x-major:
+#   index = ((x*120) + y)*8 + z   (axis0=x, axis1=y, axis2=z)
+# So we take the topmost (highest z) non-free class per (x,y) column directly
+# from the dense grid. No scatter => no truncation noise / no mosaic fragments.
+def _dense_topmost(cls8):
+    """cls8 (GRID,GRID,8) int class ids -> (GRID,GRID) topmost non-free map."""
     bev = np.full((GRID, GRID), FREE_CLASS, dtype=np.int32)
-    keep = cls < FREE_CLASS
-    cls = cls[keep]; xyz = xyz[keep]
-    if len(cls) == 0:
-        return bev
-    col, row = to_px(xyz[:, 0], xyz[:, 1])
-    col = col.astype(np.int32); row = row.astype(np.int32)
-    ok = (col >= 0) & (col < GRID) & (row >= 0) & (row < GRID)
-    col, row, cls, z = col[ok], row[ok], cls[ok], xyz[ok, 2]
-    order = np.argsort(z)                      # ascending -> highest z last
-    bev[row[order], col[order]] = cls[order]
+    for z in range(8):
+        layer = cls8[:, :, z]
+        mask = (layer > 0) & (bev == FREE_CLASS)
+        bev[mask] = layer[mask]
     return bev
 
 
 def occ_pred_to_bev(pred_occ_t, sampled_xyz):
-    """pred_occ_t (C, N) logits, sampled_xyz (N,3) or (1,N,3)."""
+    """pred_occ_t (C, N) logits, N = GRID*GRID*8 (x-major). sampled_xyz only
+    used for shape sanity; the grid itself is dense."""
     cls = pred_occ_t.argmax(dim=0).detach().cpu().numpy().astype(np.int32)
-    xyz = sampled_xyz.detach().cpu().numpy() if torch.is_tensor(sampled_xyz) else np.asarray(sampled_xyz)
-    if xyz.ndim == 3:
-        xyz = xyz[0]
-    return _scatter_topmost(cls, xyz)
+    if cls.size != GRID * GRID * 8:
+        raise ValueError(f"pred occ size {cls.size} != {GRID*GRID*8} -> not a dense grid")
+    return _dense_topmost(cls.reshape(GRID, GRID, 8))
 
 
 def occ_gt_to_bev(occ_label, occ_xyz):
-    """occ_label (H,W,D) int, occ_xyz (H,W,D,3)."""
+    """occ_label (H,W,D) int, occ_xyz (H,W,D,3), x-major dense grid."""
     ol = occ_label.detach().cpu().numpy() if torch.is_tensor(occ_label) else np.asarray(occ_label)
-    ox = occ_xyz.detach().cpu().numpy() if torch.is_tensor(occ_xyz) else np.asarray(occ_xyz)
     if ol.ndim == 4:
         ol = ol[0]
-    if ox.ndim == 5:
-        ox = ox[0]
-    cls = ol.reshape(-1).astype(np.int32)
-    xyz = ox.reshape(-1, 3)
-    return _scatter_topmost(cls, xyz)
+    if ol.shape != (GRID, GRID, 8):
+        raise ValueError(f"GT occ shape {ol.shape} != {(GRID,GRID,8)}")
+    return _dense_topmost(ol.astype(np.int32))
 
 
 def bev_to_rgb(bev):
+    """(GRID,GRID) class map -> RGB uint8. class>=FREE -> white."""
     rgb = np.empty((GRID, GRID, 3), dtype=np.uint8)
     free = bev >= FREE_CLASS
     idx = np.clip(bev, 0, len(NUSCENES_CMAP) - 1)
@@ -168,7 +163,6 @@ def bev_to_rgb(bev):
     return rgb
 
 
-# ---------------------------------------------------------------------------
 # overlays : detection boxes, map vectors, trajectories
 # ---------------------------------------------------------------------------
 def draw_boxes(ax, boxes, labels=None, lw=1.4, default='#111111'):
@@ -342,14 +336,32 @@ def build_model(cfg, ckpt):
     return m.cuda().eval()
 
 
+
+def _to_cuda_dev(x):
+    import mmcv
+    if isinstance(x, torch.Tensor):
+        return x.cuda()
+    if isinstance(x, dict):
+        return {k: _to_cuda_dev(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return type(x)(_to_cuda_dev(v) for v in x)
+    return x
+
+
+def _move_to_cuda(data):
+    for k in list(data.keys()):
+        data[k] = _to_cuda_dev(data[k])
+    return data
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--py-config', required=True)
     ap.add_argument('--ckpt', default='')
     ap.add_argument('--out-dir', default='viz/out')
     ap.add_argument('--vis-index', type=int, nargs='*', default=[0])
-    ap.add_argument('--map-score', type=float, default=0.3)
-    ap.add_argument('--det-score', type=float, default=0.3)
+    ap.add_argument('--map-score', type=float, default=0.5)
+    ap.add_argument('--det-score', type=float, default=0.5)
     args = ap.parse_args()
 
     from mmengine import Config
@@ -374,9 +386,7 @@ def main():
             continue
 
         cam_imgs = load_cam_images(data)
-        for k in list(data.keys()):
-            if isinstance(data[k], torch.Tensor):
-                data[k] = data[k].cuda()
+        _move_to_cuda(data)
 
         with torch.no_grad():
             res = my_model(imgs=data['img'], metas=data)
