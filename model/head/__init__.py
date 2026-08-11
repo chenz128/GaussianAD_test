@@ -3,3 +3,4 @@ from .gaussian_head import GaussianHead
 from .gaussian_head_frontier import GaussianHeadFrontier
 from .gaussian_head_frontier_v2 import GaussianHeadFrontierV2
 from .gaussian_head_frontier_v3 import GaussianHeadFrontierV3
+from .gaussian_head_innovation_flow import GaussianHeadInnovationFlow

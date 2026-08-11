@@ -12,3 +12,4 @@ from .occupancy_loss_flow import OccupancyFlowLoss
 from .render_loss import RenderLoss
 from .dynamic_loss import DynamicLoss
 from .physics_loss import PhysicsLoss
+from .innovation_flow_loss import FlowMatchingLoss, InnovationOccupancyLoss
