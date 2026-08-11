@@ -16,7 +16,9 @@ class GaussianHeadInnovationFlow(GaussianHeadFrontierV3):
             'num_classes', self.num_classes - 1 if self.with_emtpy
             else self.num_classes)
         config.setdefault('current_frame_index', self.current_frame_index)
-        config.setdefault('target_pose_mode', self.future_pose_mode)
+        config.setdefault(
+            'target_pose_mode',
+            getattr(self, 'future_pose_mode', 'translation'))
         self.future_generator = InnovationFlowGenerator(**config)
         self._flow_matching_loss = None
 
