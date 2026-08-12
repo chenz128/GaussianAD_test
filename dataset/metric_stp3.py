@@ -36,6 +36,12 @@ def compute_planner_metric_stp3(
     metric_dict['fut_valid_flag'] = bool(fut_valid_flag)  # ensure Python bool, not CUDA tensor
     future_second = 3
     assert pred_ego_fut_trajs.shape[0] == 1, 'only support bs=1'
+
+    # PlanningMetric operates on positions in the current LiDAR frame, where
+    # the planner and its GT targets are represented as per-step displacements.
+    pred_ego_fut_trajs = pred_ego_fut_trajs.cumsum(dim=-2)
+    gt_ego_fut_trajs = gt_ego_fut_trajs.cumsum(dim=-2)
+
     planning_metric = PlanningMetric()
     segmentation, pedestrian = planning_metric.get_label(
         gt_agent_boxes, gt_agent_feats)

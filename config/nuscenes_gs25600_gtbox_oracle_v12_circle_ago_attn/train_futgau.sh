@@ -25,7 +25,7 @@ REPO="/data/xinyao/navsim_workspace/GaussianAD"
 PY="/data/chenz/conda_env/splatting/bin/torchrun"
 CONFIG="config/${CFG_DIR}/${SRC_CFG}.py"
 WORK_DIR="exp/${EXP_NAME}"
-GPUS="4,5,6,7"
+GPUS="0,1,2,3"
 NPROC=4
 MASTER_PORT=12494
 

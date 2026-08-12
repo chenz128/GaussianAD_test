@@ -19,7 +19,7 @@ PY="/data/chenz/conda_env/splatting/bin/python"
 CONFIG="config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_frozen_futgau_detach_false/${SRC_CFG}.py"
 WORK_DIR="exp/${EXP_NAME}"
 CKPT="${WORK_DIR}/checkpoints/epoch_15.pth"
-LOG_NAME="test_epoch15"
+LOG_NAME="test_epoch15_v2"
 GPUS="4,5,6,7"
 PORT="${MASTER_PORT:-20512}"
 

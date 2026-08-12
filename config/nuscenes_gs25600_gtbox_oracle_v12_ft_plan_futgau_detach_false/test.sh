@@ -21,7 +21,7 @@ PY="/data/chenz/conda_env/splatting/bin/python"
 CONFIG="config/${SRC_CFG}/${SRC_CFG}.py"
 WORK_DIR="exp/${EXP_NAME}"
 CKPT="${WORK_DIR}/checkpoints/epoch_15.pth"
-LOG_NAME="test_epoch15"
+LOG_NAME="test_epoch15_v2"
 GPUS="4,5,6,7"
 PORT="${MASTER_PORT:-20509}"   # 手动改这里，或用 MASTER_PORT=xxxxx bash ... 覆盖
 
