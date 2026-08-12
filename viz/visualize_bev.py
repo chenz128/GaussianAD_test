@@ -1,14 +1,18 @@
 """
-Visualize nuScenes frames in the SAME layout as the reference figure:
+Visualize nuScenes frames in the GaussianAD paper Figure-4 style layout:
 
-  Inputs (left, 2x3)      : 6 surround cameras with corner labels
-      [Front Left, Front, Front Right]
-      [Back Left,  Back,  Back Right]
-  Predictions (middle)    : BEV semantic occupancy (pred) + predicted 3D
-                            detection boxes + predicted map vectors + planned
-                            ego trajectory (pred vs GT).
-  Ground Truth (right)    : BEV semantic occupancy (GT occ_label) + GT boxes +
-                            GT map vectors + GT ego trajectory.
+  [ Input cameras (2x3) ]   [ Predictions ]       [ Ground Truth ]
+  FrontLeft/Front/FrontRight      |                       |
+  BackLeft/Back/BackRight   4D-OCC (BEV)  +       4D-OCC (BEV)  +
+                            trajectory panel       trajectory panel
+
+  * Inputs (left, 2x3)   : 6 surround cameras with corner labels.
+  * Predictions (middle) : top = BEV 4D semantic occupancy (pred),
+                           bottom = planned ego candidate trajectories
+                           (colored, one per mode) + lane / reference
+                           center-lines (fixed background) + GT reference.
+  * Ground Truth (right) : top = BEV 4D semantic occupancy (occ_label),
+                           bottom = GT reference trajectory + lane center-lines.
 
 Everything comes from the project's own dataloader + model forward pass.
 
@@ -63,6 +67,10 @@ MAP_NAMES = {0: 'divider', 1: 'ped_crossing', 2: 'boundary'}
 # detection box palette (indexed by predicted/GT label, wraps around)
 DET_PALETTE = ['#00e5ff', '#ffd400', '#ff4081', '#7c4dff', '#64dd17',
                '#ff6d00', '#00b8d4', '#c51162', '#aeea00', '#6200ea']
+
+# ego candidate-trajectory palette (distinct hues, one per mode)
+TRAJ_PALETTE = ['#ff4081', '#ffb300', '#7c4dff', '#00e676', '#ff5722',
+                '#00b0ff', '#ffea00', '#d500f9', '#00e5ff', '#76ff03']
 
 # camera display order matching the reference figure
 CAM_ORDER = ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
@@ -229,9 +237,13 @@ def style_bev(ax, title, edge):
 # ---------------------------------------------------------------------------
 def cum_traj(deltas):
     d = deltas.detach().cpu().numpy() if torch.is_tensor(deltas) else np.asarray(deltas)
-    d = np.nan_to_num(d, nan=0.0).reshape(-1, 2)
-    traj = np.cumsum(d, axis=0)
-    return np.concatenate([np.zeros((1, 2)), traj], axis=0)
+    d = np.nan_to_num(d, nan=0.0)
+    if d.ndim == 2:                       # (T, 2) single trajectory
+        traj = np.cumsum(d, axis=0)
+        return np.concatenate([np.zeros((1, 2)), traj], axis=0)
+    traj = np.cumsum(d, axis=1)           # (M, T, 2) candidate modes
+    z = np.zeros((d.shape[0], 1, 2))
+    return np.concatenate([z, traj], axis=1)
 
 
 # ---------------------------------------------------------------------------
@@ -274,46 +286,105 @@ def get_pred_map(res, score_thr=0.3):
 # ---------------------------------------------------------------------------
 # figure composition
 # ---------------------------------------------------------------------------
-def compose(cam_imgs, pred, gt, save_path, title=None):
-    fig = plt.figure(figsize=(26, 9), dpi=120)
-    gs = fig.add_gridspec(2, 5, width_ratios=[1, 1, 1, 1.45, 1.45],
-                          wspace=0.05, hspace=0.07)
+def _style_frame(ax, edge='#444', lw=1.2):
+    ax.set_xticks([]); ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_edgecolor(edge); sp.set_linewidth(lw)
 
+
+def _draw_candidates(ax, trajs, gt_pts, gt_color='#2979ff', width=3.0):
+    """Pred panel: draw all candidate trajectories (colored dots+line) plus the
+    GT reference trajectory (solid blue) and the drivable lane / reference lines.
+
+    trajs : (M, T+1, 2) cumulative candidate trajectories (each row one mode)
+    gt_pts: (T+1, 2) cumulative GT ego reference trajectory (or None)
+    """
+    if trajs is not None and len(trajs) > 0:
+        for m, t in enumerate(trajs):
+            c = TRAJ_PALETTE[m % len(TRAJ_PALETTE)]
+            col, row = to_px(t[:, 0], t[:, 1])
+            ax.plot(col, row, color=c, lw=width, alpha=0.9, zorder=8,
+                    solid_capstyle='round')
+            ax.scatter(col, row, s=16, color=c, edgecolor='white', lw=0.4,
+                       zorder=9)
+    if gt_pts is not None and len(gt_pts) > 1:
+        col, row = to_px(gt_pts[:, 0], gt_pts[:, 1])
+        ax.plot(col, row, color=gt_color, lw=2.2, ls='--', alpha=0.95,
+                zorder=10, solid_capstyle='round')
+        ax.scatter(col, row, s=26, marker='o', facecolor='white',
+                   edgecolor=gt_color, lw=1.6, zorder=11)
+
+
+def _draw_traj_panel(ax, ref_map, candidates, gt_pts, title, edge):
+    """Small long panel: lane/reference center-lines (fixed background) +
+    candidate trajectories (pred) or GT reference trajectory (gt)."""
+    # fixed background = road topology / lane center-lines from the map
+    if ref_map is not None:
+        draw_map(ax, ref_map[0], ref_map[1])
+    draw_ego(ax)
+    if candidates is not None and len(candidates) > 0:
+        _draw_candidates(ax, candidates, gt_pts)
+    elif gt_pts is not None:
+        _draw_traj_panel_gt(ax, gt_pts)
+    style_bev(ax, title, edge)
+
+
+def _draw_traj_panel_gt(ax, gt_pts):
+    col, row = to_px(gt_pts[:, 0], gt_pts[:, 1])
+    ax.plot(col, row, color='#1e88e5', lw=2.6, zorder=10, solid_capstyle='round')
+    ax.scatter(col, row, s=30, marker='o', facecolor='#1e88e5',
+               edgecolor='white', lw=1.4, zorder=11)
+
+
+def _panel_label(ax, text, color='#ffd54f', fs=11):
+    ax.text(0.03, 0.95, text, transform=ax.transAxes, fontsize=fs,
+            fontweight='bold', color=color, va='top', ha='left',
+            bbox=dict(boxstyle='round,pad=0.2', fc='black', alpha=0.4, ec='none'))
+
+
+def compose(cam_imgs, pred, gt, save_path, title=None):
+    """Three vertical blocks, each internally split into OCC (BEV) + trajectory.
+
+        [ Input cameras (2x3) ]  [ Predictions ]  [ Ground Truth ]
+                                       |                  |
+                                   OCC + Traj        OCC + Traj
+    """
+    # column 0..2 = cameras, col 3 = Predictions, col 4 = Ground Truth
+    fig = plt.figure(figsize=(26, 9), dpi=120)
+    gs = fig.add_gridspec(2, 5, width_ratios=[1, 1, 1, 1.55, 1.55],
+                          wspace=0.06, hspace=0.07)
+
+    # ---- Input cameras (2 x 3) ----
     positions = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
     for (r, c), name in zip(positions, CAM_ORDER):
         ax = fig.add_subplot(gs[r, c])
         if name in cam_imgs:
             ax.imshow(cam_imgs[name])
-        ax.set_xticks([]); ax.set_yticks([])
-        for sp in ax.spines.values():
-            sp.set_edgecolor('#444'); sp.set_linewidth(1.2)
-        ax.text(0.02, 0.95, CAM_LABEL[name], transform=ax.transAxes,
-                fontsize=12, fontweight='bold', color='#ffd54f',
-                va='top', ha='left',
-                bbox=dict(boxstyle='round,pad=0.2', fc='black', alpha=0.45, ec='none'))
+        _style_frame(ax, edge='#444', lw=1.2)
+        _panel_label(ax, CAM_LABEL[name])
 
-    # Predictions panel
-    axp = fig.add_subplot(gs[:, 3])
-    axp.imshow(bev_to_rgb(pred['occ']), extent=[0, GRID, GRID, 0],
-               origin='upper', interpolation='nearest', zorder=1)
-    draw_map(axp, pred['map'][0], pred['map'][1])
-    draw_boxes(axp, pred['boxes'], pred['labels'])
-    draw_ego(axp)
-    draw_traj(axp, pred['ego_gt'],  '#1e88e5', ls='-',  label='GT ego')
-    draw_traj(axp, pred['ego_pred'], '#e53935', ls='--', label='Pred ego')
-    style_bev(axp, 'Predictions', '#b25000')
-    axp.legend(loc='lower right', fontsize=9, framealpha=0.75)
+    # ---- Predictions: OCC (BEV) on top + Trajectory panel below ----
+    axp_occ = fig.add_subplot(gs[0, 3])
+    axp_occ.imshow(bev_to_rgb(pred['occ']), extent=[0, GRID, GRID, 0],
+                   origin='upper', interpolation='nearest', zorder=1)
+    style_bev(axp_occ, 'Predictions - 4D Occupancy (BEV)', '#b25000')
 
-    # Ground Truth panel
-    axg = fig.add_subplot(gs[:, 4])
-    axg.imshow(bev_to_rgb(gt['occ']), extent=[0, GRID, GRID, 0],
-               origin='upper', interpolation='nearest', zorder=1)
-    draw_map(axg, gt['map'][0], gt['map'][1])
-    draw_boxes(axg, gt['boxes'], gt['labels'])
-    draw_ego(axg)
-    draw_traj(axg, gt['ego_gt'], '#1e88e5', ls='-', label='GT ego')
-    style_bev(axg, 'Ground Truth', '#b00020')
-    axg.legend(loc='lower right', fontsize=9, framealpha=0.75)
+    # trajectory background = nuScenes map lane / reference center-lines
+    # (the GT map is the fixed planning reference in BOTH columns)
+    ref_map = gt['map'] if (gt['map'] and len(gt['map'][0])) else pred['map']
+    axp_trj = fig.add_subplot(gs[1, 3])
+    _draw_traj_panel(axp_trj, ref_map, pred['trajs'], pred['ego_gt'],
+                     'Predictions - Trajectory', '#b25000')
+
+    # ---- Ground Truth: OCC (BEV) on top + Trajectory panel below ----
+    axg_occ = fig.add_subplot(gs[0, 4])
+    axg_occ.imshow(bev_to_rgb(gt['occ']), extent=[0, GRID, GRID, 0],
+                   origin='upper', interpolation='nearest', zorder=1)
+    style_bev(axg_occ, 'Ground Truth - 4D Occupancy (BEV)', '#b00020')
+
+    axg_trj = fig.add_subplot(gs[1, 4])
+    _draw_traj_panel(axg_trj, gt['map'], None, gt['ego_gt'],
+                     'Ground Truth - Trajectory', '#b00020')
 
     if title:
         fig.suptitle(title, fontsize=15)
@@ -401,11 +472,18 @@ def main():
         pred_map = get_pred_map(res, args.map_score)
 
         cmd = int(data['ego_fut_cmd'].argmax(dim=-1)[0].item())
+        # all candidate trajectories (M, T, 2) -> cumulative (M, T+1, 2)
+        try:
+            ego_trajs = cum_traj(res['ego_fut_preds'][0])
+        except Exception:
+            ego_trajs = None
+        # selected (best) trajectory via the command one-hot
         ego_pred = cum_traj(res['ego_fut_preds'][0, cmd])
         ego_gt = cum_traj(data['ego_fut_trajs'][0])
 
         pred = dict(occ=pred_occ, boxes=pred_boxes, labels=pred_labels,
-                    map=pred_map, ego_pred=ego_pred, ego_gt=ego_gt)
+                    map=pred_map, trajs=ego_trajs,
+                    ego_pred=ego_pred, ego_gt=ego_gt)
 
         # ---- ground truth ----
         gt_occ = occ_gt_to_bev(data['occ_label'], data['occ_xyz'])
@@ -413,7 +491,7 @@ def main():
         gt_labels = gt_boxes[:, 9].astype(np.int32) if gt_boxes.shape[1] > 9 else None
         gt_map = get_gt_map(data)
         gt = dict(occ=gt_occ, boxes=gt_boxes, labels=gt_labels,
-                  map=gt_map, ego_gt=ego_gt)
+                  map=gt_map, trajs=None, ego_gt=ego_gt)
 
         fid = ''
         try:

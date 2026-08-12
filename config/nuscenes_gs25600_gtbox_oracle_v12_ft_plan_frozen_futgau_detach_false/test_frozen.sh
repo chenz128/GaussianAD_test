@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 # ============================================================================
-# v12_ft_plan_futgau_detach_false_satcol 测试脚本
-#   futgau (detach=False) + SAT 碰撞规避损失 的 planner 指标评测。
+# v12_fixempty_ft_plan_frozen_futgau_detach_false 测试脚本
+#   frozen Gaussian stack + futgau (detach=False) planner 的指标评测。
 #
-# 目的：对比 futgau_detach_false_col（外接圆），验证 SAT 定向矩形碰撞损失
-#       是否进一步降低 plan_obj_box_col 而不损害 plan_L2。
+# 目的：与 futgau_detach_false 对照，验证固定高斯输入后 planner 单独学习
+#       「未来帧高斯融合」的效果：plan_L2 / plan_obj_box_col / occ_flow FutAvg。
 #
-# GPU ：4,5,6,7   端口：20511
-# 用法：bash config/nuscenes_gs25600_gtbox_oracle_v12_futgu_satcol_loss/test_satcol.sh
-#       （建议 tmux：tmux new -s test_v12_satcol）
+# GPU ：0,1,2,3   端口：20512
+# 用法：bash config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_frozen_futgau_detach_false/test_frozen.sh
+#       （建议 tmux：tmux new -s test_frozen_futgau）
 # ============================================================================
 set -euo pipefail
 
-SRC_CFG="nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futgau_detach_false_satcol"
-EXP_NAME="nuscenes_gs25600_v12_ft_plan_futgau_detach_false_satcol"
+SRC_CFG="nuscenes_gs25600_gtbox_oracle_v12_ft_plan_frozen_futgau_detach_false"
+EXP_NAME="nuscenes_gs25600_v12_fixempty_ft_plan_frozen_futgau_detach_false"
 REPO="/data/xinyao/navsim_workspace/GaussianAD"
 PY="/data/chenz/conda_env/splatting/bin/python"
-CONFIG="config/nuscenes_gs25600_gtbox_oracle_v12_futgu_satcol_loss/${SRC_CFG}.py"
+CONFIG="config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_frozen_futgau_detach_false/${SRC_CFG}.py"
 WORK_DIR="exp/${EXP_NAME}"
 CKPT="${WORK_DIR}/checkpoints/epoch_15.pth"
 LOG_NAME="test_epoch15"
-GPUS="0,1,2,3"
-PORT="${MASTER_PORT:-20511}"
+GPUS="4,5,6,7"
+PORT="${MASTER_PORT:-20512}"
 
 cd "${REPO}"
 

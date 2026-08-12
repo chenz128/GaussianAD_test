@@ -421,7 +421,8 @@ class PlanAgentSATCollisionLoss(nn.Module):
             # Boxes overlap only when every SAT axis overlaps. Therefore the
             # largest separation is the active minimum-translation axis; its
             # negative is the penetration depth (positive iff all axes overlap).
-            seps = torch.stack([sep_x, sep_y, sep_wx, sep_wy], dim=-1)  # (A,T,4)
+            seps = torch.stack([sep_x.squeeze(-1), sep_y.squeeze(-1),
+                                sep_wx.squeeze(-1), sep_wy.squeeze(-1)], dim=-1)  # (A,T,4)
             max_sep = seps.max(dim=-1).values                          # (A,T)
             overlap = -max_sep                                          # >0 when colliding
 

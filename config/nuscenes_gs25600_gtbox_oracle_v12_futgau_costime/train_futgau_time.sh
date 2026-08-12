@@ -22,7 +22,7 @@ REPO="/data/xinyao/navsim_workspace/GaussianAD"
 PY="/data/chenz/conda_env/splatting/bin/torchrun"
 CONFIG="config/nuscenes_gs25600_gtbox_oracle_v12_futgau_costime/${SRC_CFG}.py"
 WORK_DIR="exp/${EXP_NAME}"
-GPUS="0,1,2,3"
+GPUS="4,5,6,7"
 NPROC=4
 MASTER_PORT=12485
 
