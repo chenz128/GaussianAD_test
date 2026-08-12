@@ -130,6 +130,7 @@ class InnovationFlowGenerator(nn.Module):
 
         self.last_flow_matching_loss = None
         self.last_innovation_masks = None
+        self.last_generated = None
 
     @staticmethod
     def _time_embedding(time, dims):
@@ -440,4 +441,6 @@ class InnovationFlowGenerator(nn.Module):
                 condition, ego_cumulative)
             self.last_flow_matching_loss = ego_cumulative.sum() * 0.0
             self.last_innovation_masks = None
-        return self._decode(latent, condition, ego_cumulative)
+        generated = self._decode(latent, condition, ego_cumulative)
+        self.last_generated = generated if not self.training else None
+        return generated

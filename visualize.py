@@ -177,14 +177,22 @@ def main(local_rank, args):
                 pred_occ = pred.argmax(0)
                 gt_occ = result_dict['sampled_label'][idx]
                 if args.vis_occ:
+                    sampled_xyz = result_dict['sampled_xyz'][idx]
+                    occ_shape = tuple(
+                        int(torch.unique(sampled_xyz[:, axis]).numel())
+                        for axis in range(3))
+                    if np.prod(occ_shape) != pred_occ.numel():
+                        raise ValueError(
+                            f'cannot reshape {pred_occ.numel()} occupancy values '
+                            f'to inferred grid {occ_shape}')
                     save_occ(
                         os.path.join(args.work_dir, 'vis'),
-                        pred_occ.reshape(1, 200, 200, 16),
+                        pred_occ.reshape(1, *occ_shape),
                         f'val_{i_iter_val}_pred',
                         True, 0)
                     save_occ(
                         os.path.join(args.work_dir, 'vis'),
-                        gt_occ.reshape(1, 200, 200, 16),
+                        gt_occ.reshape(1, *occ_shape),
                         f'val_{i_iter_val}_gt',
                         True, 0)
                 if args.vis_gaussian and local_rank == 0:
@@ -192,6 +200,328 @@ def main(local_rank, args):
                         os.path.join(args.work_dir, 'vis'),
                         result_dict['gaussian'],
                         f'val_{i_iter_val}_gaussian')
+                    # GaussianHeadFrontier recycles only slots that leave the
+                    # occupancy window. Save the actual per-step replacement
+                    # result so its visualization does not approximate future
+                    # frames as merely current means plus the offset.
+                    try:
+                        head = raw_model.head
+                        if hasattr(head, 'future_generator'):
+                            from model.utils.utils import get_rotation_matrix
+
+                            gaussian = result_dict['gaussian']
+                            offset = result_dict['offset'].reshape(
+                                1, -1, 6, 2)
+                            offset = torch.cat(
+                                [offset, offset.new_zeros(*offset.shape[:-1], 1)],
+                                dim=-1)
+                            provided_transforms = result_dict.get(
+                                'future_lidar_transforms')
+                            if (getattr(head, 'future_pose_mode', 'translation')
+                                    == 'se3' or provided_transforms is not None):
+                                future_transforms = head.get_future_lidar_transforms(
+                                    data, gaussian.means,
+                                    provided_transforms=provided_transforms)
+                            else:
+                                ego = data['ego_fut_trajs']
+                                if not torch.is_tensor(ego):
+                                    ego = torch.as_tensor(
+                                        ego, device=offset.device)
+                                ego = torch.nan_to_num(
+                                    ego.to(offset).float()).cumsum(dim=1)
+                                future_transforms = torch.eye(
+                                    4, device=offset.device, dtype=offset.dtype
+                                ).reshape(1, 1, 4, 4).repeat(
+                                    gaussian.means.shape[0], 6, 1, 1)
+                                future_transforms[..., :2, 3] = -ego
+                            future_to_current = torch.linalg.inv(
+                                future_transforms)
+                            future_origins = future_to_current[..., :3, 3]
+
+                            generated = getattr(
+                                head.future_generator, 'last_generated', None)
+                            if generated is None:
+                                generated = head.future_generator(
+                                    ego_cumulative=future_origins,
+                                    temporal_features=result_dict[
+                                        'temporal_context_features'],
+                                    temporal_indices=result_dict[
+                                        'temporal_context_indices'],
+                                    ms_img_feats=result_dict['ms_img_feats'],
+                                    metas=data,
+                                    batch_size=gaussian.means.shape[0],
+                                    future_to_current_rotations=(
+                                        future_to_current[..., :3, :3]))
+                            generated_semantics = generated['semantics']
+                            if generated_semantics.shape[-1] < gaussian.semantics.shape[-1]:
+                                generated_semantics = torch.nn.functional.pad(
+                                    generated_semantics,
+                                    (0, gaussian.semantics.shape[-1]
+                                     - generated_semantics.shape[-1]))
+
+                            future = [dict(
+                                means=gaussian.means[0],
+                                scales=gaussian.scales[0],
+                                rotations=gaussian.rotations[0],
+                                rotation_matrices=get_rotation_matrix(
+                                    gaussian.rotations)[0].transpose(-1, -2),
+                                opacities=gaussian.opacities[0, :, 0],
+                                semantics=gaussian.semantics[0],
+                                generated=torch.zeros(
+                                    gaussian.means.shape[1], dtype=torch.bool,
+                                    device=offset.device))]
+                            means_future = gaussian.means[..., None, :] + offset
+                            for step in range(6):
+                                transform = future_transforms[:, step]
+                                rotation = transform[:, None, :3, :3]
+                                warped_old = head.transform_points(
+                                    means_future[..., step, :], transform)
+                                old_inside = head.get_in_range_mask(warped_old)[0]
+                                new_means = head.transform_points(
+                                    generated['means'], transform)
+                                new_active = (
+                                    head.get_in_range_mask(new_means)[0]
+                                    & (generated['enter_time'][0]
+                                       <= ((step + 1) / 6.0)))
+                                old_count = int(old_inside.sum())
+                                new_count = int(new_active.sum())
+                                future.append(dict(
+                                    means=torch.cat([
+                                        warped_old[0, old_inside],
+                                        new_means[0, new_active]], 0),
+                                    scales=torch.cat([
+                                        gaussian.scales[0, old_inside],
+                                        generated['scales'][0, new_active]], 0),
+                                    rotations=torch.cat([
+                                        gaussian.rotations[0, old_inside],
+                                        generated['rotations'][0, new_active]], 0),
+                                    rotation_matrices=torch.cat([
+                                        (rotation @ get_rotation_matrix(
+                                            gaussian.rotations).transpose(
+                                                -1, -2))[0, old_inside],
+                                        (rotation @ get_rotation_matrix(
+                                            generated['rotations']).transpose(
+                                                -1, -2))[0, new_active]], 0),
+                                    opacities=torch.cat([
+                                        gaussian.opacities[0, old_inside, 0],
+                                        generated['opacities'][0, new_active, 0]], 0),
+                                    semantics=torch.cat([
+                                        gaussian.semantics[0, old_inside],
+                                        generated_semantics[0, new_active]], 0),
+                                    generated=torch.cat([
+                                        torch.zeros(
+                                            old_count, dtype=torch.bool,
+                                            device=offset.device),
+                                        torch.ones(
+                                            new_count, dtype=torch.bool,
+                                            device=offset.device)], 0)))
+
+                            max_count = max(item['means'].shape[0] for item in future)
+                            valid = []
+                            for item in future:
+                                count = item['means'].shape[0]
+                                padding = max_count - count
+                                valid.append(torch.cat([
+                                    torch.ones(count, dtype=torch.bool, device=offset.device),
+                                    torch.zeros(padding, dtype=torch.bool, device=offset.device)]))
+                                for key in ('means', 'scales', 'rotations',
+                                            'rotation_matrices', 'opacities',
+                                            'semantics', 'generated'):
+                                    value = item[key]
+                                    pad_shape = (padding, *value.shape[1:])
+                                    item[key] = torch.cat([
+                                        value, value.new_zeros(pad_shape)], 0)
+                            np.savez_compressed(
+                                os.path.join(
+                                    args.work_dir, 'vis',
+                                    f'val_{i_iter_val}_frontier_future.npz'),
+                                means=np.stack([
+                                    item['means'].detach().cpu().numpy()
+                                    for item in future]),
+                                scales=np.stack([
+                                    item['scales'].detach().cpu().numpy()
+                                    for item in future]),
+                                rotations=np.stack([
+                                    item['rotations'].detach().cpu().numpy()
+                                    for item in future]),
+                                rotation_matrices=np.stack([
+                                    item['rotation_matrices'].detach().cpu().numpy()
+                                    for item in future]),
+                                opacities=np.stack([
+                                    item['opacities'].detach().cpu().numpy()
+                                    for item in future]),
+                                semantics=np.stack([
+                                    item['semantics'].detach().cpu().numpy()
+                                    for item in future]),
+                                generated=np.stack([
+                                    item['generated'].detach().cpu().numpy()
+                                    for item in future]),
+                                valid=np.stack([
+                                    item.detach().cpu().numpy()
+                                    for item in valid]))
+                        elif hasattr(head, 'frontier_generator'):
+                            gaussian = result_dict['gaussian']
+                            offset = result_dict['offset'].reshape(
+                                1, -1, 6, 2)
+                            offset = torch.cat(
+                                [offset, offset.new_zeros(*offset.shape[:-1], 1)],
+                                dim=-1)
+                            ego = data['ego_fut_trajs']
+                            if not torch.is_tensor(ego):
+                                ego = torch.as_tensor(ego, device=offset.device)
+                            ego = ego.to(offset.device).float()
+                            if ego.dim() == 2:
+                                ego = ego[None]
+                            ego = torch.nan_to_num(ego).cumsum(dim=1)
+                            ego = torch.cat(
+                                [ego, ego.new_zeros(*ego.shape[:-1], 1)], dim=-1)
+
+                            means_fut = gaussian.means[..., None, :] + offset
+                            num_real = gaussian.means.shape[1]
+                            if hasattr(head, 'target_num_gaussians'):
+                                target_num = head.target_num_gaussians
+                                missing = target_num - num_real
+                                if missing < 0:
+                                    raise AssertionError(
+                                        f'current Gaussian count {num_real} exceeds '
+                                        f'visualization target {target_num}')
+                                # The current frame has fewer real Gaussians than
+                                # v2's fixed future slots. Invisible zero-opacity
+                                # padding keeps the animation tensor rectangular.
+                                future = [dict(
+                                    means=torch.cat([
+                                        gaussian.means[0],
+                                        gaussian.means.new_zeros(missing, 3)], 0),
+                                    scales=torch.cat([
+                                        gaussian.scales[0],
+                                        gaussian.scales.new_zeros(missing, 3)], 0),
+                                    rotations=torch.cat([
+                                        gaussian.rotations[0],
+                                        gaussian.rotations.new_zeros(missing, 4)], 0),
+                                    opacities=torch.cat([
+                                        gaussian.opacities[0, :, 0],
+                                        gaussian.opacities.new_zeros(missing)], 0),
+                                    semantics=torch.cat([
+                                        gaussian.semantics[0],
+                                        gaussian.semantics.new_zeros(
+                                            missing, gaussian.semantics.shape[-1])], 0),
+                                    recycled=torch.zeros(
+                                        target_num, dtype=torch.bool,
+                                        device=offset.device))]
+                                image_map, projection, image_wh = (
+                                    head._current_camera_inputs(
+                                        result_dict['ms_img_feats'], data,
+                                        gaussian.means.shape[0]))
+                                image_features = (
+                                    head.frontier_generator.prepare_image_features(
+                                        image_map))
+                                context = dict(
+                                    means=gaussian.means,
+                                    scales=gaussian.scales,
+                                    rotations=gaussian.rotations,
+                                    opacities=gaussian.opacities,
+                                    semantics=gaussian.semantics)
+                                for step in range(6):
+                                    means = (
+                                        means_fut[..., step, :]
+                                        - ego[:, step:step + 1])
+                                    inside = head.get_in_range_mask(means)
+                                    generated = head.frontier_generator(
+                                        ego_disp=ego[:, step],
+                                        num_gaussians=target_num,
+                                        time_index=step,
+                                        context_gaussian=context,
+                                        context_valid=inside,
+                                        image_features=image_features,
+                                        projection_mat=projection,
+                                        image_wh=image_wh)
+                                    keep = inside[..., None]
+                                    future.append(dict(
+                                        means=torch.cat([
+                                            torch.where(
+                                                keep, means,
+                                                generated['means'][:, :num_real]),
+                                            generated['means'][:, num_real:]], 1)[0],
+                                        scales=torch.cat([
+                                            torch.where(
+                                                keep, gaussian.scales,
+                                                generated['scales'][:, :num_real]),
+                                            generated['scales'][:, num_real:]], 1)[0],
+                                        rotations=torch.cat([
+                                            torch.where(
+                                                keep, gaussian.rotations,
+                                                generated['rotations'][:, :num_real]),
+                                            generated['rotations'][:, num_real:]], 1)[0],
+                                        opacities=torch.cat([
+                                            torch.where(
+                                                keep, gaussian.opacities,
+                                                generated['opacities'][:, :num_real]),
+                                            generated['opacities'][:, num_real:]], 1)[0, :, 0],
+                                        semantics=torch.cat([
+                                            torch.where(
+                                                keep, gaussian.semantics,
+                                                generated['semantics'][:, :num_real]),
+                                            generated['semantics'][:, num_real:]], 1)[0],
+                                        recycled=torch.cat([
+                                            (~inside)[0],
+                                            torch.ones(
+                                                missing, dtype=torch.bool,
+                                                device=offset.device)], 0)))
+                            else:
+                                future = [dict(
+                                    means=gaussian.means[0],
+                                    scales=gaussian.scales[0],
+                                    rotations=gaussian.rotations[0],
+                                    opacities=gaussian.opacities[0, :, 0],
+                                    semantics=gaussian.semantics[0],
+                                    recycled=torch.zeros(
+                                        gaussian.means.shape[1], dtype=torch.bool,
+                                        device=offset.device))]
+                                for step in range(6):
+                                    means = means_fut[..., step, :] - ego[:, step:step + 1]
+                                    inside = head.get_in_range_mask(means)
+                                    generated = head.frontier_generator(
+                                        ego_disp=ego[:, step],
+                                        num_gaussians=num_real,
+                                        time_index=step)
+                                    keep = inside[..., None]
+                                    future.append(dict(
+                                        means=torch.where(keep, means, generated['means'])[0],
+                                        scales=torch.where(
+                                            keep, gaussian.scales, generated['scales'])[0],
+                                        rotations=torch.where(
+                                            keep, gaussian.rotations, generated['rotations'])[0],
+                                        opacities=torch.where(
+                                            keep, gaussian.opacities, generated['opacities'])[0, :, 0],
+                                        semantics=torch.where(
+                                            keep, gaussian.semantics, generated['semantics'])[0],
+                                        recycled=(~inside)[0]))
+                            np.savez_compressed(
+                                os.path.join(
+                                    args.work_dir, 'vis',
+                                    f'val_{i_iter_val}_frontier_future.npz'),
+                                means=np.stack([
+                                    item['means'].detach().cpu().numpy()
+                                    for item in future]),
+                                scales=np.stack([
+                                    item['scales'].detach().cpu().numpy()
+                                    for item in future]),
+                                rotations=np.stack([
+                                    item['rotations'].detach().cpu().numpy()
+                                    for item in future]),
+                                opacities=np.stack([
+                                    item['opacities'].detach().cpu().numpy()
+                                    for item in future]),
+                                semantics=np.stack([
+                                    item['semantics'].detach().cpu().numpy()
+                                    for item in future]),
+                                recycled=np.stack([
+                                    item['recycled'].detach().cpu().numpy()
+                                    for item in future]))
+                    except Exception as e:
+                        print(f'[frontier future dump] failed on val_{i_iter_val}: {e}')
+                        logger.info(
+                            f'[frontier future dump] failed on val_{i_iter_val}: {e}')
                     # dump future-frame offset (+ego motion) for animation
                     try:
                         off_t = result_dict.get('offset')
