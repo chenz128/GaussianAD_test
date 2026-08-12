@@ -14,7 +14,7 @@ class GaussianHeadFrontierV3(GaussianHead):
     def __init__(self, target_num_gaussians=25600, direct_generator=None,
                  current_frame_index=0, min_current_gaussian_ratio=0.99,
                  dynamic_class_multiplier=3.0, future_pose_mode='translation',
-                 strict_range_mask=False,
+                 strict_range_mask=False, range_mask_sigma=0.0,
                  **kwargs):
         super().__init__(**kwargs)
         self.target_num_gaussians = target_num_gaussians
@@ -26,6 +26,7 @@ class GaussianHeadFrontierV3(GaussianHead):
                 f'unsupported future_pose_mode={future_pose_mode!r}')
         self.future_pose_mode = future_pose_mode
         self.strict_range_mask = strict_range_mask
+        self.range_mask_sigma = range_mask_sigma
         config = dict(direct_generator or {})
         config.setdefault('pc_range', tuple(self.pc_range))
         config.setdefault(
@@ -34,9 +35,17 @@ class GaussianHeadFrontierV3(GaussianHead):
         config.setdefault('current_frame_index', current_frame_index)
         self.future_generator = FutureGaussianDirectGenerator(**config)
 
-    def get_in_range_mask(self, points):
+    def get_in_range_mask(self, points, scales=None):
+        """Keep Gaussians whose footprint overlaps the future render ROI."""
         grid = ((points - self.pc_min) / self.grid_size).to(torch.int)
         if self.strict_range_mask:
+            if scales is not None and self.range_mask_sigma > 0:
+                margin = scales.abs().amax(dim=-1, keepdim=True)
+                margin = margin * self.range_mask_sigma
+                lower = self.pc_min - margin
+                upper = self.pc_min + self.grid_size * points.new_tensor(
+                    [120, 120, 8]) + margin
+                return ((points >= lower) & (points < upper)).all(dim=-1)
             grid = (points - self.pc_min) / self.grid_size
         return ((grid[..., 0] >= 0) & (grid[..., 0] < 120)
                 & (grid[..., 1] >= 0) & (grid[..., 1] < 120)
@@ -114,9 +123,11 @@ class GaussianHeadFrontierV3(GaussianHead):
             transform = future_transforms[:, step]
             warped_old = self.transform_points(
                 means_future[..., step, :], transform)
-            old_inside = self.get_in_range_mask(warped_old)[0]
+            old_inside = self.get_in_range_mask(
+                warped_old, scales_all[:, :current_count])[0]
             new_means = self.transform_points(generated['means'], transform)
-            new_inside = self.get_in_range_mask(new_means)[0]
+            new_inside = self.get_in_range_mask(
+                new_means, generated['scales'])[0]
             entered = generated['enter_time'][0] <= ((step + 1) / 6.0)
             new_active = new_inside & entered
 

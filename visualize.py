@@ -276,11 +276,13 @@ def main(local_rank, args):
                                 rotation = transform[:, None, :3, :3]
                                 warped_old = head.transform_points(
                                     means_future[..., step, :], transform)
-                                old_inside = head.get_in_range_mask(warped_old)[0]
+                                old_inside = head.get_in_range_mask(
+                                    warped_old, gaussian.scales)[0]
                                 new_means = head.transform_points(
                                     generated['means'], transform)
                                 new_active = (
-                                    head.get_in_range_mask(new_means)[0]
+                                    head.get_in_range_mask(
+                                        new_means, generated['scales'])[0]
                                     & (generated['enter_time'][0]
                                        <= ((step + 1) / 6.0)))
                                 old_count = int(old_inside.sum())

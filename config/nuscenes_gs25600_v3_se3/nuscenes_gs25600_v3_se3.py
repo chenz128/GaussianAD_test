@@ -6,6 +6,7 @@ model = dict(
     head=dict(
         future_pose_mode='se3',
         strict_range_mask=True,
+        range_mask_sigma=3.0,
     ),
 )
 
