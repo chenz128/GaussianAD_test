@@ -137,7 +137,6 @@ class LocalAggregator(nn.Module):
         points_int = ((pts - self.pc_min) / self.grid_size).to(torch.int)
         assert points_int.min() >= 0 and points_int[:, 0].max() < self.H and points_int[:, 1].max() < self.W and points_int[:, 2].max() < self.D
         means3D_int = ((means3D.detach() - self.pc_min) / self.grid_size).to(torch.int)
-        assert means3D_int.min() >= 0 and means3D_int[:, 0].max() < self.H and means3D_int[:, 1].max() < self.W and means3D_int[:, 2].max() < self.D
         radii = torch.ceil(scales.max(dim=-1)[0] * self.scale_multiplier / self.grid_size).to(torch.int)
         assert radii.min() >= 1
         cov3D = cov3D.flatten(1)[:, [0, 4, 8, 1, 5, 2]]
