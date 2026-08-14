@@ -111,6 +111,14 @@ class InnovationFlowGenerator(nn.Module):
             nn.Linear(16, query_dims), nn.LayerNorm(query_dims), nn.SiLU(),
             nn.Linear(query_dims, query_dims))
         self.query_embedding = nn.Embedding(num_gaussians, query_dims)
+        # Per-query multi-frame image context (mirrors V3 direct generator so
+        # every future slot sees its own projected pixels instead of one global
+        # pooled vector). Applied after flow sampling when latent is decoded.
+        self.query_image_proj = nn.Conv2d(image_in_dims, query_dims, 1)
+        self.image_frame_embedding = nn.Embedding(num_frames, query_dims)
+        self.image_temporal_fusion = nn.Sequential(
+            nn.Linear(num_frames * query_dims, query_dims),
+            nn.LayerNorm(query_dims), nn.SiLU())
         self.decoder = nn.Sequential(
             nn.Linear(query_dims + latent_dims * 2, query_dims * 2),
             nn.LayerNorm(query_dims * 2), nn.SiLU(),
@@ -202,6 +210,66 @@ class InnovationFlowGenerator(nn.Module):
         feature = feature.reshape(batch_size, frames, *feature.shape[1:])
         feature = feature.mean(dim=(1, 2, 4, 5))
         return self.image_proj(feature)
+
+    def _image_context(self, xyz_current, ms_img_feats, metas, batch_size):
+        """Per-query multi-frame image context sampled at projected pixels.
+
+        Mirrors ``FutureGaussianDirectGenerator._image_context``: projects each
+        query's current-frame 3D position into every history frame's 6 cameras,
+        grid-samples the projected (1x1 conv) feature map, sums over visible
+        cameras and fuses the frames with learnable frame embeddings. Returns
+        ``(batch, num_gaussians, query_dims)`` context plus visible ratio.
+        """
+        feature = ms_img_feats[0]
+        frames = feature.shape[0] // batch_size
+        cameras, _, height, width = feature.shape[1:]
+        feature = feature.reshape(
+            batch_size * frames * cameras, *feature.shape[2:])
+        if self.detach_context:
+            feature = feature.detach()
+        feature = self.query_image_proj(feature).reshape(
+            batch_size, frames, cameras, self.query_dims, height, width)
+
+        projection = metas['projection_mat'].reshape(
+            batch_size, frames, cameras, 4, 4)
+        image_wh = metas['image_wh'].reshape(
+            batch_size, frames, cameras, 2)
+        lidar2global = metas['lidar2global']
+        if not torch.is_tensor(lidar2global):
+            lidar2global = torch.as_tensor(lidar2global)
+        lidar2global = lidar2global.to(xyz_current).reshape(
+            batch_size, frames, 4, 4)
+        current_index = self.current_frame_index % frames
+        current_to_frame = torch.linalg.inv(lidar2global) @ (
+            lidar2global[:, current_index:current_index + 1])
+
+        points = torch.cat(
+            [xyz_current, torch.ones_like(xyz_current[..., :1])], dim=-1)
+        points_frame = torch.matmul(
+            current_to_frame[:, :, None], points[:, None, ..., None])
+        camera_points = torch.matmul(
+            projection[:, :, :, None], points_frame[:, :, None]).squeeze(-1)
+        depth = camera_points[..., 2]
+        pixels = camera_points[..., :2] / depth.clamp_min(1e-5)[..., None]
+        normalized = pixels / image_wh[:, :, :, None].clamp_min(1.0)
+        visible = ((depth > 1e-5) & (normalized[..., 0] >= 0)
+                   & (normalized[..., 0] <= 1) & (normalized[..., 1] >= 0)
+                   & (normalized[..., 1] <= 1))
+        grid = (normalized * 2 - 1).reshape(
+            batch_size * frames * cameras, -1, 1, 2)
+        sampled = F.grid_sample(
+            feature.reshape(-1, self.query_dims, height, width), grid,
+            align_corners=False).reshape(
+                batch_size, frames, cameras, self.query_dims, -1)
+        sampled = sampled.permute(0, 4, 1, 2, 3)
+        mask = visible.permute(0, 3, 1, 2)[..., None]
+        per_frame = (sampled * mask).sum(dim=3) / mask.sum(dim=3).clamp_min(1)
+        frame_visible = mask.any(dim=3).to(per_frame.dtype)
+        frame_embedding = self.image_frame_embedding.weight[None, None]
+        per_frame = per_frame + frame_visible * frame_embedding
+        context = self.image_temporal_fusion(per_frame.flatten(-2))
+        image_visible = mask.any(dim=3).any(dim=2).to(context.dtype)
+        return context, image_visible
 
     def _condition(self, temporal_features, temporal_indices, ms_img_feats,
                    ego_cumulative, batch_size):
@@ -354,7 +422,8 @@ class InnovationFlowGenerator(nn.Module):
             latent = latent + 0.5 * step_size * (velocity + next_velocity)
         return latent
 
-    def _decode(self, latent, condition, ego_cumulative):
+    def _decode(self, latent, condition, ego_cumulative, ms_img_feats=None,
+                metas=None, future_to_current_rotations=None):
         batch = latent.shape[0]
         center_xy, region_lo, region_hi, enter_time, step = (
             self._sample_responsibility_regions(ego_cumulative))
@@ -363,8 +432,7 @@ class InnovationFlowGenerator(nn.Module):
         grid = center_xy.clone()
         grid[..., 0] = 2.0 * (grid[..., 0] - lo[0]) / (hi[0] - lo[0]) - 1.0
         grid[..., 1] = 2.0 * (grid[..., 1] - lo[1]) / (hi[1] - lo[1]) - 1.0
-        selected = []
-        condition_frames = condition[:, :, :, 0, 0].permute(0, 2, 1)
+        ation_frames = condition[:, :, :, 0, 0].permute(0, 2, 1)
         for batch_index in range(batch):
             frame_features = []
             for frame in range(6):
@@ -380,9 +448,6 @@ class InnovationFlowGenerator(nn.Module):
                 query_latent[query_mask] = sampled
             selected.append(query_latent)
         selected = torch.stack(selected)
-        step_condition = torch.gather(
-            condition_frames, 1,
-            step[..., None].expand(-1, -1, self.latent_dims))
         ego_flat = ego_cumulative[..., :2].reshape(batch, 1, 12)
         ego_flat = ego_flat.expand(-1, self.num_gaussians, -1)
         center_z = center_xy.new_zeros(*center_xy.shape[:-1], 1)
@@ -394,8 +459,26 @@ class InnovationFlowGenerator(nn.Module):
             enter_time[..., None], ego_flat / 60.0], dim=-1)
         query = self.query_encoder(query_input)
         query = query + self.query_embedding.weight[None]
+
+        # Per-query image context: FM query positions (center) are expressed in
+        # the future ego frame (each query assigned to one future step). Bring
+        # them back to the current ego frame by subtracting that step's ego
+        # displacement, then sample projected pixels over history cameras.
+        if ms_img_feats is not None and metas is not None:
+            ego_step = torch.gather(
+                ego_cumulative, 1,
+                step.clamp_max(5)[..., None].expand(-1, -1, 3))
+            center_current = center.clone()
+            center_current[..., :2] = center_current[..., :2] - ego_step[..., :2]
+            query_image, image_visible = self._image_context(
+                center_current, ms_img_feats, metas, batch)
+        else:
+            query_image = condition[:, :, 0, 0, 0].mean(dim=1, keepdim=True).expand(
+                -1, self.num_gaussians, -1).contiguous()
+            image_visible = query_image.new_ones(batch, self.num_gaussians)
+
         raw = self.decoder(torch.cat([
-            query, selected, step_condition], dim=-1))
+            query, selected, query_image], dim=-1))
         xy = region_lo + (region_hi - region_lo) * torch.sigmoid(raw[..., :2])
         z = lo[2] + (hi[2] - lo[2]) * torch.sigmoid(raw[..., 2:3])
         means = torch.cat([xy, z], dim=-1)
@@ -412,7 +495,7 @@ class InnovationFlowGenerator(nn.Module):
             means=means, scales=scales, rotations=rotations,
             opacities=opacities, semantics=semantics,
             cov_inv=covariance_inverse, enter_time=enter_time,
-            image_visible_ratio=means.new_tensor(0.0))
+            image_visible_ratio=image_visible.mean().detach())
 
     def forward(self, ego_cumulative, temporal_features, temporal_indices,
                 ms_img_feats, metas, batch_size,
@@ -441,6 +524,9 @@ class InnovationFlowGenerator(nn.Module):
                 condition, ego_cumulative)
             self.last_flow_matching_loss = ego_cumulative.sum() * 0.0
             self.last_innovation_masks = None
-        generated = self._decode(latent, condition, ego_cumulative)
+        generated = self._decode(
+            latent, condition, ego_cumulative,
+            ms_img_feats=ms_img_feats, metas=metas,
+            future_to_current_rotations=future_to_current_rotations)
         self.last_generated = generated if not self.training else None
         return generated

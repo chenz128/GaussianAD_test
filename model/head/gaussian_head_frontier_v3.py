@@ -15,6 +15,7 @@ class GaussianHeadFrontierV3(GaussianHead):
                  current_frame_index=0, min_current_gaussian_ratio=0.99,
                  dynamic_class_multiplier=3.0, future_pose_mode='translation',
                  strict_range_mask=False, range_mask_sigma=0.0,
+                 center_only_mask=False,
                  **kwargs):
         super().__init__(**kwargs)
         self.target_num_gaussians = target_num_gaussians
@@ -27,6 +28,7 @@ class GaussianHeadFrontierV3(GaussianHead):
         self.future_pose_mode = future_pose_mode
         self.strict_range_mask = strict_range_mask
         self.range_mask_sigma = range_mask_sigma
+        self.center_only_mask = center_only_mask
         config = dict(direct_generator or {})
         config.setdefault('pc_range', tuple(self.pc_range))
         config.setdefault(
@@ -38,6 +40,21 @@ class GaussianHeadFrontierV3(GaussianHead):
     def get_in_range_mask(self, points, scales=None):
         """Keep Gaussians whose footprint overlaps the future render ROI."""
         grid = ((points - self.pc_min) / self.grid_size).to(torch.int)
+        if self.center_only_mask:
+            # Retain any Gaussian whose centre lies inside the render volume.
+            # SE(3) rotation of the old bank across a turn swings edge
+            # gaussians out of the box; their centres are still inside the
+            # future render ROI, so keeping them avoids the "lost history"
+            # holes without considering scale-margin at all.
+            pc_min = self.pc_min[0]
+            pc_max = self.pc_min[0] + self.grid_size[0] * points.new_tensor(
+                [120, 120, 8])
+            return ((points[..., 0] >= pc_min[0])
+                    & (points[..., 0] < pc_max[0])
+                    & (points[..., 1] >= pc_min[1])
+                    & (points[..., 1] < pc_max[1])
+                    & (points[..., 2] >= pc_min[2])
+                    & (points[..., 2] < pc_max[2]))
         if self.strict_range_mask:
             if scales is not None and self.range_mask_sigma > 0:
                 margin = scales.abs().amax(dim=-1, keepdim=True)
