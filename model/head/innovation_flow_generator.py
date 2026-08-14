@@ -432,7 +432,8 @@ class InnovationFlowGenerator(nn.Module):
         grid = center_xy.clone()
         grid[..., 0] = 2.0 * (grid[..., 0] - lo[0]) / (hi[0] - lo[0]) - 1.0
         grid[..., 1] = 2.0 * (grid[..., 1] - lo[1]) / (hi[1] - lo[1]) - 1.0
-        ation_frames = condition[:, :, :, 0, 0].permute(0, 2, 1)
+        condition_frames = condition[:, :, :, 0, 0].permute(0, 2, 1)
+        selected = []
         for batch_index in range(batch):
             frame_features = []
             for frame in range(6):
