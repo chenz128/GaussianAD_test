@@ -232,8 +232,10 @@ class InnovationFlowGenerator(nn.Module):
 
         projection = metas['projection_mat'].reshape(
             batch_size, frames, cameras, 4, 4)
+        projection = projection.to(xyz_current)
         image_wh = metas['image_wh'].reshape(
             batch_size, frames, cameras, 2)
+        image_wh = image_wh.to(xyz_current)
         lidar2global = metas['lidar2global']
         if not torch.is_tensor(lidar2global):
             lidar2global = torch.as_tensor(lidar2global)
