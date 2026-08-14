@@ -18,9 +18,9 @@ ENV_DIR="${ENV_DIR:-/data/chenz/conda_env/faster}"
 PY="${ENV_DIR}/bin/torchrun"
 CONFIG="config/${EXP_NAME}/${EXP_NAME}.py"
 WORK_DIR="${WORK_DIR:-out/${EXP_NAME}}"
-GPUS="${GPUS:-1,2,3,4,5,6,7}"
-NPROC="${NPROC:-7}"
-MASTER_PORT="${MASTER_PORT:-12347}"
+GPUS="${GPUS:-0,1,2,3}"
+NPROC="${NPROC:-4}"
+MASTER_PORT="${MASTER_PORT:-12348}"
 
 if [[ ! -x "${PY}" ]]; then
   echo "[FATAL] Training environment not found: ${ENV_DIR}" >&2
