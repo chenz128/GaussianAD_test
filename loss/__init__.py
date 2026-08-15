@@ -12,3 +12,6 @@ from .occupancy_loss_flow import OccupancyFlowLoss
 from .render_loss import RenderLoss
 from .dynamic_loss import DynamicLoss
 from .physics_loss import PhysicsLoss
+
+from .time_query_plan_loss import TimeQueryPlanLoss
+from .residual_diffusion_plan_loss import ResidualDiffusionPlanLoss
