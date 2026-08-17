@@ -30,6 +30,8 @@ GPU：h20-new 后 4 张（4,5,6,7）。启动见同目录 train.sh。
 _dim_ = 256
 _pos_dim_ = 128
 anno_root = 'data/nuscenes_cam/'
+pc_range = [-30.0, -30.0, -2.0, 30.0, 30.0, 2.0]
+num_map_classes = 3
 aux_seg_cfg = dict(
     bev_seg=False,
     feat_down_sample=32,
