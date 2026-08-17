@@ -217,8 +217,18 @@ def load_frontier_gaussian_frames(path, opa_thr, ellip_cls,
             keep &= np.isin(pred[step], list(ellip_cls))
         indices = np.where(keep)[0]
         if len(indices) > max_ellip:
-            indices = np.random.RandomState(step).choice(
-                indices, max_ellip, replace=False)
+            generated_indices = indices[generated[step, indices]]
+            retained_indices = indices[~generated[step, indices]]
+            random = np.random.RandomState(step)
+            if len(generated_indices) >= max_ellip:
+                indices = random.choice(
+                    generated_indices, max_ellip, replace=False)
+            else:
+                retained_indices = random.choice(
+                    retained_indices, max_ellip - len(generated_indices),
+                    replace=False)
+                indices = np.concatenate(
+                    [retained_indices, generated_indices])
         selected.append(indices)
         groups.update(
             (bool(generated[step, index]), int(pred[step, index]))

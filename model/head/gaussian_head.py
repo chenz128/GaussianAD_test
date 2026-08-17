@@ -22,6 +22,9 @@ class GaussianHead(BaseTaskHead):
         render_config=None,
         flow_grad_scale=1.0,
         flow_include_empty=True,
+        use_plan_ego=False,
+        plan_ego_warmup_epochs=0,
+        plan_ego_detach=False,
         **kwargs,
     ):
         super().__init__(init_cfg)
@@ -72,6 +75,19 @@ class GaussianHead(BaseTaskHead):
         # (the same gaussians are shared). Set to False to reproduce the legacy
         # (upstream) behaviour.
         self.flow_include_empty = flow_include_empty
+
+        # Fine-tune option (planner coupling): when True, the ego-motion used to
+        # compensate the future occ_flow is taken from the planner prediction
+        # (``ego_fut_preds``) instead of the GT ego trajectory, so the plan head
+        # receives the occ-flow consistency signal. Default False keeps every
+        # existing (oracle) config on GT ego -> behaviour unchanged.
+        self.use_plan_ego = use_plan_ego
+        # Keep GT ego for the first ``plan_ego_warmup_epochs`` epochs (requires
+        # ``current_epoch`` to be forwarded), then switch to the prediction.
+        self.plan_ego_warmup_epochs = plan_ego_warmup_epochs
+        # If True, detach the predicted ego so occ_flow does NOT backprop into
+        # the planner (planner then supervised by PlanLoss only).
+        self.plan_ego_detach = plan_ego_detach
 
         # 2D Gaussian splatting renderer (pseudo-label supervision)
         self.rasterizer_2d = None
@@ -213,6 +229,35 @@ class GaussianHead(BaseTaskHead):
             return lidar, mask, valid
         return lidar[mask].unsqueeze(0).contiguous(), mask, valid
 
+    def _select_plan_ego(self, ego_fut_preds, metas, device):
+        """Pick the planner ego trajectory matching the driving command.
+
+        ``ego_fut_preds`` is (B, ego_fut_mode, fut_ts, 2) per-step displacement
+        (same frame/units as ``metas['ego_fut_trajs']``). The mode is selected
+        by the command one-hot ``metas['ego_fut_cmd']``. Returns (B, fut_ts, 2)
+        or None when the prediction is unavailable.
+        """
+        if ego_fut_preds is None:
+            return None
+        preds = ego_fut_preds
+        if not torch.is_tensor(preds):
+            preds = torch.as_tensor(preds)
+        preds = preds.to(device).float()
+        if preds.dim() == 3:            # (mode, fut_ts, 2) -> add batch dim
+            preds = preds[None]
+        B, M = preds.shape[0], preds.shape[1]
+        cmd = metas.get('ego_fut_cmd', None) if isinstance(metas, dict) else None
+        if cmd is not None:
+            if not torch.is_tensor(cmd):
+                cmd = torch.as_tensor(cmd)
+            cmd = cmd.to(device).float().reshape(B, -1)
+            mode_idx = cmd.argmax(dim=-1).clamp(max=M - 1)
+        else:
+            mode_idx = torch.zeros(B, dtype=torch.long, device=device)
+        ego = preds[torch.arange(B, device=device), mode_idx]   # (B, fut_ts, 2)
+        ego = torch.nan_to_num(ego, nan=0.0, posinf=0.0, neginf=0.0)
+        return ego
+
     def forward_flow(self,
                     sampled_xyz,
                     representation_temp,
@@ -231,10 +276,11 @@ class GaussianHead(BaseTaskHead):
         gs = tuple(self._flow_blend(t) for t in gs)
         means_fut = means[...,None,:] + offset
         pred_flow = []
-        # Ego motion for occ_flow: use the GT ego trajectory, NOT the planner
-        # prediction. planner_head is frozen (random init) in this oracle
-        # experiment, so ego_fut_preds is garbage. GT ego keeps offset's world
-        # frame consistent with PhysicsLoss.loss_vel (target = v_box*t, no ego).
+        # Ego motion for occ_flow. Default: GT ego trajectory (oracle configs
+        # keep this). When ``use_plan_ego`` is set (planner coupling), the
+        # planner-predicted ego trajectory replaces GT so the plan head receives
+        # the occ-flow consistency signal. A warmup period keeps GT ego for the
+        # first epochs while the planner is still random.
         ego_gt = metas['ego_fut_trajs']
         if not torch.is_tensor(ego_gt):
             ego_gt = torch.as_tensor(ego_gt)
@@ -242,7 +288,21 @@ class GaussianHead(BaseTaskHead):
         if ego_gt.dim() == 2:
             ego_gt = ego_gt[None]                         # (1, 6, 2)
         ego_gt = torch.nan_to_num(ego_gt, nan=0.0, posinf=0.0, neginf=0.0)
-        planner_res = ego_gt.cumsum(dim=1)                # (1, 6, 2) cumulative
+
+        ego_src = ego_gt
+        if self.use_plan_ego:
+            cur_ep = kwargs.get('current_epoch', None)
+            in_warmup = (cur_ep is not None
+                         and cur_ep < self.plan_ego_warmup_epochs)
+            if not in_warmup:
+                ego_pred = self._select_plan_ego(
+                    kwargs.get('ego_fut_preds', None), metas, offset.device)
+                if ego_pred is not None:
+                    if self.plan_ego_detach:
+                        ego_pred = ego_pred.detach()
+                    ego_src = ego_pred
+
+        planner_res = ego_src.cumsum(dim=1)               # (1, 6, 2) cumulative
         planner_res = torch.cat((planner_res, torch.zeros(*planner_res.shape[:-1],1).to(planner_res.device)), dim=-1)
         for i in range(6):
             origi_opa, opacities, scales, CovInv = gs

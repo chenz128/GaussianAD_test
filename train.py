@@ -382,7 +382,7 @@ def main(args):
                 # PCGrad does manual two-grad surgery + manual all-reduce, so it
                 # must bypass the DDP reducer -> forward through raw_model.
                 fwd_model = raw_model if use_pcgrad else my_model
-                result_dict = fwd_model(imgs=input_imgs, metas=data, global_iter=global_iter)#前向传播
+                result_dict = fwd_model(imgs=input_imgs, metas=data, global_iter=global_iter, current_epoch=epoch)#前向传播
 
                 loss_input = {
                     'metas': data
@@ -503,7 +503,7 @@ def main(args):
                 input_imgs = data.pop('img')
 
                 with torch.cuda.amp.autocast(amp):
-                    result_dict = my_model(imgs=input_imgs, metas=data)
+                    result_dict = my_model(imgs=input_imgs, metas=data, current_epoch=epoch)
 
                     loss_input = {
                         'metas': data,
