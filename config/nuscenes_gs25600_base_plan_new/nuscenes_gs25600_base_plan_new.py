@@ -9,16 +9,16 @@ base_gt_ego_fixempty（current 15.10 / FutAvg 8.33）是修复 empty-gaussian bu
      (head.use_plan_ego=True, warmup=2 epoch 后切换)。
   2. 解冻 map_decoder / planner_head (frozen_modules=[])，重新启用
      MapLoss + PlanLoss(weight=10.0) 监督二者。
-  3. flow_grad_scale=1.0 保持不变（与 base_gt_ego_fixempty 完全一致，
-     保证"接入 planner"是唯一自变量，对照 v12_fixempty_ft_plan 的做法）。
+  3. flow_grad_scale=0.0（与参考 v12_fixempty_ft_plan 对齐：
+     未来帧只训 offset，当前帧高斯完全受保护，由 Occ+Det 决定）。
 
 【参照】/data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan
-  （use_plan_ego=True + warmup=2 + unfreeze map/plan + MapLoss/PlanLoss，
-    在 v12_fixempty(flow_grad_scale=0.0) 上续训，current 17.58→18.97）
+  （use_plan_ego=True + warmup=2 + unfreeze map/plan + MapLoss/PlanLoss
+   + flow_grad_scale=0.0，在 v12_fixempty 上续训，current 17.58→18.97）
 
 【本实验与参照的差异】
   - init 自 base_gt_ego_fixempty/epoch_15.pth（load_from，不是 resume）
-  - flow_grad_scale=1.0（参照为 0.0，这里保持与自身基线一致）
+  - 其余设置与参照完全对齐（flow_grad_scale=0.0、warmup=2、detach=False）
 
 【续训方式】
 config 里 load_from=out/nuscenes_gs25600_base_gt_ego_fixempty/checkpoints/epoch_15.pth
@@ -682,7 +682,7 @@ model = dict(
             60,
             4.0,
         ]),
-        flow_grad_scale=1.0,
+        flow_grad_scale=0.0,
         num_classes=18,
         plan_ego_detach=False,
         plan_ego_warmup_epochs=2,

@@ -7,15 +7,16 @@
 #      (model.head.use_plan_ego=True, warmup=2 epoch 后切换)。
 #   2. 解冻 map_decoder / planner_head (frozen_modules=[])，重新启用
 #      MapLoss + PlanLoss(weight=10.0) 监督二者。
-#   3. flow_grad_scale=1.0 保持不变（与 base_gt_ego_fixempty 完全一致）。
+#   3. flow_grad_scale=0.0（与参考 v12_fixempty_ft_plan 对齐：
+#      未来帧只训 offset，当前帧高斯完全受保护）。
 #
 # 续训方式：config 里 load_from=out/nuscenes_gs25600_base_gt_ego_fixempty/
 #           checkpoints/epoch_15.pth（从 epoch 0 计数训 15 轮，
 #           optimizer/lr 全新，适配新解冻的参数）。
 #   不要 --resume-from（optimizer state 不匹配，train.py 会自动跳过）。
 #
-# 相对 v12_fixempty_ft_plan 的差异：flow_grad_scale=1.0（参照为 0.0），
-# 保持与自身基线 base_gt_ego_fixempty 的单变量对比。
+# 对齐参考 v12_fixempty_ft_plan（flow_grad_scale=0.0、warmup=2、detach=False），
+# 唯一差异是 init 自 base_gt_ego_fixempty。
 #
 # GPU：h20-new  后 4 张（4,5,6,7，前 4 张严禁使用）
 # 用法：tmux new -s train_base_plan_new
