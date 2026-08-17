@@ -301,27 +301,60 @@ DETR 式点集 query 解码出**矢量化高精地图**（3 类地图元素，�
 
 ## 10. VADHead（轨迹规划）
 
-代码：`model/planner/planner.py`
+代码：`model/planner/planner.py`（原始 VAD-style planner，三路解码器 + 一路 MLP 规划头）
 
 ```mermaid
-flowchart TD
-    AG["agent_query (来自检测)"] --> D1
-    MP["map_query (来自地图)"] --> D2
-    GS["gaussian_query (来自高斯)"] --> D3
-    EGO["ego_query (可学习自车 token)"] --> D1
+flowchart LR
+    subgraph IN["输入（来自上游）"]
+        AG["agent_query (B,500,10)<br/>检测框7维+score"] --> AF["agent_fus_mlp<br/>10→256"]
+        MP["map_query (B,P,43)<br/>cls1+pts40"] --> MF["map_fus_mlp<br/>43→256"]
+        GO["gaussian_output (B,G,28)<br/>means3/scales3/rot4/opa1/sem17"] --> GF["gaussian_fus_mlp<br/>28→256"]
+        EQ["ego_query 可学习token<br/>(B,1,256)"]
+    end
 
-    D1["ego↔agent 交叉注意力"] --> D2["ego↔map 交叉注意力"]
-    D2 --> D3["ego↔gaussian 交叉注意力"]
-    D1 & D2 & D3 --> CAT["拼接 3 路 ego 特征 (3D)"]
-    CAT --> MLP["ego_fut_decoder MLP"]
-    MLP --> OUT["ego_fut_preds<br/>(B, ego_fut_mode=3, fut_ts=6, 2)"]
+    AF --> AQ["[B,500,256] + pad_mask"]
+    MF --> MQ["[B,P,256]"]
+    GF --> GQ["[B,G,256]"]
+
+    subgraph DEC["三次递进交叉注意力（DecoderLayer）"]
+        D1["ego_agent_decoder<br/>query=ego, kv=agent"]
+        D2["ego_map_decoder<br/>query=D1输出, kv=map"]
+        D3["ego_gaussian_decoder<br/>query=D2输出, kv=gaussian"]
+    end
+
+    EQ --> D1
+    AQ --> D1
+    D1 --> D2
+    MQ --> D2
+    D2 --> D3
+    GQ --> D3
+    D3 --> O1["ego_agent_query (1,B,256)"]
+    D3 --> O2["ego_map_query (1,B,256)"]
+    D3 --> O3["ego_gs_query (1,B,256)"]
+
+    O1 & O2 & O3 --> CAT["cat → (B,1,768)"]
+    CAT --> MLP["ego_fut_decoder<br/>Linear(768→768→...→36)"]
+    MLP --> OUT["ego_fut_preds (B,3,6,2)<br/>3模式×6帧×xy"]
 ```
 
-**作用**：以可学习的自车 token 为 query，**依次**与场景中的 agent（检测）、map（地图）、
-gaussian（占用）上下文做交叉注意力，融合三路语境后由 MLP 回归**多模态未来自车轨迹**
-（3 种驾驶意图 × 未来 6 步 × xy）→ `PlanLoss`。
-
 ---
+
+形状变化总览：
+
+| 模块 | 输入形状 | 输出形状 |
+|------|----------|----------|
+| `agent_fus_mlp` | `[B,500,10]`（框8维+score1） | `[B,500,256]` |
+| `map_fus_mlp` | `[B,P,43]`（cls1 + 20点×2） | `[B,P,256]` |
+| `gaussian_fus_mlp` | `[B,G,28]`（G=25600 高斯） | `[B,G,256]` |
+| `ego_agent_decoder` | q:`[1,B,256]` kv:`[500,B,256]` | `[1,B,256]` |
+| `ego_map_decoder` | q:`[1,B,256]` kv:`[P,B,256]` | `[1,B,256]` |
+| `ego_gaussian_decoder` | q:`[1,B,256]` kv:`[G,B,256]` | `[1,B,256]` |
+| cat + `ego_fut_decoder` | `[B,1,768]` | `[B,36]` → `[B,3,6,2]` |
+
+**说明**：自车以可学习 token `ego_query` 为 query，依次与 agent（检测）、map（地图）、
+gaussian（3D 占用高斯，G=25600）三路上下文交叉注意力；解码后的三路 ego 特征拼接成 768 维，
+由 MLP 回归**多模态自车轨迹**（3 种驾驶意图 × 未来 6 步 × xy）→ `PlanLoss`。gaussian
+这一路正是本项目相对原版 VAD 的扩展：利用 3DGS 表示的空间感知能力作为规划上下文。
 
 ## 11. 输出与 Loss 汇总
 

@@ -20,8 +20,13 @@ class ResidualDiffusionPlanLoss(nn.Module):
         return value
 
     def forward(self, inputs):
-        prediction = inputs['residual_diffusion_noise_pred']
-        target = inputs['residual_diffusion_noise_target'].detach()
+        prediction = inputs.get('residual_diffusion_noise_pred')
+        target = inputs.get('residual_diffusion_noise_target')
+        if prediction is None or target is None or not torch.is_tensor(prediction):
+            device = prediction.device if torch.is_tensor(prediction) else None
+            return torch.zeros((), device=device), {}
+
+        target = target.detach()
         valid_mask = self._squeeze_annotations(
             inputs['ego_fut_masks'], target_dims=2)
         command = self._squeeze_annotations(

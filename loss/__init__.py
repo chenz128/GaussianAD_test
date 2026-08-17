@@ -15,3 +15,4 @@ from .physics_loss import PhysicsLoss
 
 from .time_query_plan_loss import TimeQueryPlanLoss
 from .residual_diffusion_plan_loss import ResidualDiffusionPlanLoss
+from .hybrid_position_residual_loss import HybridPositionResidualLoss

@@ -10,3 +10,4 @@ from .planner_v6 import VADHeadTimeQueryResidual
 
 from .planner_v7 import VADHeadDualTimeResidual
 from .planner_v8 import VADHeadGaussianResidualDiT
+from .planner_v9 import VADHeadHybridTimePositionResidual

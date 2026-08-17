@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SRC_CFG="nuscenes_gs25600_gtbox_oracle_v12_ft_plan_gaussian_residual_dit"
-EXP_NAME="nuscenes_gs25600_v12_fixempty_ft_plan_gaussian_residual_dit"
+SRC_CFG="nuscenes_gs25600_gtbox_oracle_v12_ft_plan_hybridtime_position_residual"
+EXP_NAME="nuscenes_gs25600_v12_fixempty_ft_plan_hybridtime_position_residual"
 REPO="/data/xinyao/navsim_workspace/GaussianAD"
 PY="/data/chenz/conda_env/splatting/bin/python"
 CONFIG="config/${SRC_CFG}/${SRC_CFG}.py"
 WORK_DIR="exp/${EXP_NAME}"
 CKPT="${CKPT:-${WORK_DIR}/checkpoints/epoch_15.pth}"
-LOG_NAME="${LOG_NAME:-test_epoch15}"
-GPUS="${GPUS:-0,1,2,3}"
-PORT="${MASTER_PORT:-20629}"
+LOG_NAME="${LOG_NAME:-test_epoch15_v2}"
+GPUS="${GPUS:-4,5,6,7}"
+PORT="${MASTER_PORT:-20729}"
 
 cd "${REPO}"
 
