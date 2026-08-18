@@ -17,7 +17,7 @@ load_from = (
     'checkpoints/epoch_15.pth')
 max_epochs = 15
 
-lr = float(os.environ.get('LR', 1e-4))
+lr = float(os.environ.get('LR', 2e-4))
 optimizer = dict(
     optimizer=dict(type='AdamW', lr=lr, weight_decay=0.01),
     paramwise_cfg=dict(custom_keys={'img_backbone': dict(lr_mult=0.1)}),

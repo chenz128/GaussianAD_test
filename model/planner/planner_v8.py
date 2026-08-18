@@ -7,61 +7,85 @@ from mmengine.registry import MODELS
 from .planner_v7 import VADHeadDualTimeResidual
 
 
+def _modulate(value, shift, scale):
+    """adaLN modulation used by the DiT block (facebookresearch/DiT)."""
+    return value * (1.0 + scale) + shift
+
+
 class GaussianResidualDiTBlock(nn.Module):
-    """DiT block with temporal self-attention and local Gaussian attention."""
+    """DiT block with adaLN-Zero modulation (facebookresearch/DiT style).
+
+    Three gated sub-layers, each modulated by adaptive LayerNorm:
+      1) temporal self-attention over future timesteps,
+      2) cross-attention to local future Gaussians,
+      3) pointwise MLP.
+    The adaLN modulation final linear layer is zero-initialized so the block
+    starts as an identity mapping and grows gracefully from the pre-trained
+    deterministic chain proposal.
+    """
 
     def __init__(self, embed_dims, num_heads, feedforward_channels, dropout):
         super().__init__()
-        self.self_norm = nn.LayerNorm(embed_dims, elementwise_affine=False)
-        self.gaussian_norm = nn.LayerNorm(embed_dims, elementwise_affine=False)
-        self.ffn_norm = nn.LayerNorm(embed_dims, elementwise_affine=False)
-        self.condition_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(embed_dims, embed_dims * 6))
+        self.norm_self = nn.LayerNorm(embed_dims, elementwise_affine=False)
+        self.norm_gauss = nn.LayerNorm(embed_dims, elementwise_affine=False)
+        self.norm_mlp = nn.LayerNorm(embed_dims, elementwise_affine=False)
         self.self_attention = nn.MultiheadAttention(
             embed_dims, num_heads, dropout=dropout, batch_first=True)
         self.gaussian_attention = nn.MultiheadAttention(
             embed_dims, num_heads, dropout=dropout, batch_first=True)
-        self.ffn = nn.Sequential(
+        self.mlp = nn.Sequential(
             nn.Linear(embed_dims, feedforward_channels),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(feedforward_channels, embed_dims),
         )
-
-    @staticmethod
-    def _modulate(value, shift, scale):
-        return value * (1.0 + scale) + shift
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(embed_dims, 9 * embed_dims),
+        )
 
     def forward(self, tokens, condition, local_gaussians):
         batch, modes, timesteps, channels = tokens.shape
-        modulation = self.condition_modulation(condition)
-        self_shift, self_scale, gaussian_shift, gaussian_scale, \
-            ffn_shift, ffn_scale = modulation.chunk(6, dim=-1)
+        (shift_self, scale_self, gate_self,
+         shift_gauss, scale_gauss, gate_gauss,
+         shift_mlp, scale_mlp, gate_mlp) = (
+            self.adaLN_modulation(condition).chunk(9, dim=-1))
 
-        self_tokens = self._modulate(
-            self.self_norm(tokens), self_shift, self_scale)
-        self_tokens = self_tokens.reshape(batch * modes, timesteps, channels)
-        self_tokens = self.self_attention(
-            self_tokens, self_tokens, self_tokens, need_weights=False)[0]
-        tokens = tokens + self_tokens.reshape(
+        # 1) temporal self-attention (within a mode over future timesteps)
+        self_tokens = _modulate(
+            self.norm_self(tokens), shift_self, scale_self)
+        self_tokens = self_tokens.reshape(
+            batch * modes, timesteps, channels)
+        attn_out = self.self_attention(
+            self_tokens, self_tokens, self_tokens,
+            need_weights=False)[0]
+        tokens = tokens + gate_self * attn_out.reshape(
             batch, modes, timesteps, channels)
 
-        gaussian_tokens = self._modulate(
-            self.gaussian_norm(tokens), gaussian_shift, gaussian_scale)
-        gaussian_tokens = gaussian_tokens.permute(0, 2, 1, 3).reshape(
+        # 2) cross-attention to locally-selected future Gaussians
+        gauss_tokens = _modulate(
+            self.norm_gauss(tokens), shift_gauss, scale_gauss)
+        gauss_tokens = gauss_tokens.permute(0, 2, 1, 3).reshape(
             batch * timesteps * modes, 1, channels)
-        local_gaussians = local_gaussians.reshape(
-            batch * timesteps * modes, local_gaussians.shape[-2], channels)
-        gaussian_tokens = self.gaussian_attention(
-            gaussian_tokens, local_gaussians, local_gaussians,
-            need_weights=False)[0]
-        gaussian_tokens = gaussian_tokens.reshape(
+        local = local_gaussians.reshape(
+            batch * timesteps * modes,
+            local_gaussians.shape[-2], channels)
+        attn_out = self.gaussian_attention(
+            gauss_tokens, local, local, need_weights=False)[0]
+        attn_out = attn_out.reshape(
             batch, timesteps, modes, channels).permute(0, 2, 1, 3)
-        tokens = tokens + gaussian_tokens
+        tokens = tokens + gate_gauss * attn_out
 
-        ffn_tokens = self._modulate(
-            self.ffn_norm(tokens), ffn_shift, ffn_scale)
-        return tokens + self.ffn(ffn_tokens)
+        # 3) pointwise MLP
+        mlp_tokens = _modulate(self.norm_mlp(tokens), shift_mlp, scale_mlp)
+        tokens = tokens + gate_mlp * self.mlp(mlp_tokens)
+        return tokens
+
+    @torch.no_grad()
+    def zero_adaLN(self):
+        """Zero the adaLN modulation output (DiT zero-init, identity init)."""
+        nn.init.zeros_(self.adaLN_modulation[-1].weight)
+        nn.init.zeros_(self.adaLN_modulation[-1].bias)
 
 
 @MODELS.register_module()
@@ -81,6 +105,11 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
                  beta_start=1e-4,
                  beta_end=2e-2,
                  residual_scale=(0.5, 1.0, 1.5, 2.0, 2.5, 3.0),
+                 dit_mlp_ratio=4.0,
+                 time_embed_dim=128,
+                 gaussian_condition_embed='local',
+                 use_gated_output=True,
+                 num_train_steps=None,
                  **kwargs):
         self.dit_num_layers = dit_num_layers
         self.dit_num_heads = dit_num_heads
@@ -93,6 +122,13 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
         self.beta_start = beta_start
         self.beta_end = beta_end
         self.residual_scale_values = residual_scale
+        self.dit_mlp_ratio = dit_mlp_ratio
+        self.time_embed_dim = time_embed_dim
+        self.gaussian_condition_embed = gaussian_condition_embed
+        self.use_gated_output = use_gated_output
+        self.num_train_steps = (
+            num_train_steps if num_train_steps is not None
+            else num_inference_steps)
         super().__init__(*args, **kwargs)
 
     def _init_layers(self):
@@ -110,10 +146,11 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
             nn.SiLU(),
             nn.Linear(self.embed_dims, self.embed_dims),
         )
+        ffn_channels = int(self.embed_dims * self.dit_mlp_ratio)
         self.diffusion_time_mlp = nn.Sequential(
-            nn.Linear(self.embed_dims, self.embed_dims * 4),
+            nn.Linear(self.embed_dims, self.time_embed_dim * 4),
             nn.SiLU(),
-            nn.Linear(self.embed_dims * 4, self.embed_dims),
+            nn.Linear(self.time_embed_dim * 4, self.embed_dims),
         )
         self.chain_condition = nn.Sequential(
             nn.Linear(self.embed_dims * 3, self.embed_dims),
@@ -124,19 +161,41 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
             self.ego_fut_mode, self.embed_dims)
         self.residual_time_embedding = nn.Embedding(
             self.fut_ts, self.embed_dims)
+        # Per-timestep Gaussian condition (mean of local content) so the DiT
+        # sees scene context even without the chain as part of the noise path.
+        self.gaussian_condition_mlp = nn.Sequential(
+            nn.Linear(self.embed_dims, self.embed_dims),
+            nn.SiLU(),
+            nn.Linear(self.embed_dims, self.embed_dims),
+        )
         self.dit_blocks = nn.ModuleList([
             GaussianResidualDiTBlock(
                 self.embed_dims,
                 self.dit_num_heads,
-                self.dit_feedforward_channels,
+                ffn_channels,
                 self.dit_dropout)
             for _ in range(self.dit_num_layers)
         ])
-        self.output_norm = nn.LayerNorm(
-            self.embed_dims, elementwise_affine=False)
-        self.output_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(self.embed_dims, self.embed_dims * 2))
-        self.noise_output = nn.Linear(self.embed_dims, 2)
+        if self.use_gated_output:
+            # AdaLN-Zero final layer then a gated prediction, so the refined
+            # token only modifies residuals when the gate is confident.
+            self.output_norm = nn.LayerNorm(
+                self.embed_dims, elementwise_affine=False)
+            self.output_modulation = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(self.embed_dims, self.embed_dims * 2))
+            self.noise_output = nn.Sequential(
+                nn.Linear(self.embed_dims, self.embed_dims),
+                nn.SiLU(),
+                nn.Linear(self.embed_dims, 4),  # dx, dy, gate, gate_bias
+            )
+        else:
+            self.output_norm = nn.LayerNorm(
+                self.embed_dims, elementwise_affine=False)
+            self.output_modulation = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(self.embed_dims, self.embed_dims * 2))
+            self.noise_output = nn.Linear(self.embed_dims, 2)
 
         residual_scale = torch.as_tensor(
             self.residual_scale_values, dtype=torch.float32)
@@ -154,8 +213,19 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
         super().init_weights()
         nn.init.normal_(self.command_embedding.weight, std=0.02)
         nn.init.normal_(self.residual_time_embedding.weight, std=0.02)
-        nn.init.zeros_(self.noise_output.weight)
-        nn.init.zeros_(self.noise_output.bias)
+        # DiT convention: zero-init every adaLN modulation so each block is an
+        # identity at start and only the pre-trained chain proposal drives the
+        # first iterations.
+        for block in self.dit_blocks:
+            block.zero_adaLN()
+        if self.use_gated_output:
+            nn.init.zeros_(self.output_modulation[-1].weight)
+            nn.init.zeros_(self.output_modulation[-1].bias)
+            nn.init.zeros_(self.noise_output[-1].weight)
+            nn.init.zeros_(self.noise_output[-1].bias)
+        else:
+            nn.init.zeros_(self.noise_output.weight)
+            nn.init.zeros_(self.noise_output.bias)
 
     def _future_gaussian_xy(self, results):
         gaussian_output = results['gaussian_output']
@@ -283,10 +353,21 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
     def _predict_noise(self, noisy_residual, timesteps, chain_positions,
                        chain_features, future_xy, future_content):
         modes = noisy_residual.shape[1]
-        candidate_positions = (
-            chain_positions + noisy_residual * self.residual_scale)
+        # Anchor the KNN at the noise-free chain positions. This keeps the
+        # selected future-Gaussian set identical across diffusion steps and
+        # between train/inference, so the DiT learns a stable scene-to-token
+        # alignment instead of chasing the drifting noisy sample.
         local_gaussians = self._select_local_gaussians(
-            candidate_positions, future_xy, future_content)
+            chain_positions, future_xy, future_content)
+
+        # Aggregate scene condition from the locally selected future
+        # Gaussians: a per-timestep embedding of the scene that is present
+        # even when the chain is a perfect proposal.
+        # local_gaussians: (B, T, M, topk, D); mean over topk -> (B, T, M, D)
+        local_content = local_gaussians.mean(dim=-2)
+        # broadcast to condition layout (B, M, T, D)
+        gaussian_condition = self.gaussian_condition_mlp(local_content)
+        gaussian_condition = gaussian_condition.permute(0, 2, 1, 3)
 
         condition = self.chain_condition(chain_features)[:, None, :, :]
         condition = condition.expand(-1, modes, -1, -1)
@@ -298,13 +379,22 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
             None, None, :, :]
         condition = condition + self._diffusion_timestep_embedding(
             timesteps)[:, None, None, :]
+        condition = condition + gaussian_condition
 
         tokens = self.residual_input(noisy_residual) + condition
         for block in self.dit_blocks:
             tokens = block(tokens, condition, local_gaussians)
         shift, scale = self.output_modulation(condition).chunk(2, dim=-1)
         tokens = self.output_norm(tokens) * (1.0 + scale) + shift
-        return self.noise_output(tokens)
+        raw = self.noise_output(tokens)
+        if self.use_gated_output:
+            # raw: (..., 4) -> dx, dy, gate(exp), gate_bias. The noise
+            # prediction is gated by a per-token confidence so the model can
+            # choose to trust or ignore the refinement.
+            prediction, log_gate = raw[..., :2], raw[..., 2:3]
+            gate = log_gate.sigmoid()
+            return prediction * gate
+        return raw
 
     def _predict_clean_residual(self, noisy_residual, noise_prediction,
                                 timesteps):
@@ -314,6 +404,39 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
             noisy_residual - (1.0 - alpha_bar).sqrt() * noise_prediction
         ) / alpha_bar.sqrt().clamp_min(1e-6)
         return clean.clamp(min=-4.0, max=4.0)
+
+    def _ddim_schedule(self, num_steps, reference):
+        '''Multi-step deterministic DDIM schedule from truncation step to 1.'''
+        schedule = torch.linspace(
+            self.diffusion_truncation_step, 1, num_steps,
+            device=reference.device)
+        return schedule.round().long()
+
+    def _ddim_denoise(self, residual, schedule, chain_positions,
+                      chain_features, future_xy, future_content):
+        '''Iterative deterministic DDIM denoising shared by train and eval.
+
+        Each step predicts noise, forms the clean (x0) estimate with
+        _predict_clean_residual, then advances with deterministic DDIM:
+            x_{t-1} = sqrt(alpha_bar_{t-1}) * x0_hat
+                    + sqrt(1 - alpha_bar_{t-1}) * eps_hat
+        '''
+        for index, timestep in enumerate(schedule):
+            timesteps = timestep.expand(residual.shape[0])
+            noise_prediction = self._predict_noise(
+                residual, timesteps, chain_positions,
+                chain_features, future_xy, future_content)
+            clean_prediction = self._predict_clean_residual(
+                residual, noise_prediction, timesteps)
+            previous_timestep = (
+                schedule[index + 1] if index + 1 < len(schedule)
+                else timestep.new_zeros(()))
+            previous_alpha = self.diffusion_alpha_bars[
+                previous_timestep].to(dtype=residual.dtype)
+            residual = (
+                previous_alpha.sqrt() * clean_prediction
+                + (1.0 - previous_alpha).sqrt() * noise_prediction)
+        return residual
 
     @staticmethod
     def _positions_to_displacements(positions):
@@ -350,17 +473,22 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
         noise_prediction = self._predict_noise(
             noisy_residual, timesteps, chain_positions,
             chain_features, future_xy, future_content)
+        # Multi-step deployment denoising shared with inference so the model
+        # sees the same iterative DDIM distribution during training. Sample
+        # the number of steps in [4, num_train_steps] so the model is robust
+        # to the exact schedule used at inference.
+        deployment_steps = torch.randint(
+            low=4,
+            high=self.num_train_steps + 1,
+            size=(), device=chain_prediction.device).item()
+        deployment_schedule = self._ddim_schedule(
+            deployment_steps, chain_prediction)
         deployment_residual = torch.zeros_like(clean_residual)
-        deployment_timesteps = torch.full(
-            (batch,), self.diffusion_truncation_step,
-            device=chain_prediction.device, dtype=torch.long)
-        deployment_noise = self._predict_noise(
-            deployment_residual, deployment_timesteps, chain_positions,
+        deployment_residual = self._ddim_denoise(
+            deployment_residual, deployment_schedule, chain_positions,
             chain_features, future_xy, future_content)
-        clean_prediction = self._predict_clean_residual(
-            deployment_residual, deployment_noise, deployment_timesteps)
         final_positions = self._apply_refinement(
-            chain_positions, clean_prediction)
+            chain_positions, deployment_residual)
         return {
             'ego_fut_preds': self._positions_to_displacements(final_positions),
             'ego_chain_preds': chain_prediction,
@@ -373,27 +501,11 @@ class VADHeadGaussianResidualDiT(VADHeadDualTimeResidual):
                            future_content, future_xy):
         chain_positions = chain_prediction.cumsum(dim=2)
         residual = chain_prediction.new_zeros(chain_prediction.shape)
-        schedule = torch.linspace(
-            self.diffusion_truncation_step, 1,
-            self.num_inference_steps, device=chain_prediction.device)
-        schedule = schedule.round().long()
-
-        for index, timestep in enumerate(schedule):
-            timesteps = timestep.expand(chain_prediction.shape[0])
-            noise_prediction = self._predict_noise(
-                residual, timesteps, chain_positions,
-                chain_features, future_xy, future_content)
-            clean_prediction = self._predict_clean_residual(
-                residual, noise_prediction, timesteps)
-            previous_timestep = (
-                schedule[index + 1] if index + 1 < len(schedule)
-                else timestep.new_zeros(()))
-            previous_alpha = self.diffusion_alpha_bars[
-                previous_timestep].to(dtype=chain_prediction.dtype)
-            residual = (
-                previous_alpha.sqrt() * clean_prediction
-                + (1.0 - previous_alpha).sqrt() * noise_prediction)
-
+        schedule = self._ddim_schedule(
+            self.num_inference_steps, chain_prediction)
+        residual = self._ddim_denoise(
+            residual, schedule, chain_positions,
+            chain_features, future_xy, future_content)
         final_positions = self._apply_refinement(
             chain_positions, residual)
         return {
