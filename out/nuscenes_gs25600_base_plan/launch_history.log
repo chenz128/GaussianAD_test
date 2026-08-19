@@ -1,0 +1,42 @@
+=== test launch 2026-08-06 02:38:32 ===
+exp        : nuscenes_gs25600_base_plan
+git branch : splatting_redal_planner
+git commit : 7507f5f60f8e500af8b3be1e686889442f199809
+config     : config/nuscenes_gs25600_base_plan/nuscenes_gs25600_base_plan.py
+ckpt       : exp/nuscenes_gs25600_base_plan/checkpoints/epoch_9.pth
+gpus       : 4,5,6,7
+=== test launch 2026-08-06 02:41:13 ===
+exp        : nuscenes_gs25600_base_plan
+git branch : splatting_redal_planner
+git commit : 7507f5f60f8e500af8b3be1e686889442f199809
+config     : config/nuscenes_gs25600_base_plan/nuscenes_gs25600_base_plan.py
+ckpt       : exp/nuscenes_gs25600_base_plan/checkpoints/epoch_9.pth
+gpus       : 4,5,6,7
+=== test launch 2026-08-12 09:38:56 ===
+exp        : nuscenes_gs25600_base_plan
+git branch : splatting_redal_planner
+git commit : d7402f9ce125d4aa4d9a9545d1128e801e8f144e
+config     : config/nuscenes_gs25600_base_plan/nuscenes_gs25600_base_plan.py
+ckpt       : exp/nuscenes_gs25600_base_plan/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7
+=== test launch 2026-08-12 11:45:10 ===
+exp        : nuscenes_gs25600_base_plan
+git branch : splatting_redal_planner
+git commit : d7402f9ce125d4aa4d9a9545d1128e801e8f144e
+config     : config/nuscenes_gs25600_base_plan/nuscenes_gs25600_base_plan.py
+ckpt       : exp/nuscenes_gs25600_base_plan/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7
+=== test launch 2026-08-12 12:17:35 ===
+exp        : nuscenes_gs25600_base_plan
+git branch : splatting_redal_planner
+git commit : d7402f9ce125d4aa4d9a9545d1128e801e8f144e
+config     : config/nuscenes_gs25600_base_plan/nuscenes_gs25600_base_plan.py
+ckpt       : exp/nuscenes_gs25600_base_plan/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7
+=== test launch 2026-08-12 12:18:09 ===
+exp        : nuscenes_gs25600_base_plan
+git branch : splatting_redal_planner
+git commit : d7402f9ce125d4aa4d9a9545d1128e801e8f144e
+config     : config/nuscenes_gs25600_base_plan/nuscenes_gs25600_base_plan.py
+ckpt       : exp/nuscenes_gs25600_base_plan/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7

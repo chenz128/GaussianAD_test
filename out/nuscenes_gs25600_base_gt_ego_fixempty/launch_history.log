@@ -1,0 +1,14 @@
+=== launch 2026-07-29 04:01:15 ===
+exp        : nuscenes_gs25600_base_gt_ego_fixempty
+git branch : splatting
+git commit : 33f6f59d7ebe41450bbeec2af79ec077ea8203ee
+config     : config/nuscenes_gs25600_base_gt_ego/nuscenes_gs25600_base_gt_ego.py  (identical to nuscenes_gs25600_base_gt_ego)
+delta      : code-level bugfix cfb1356 (flow_include_empty=True)
+gpus       : 4,5,6,7  (nproc=4, port=12471)
+=== test launch 2026-07-30 02:19:42 ===
+exp        : nuscenes_gs25600_base_gt_ego_fixempty
+git branch : splatting
+git commit : 6585c06b6220d3a09f4cd210a1339f5b06e8bf87
+config     : config/nuscenes_gs25600_base_gt_ego/nuscenes_gs25600_base_gt_ego.py
+ckpt       : out/nuscenes_gs25600_base_gt_ego_fixempty/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7

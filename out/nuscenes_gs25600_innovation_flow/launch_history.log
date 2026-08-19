@@ -1,0 +1,14 @@
+=== launch 2026-08-11 14:10:00 ===
+exp        : nuscenes_gs25600_innovation_flow
+git branch : splatting_redal_planner
+git commit : 8ae390a649392408b50e689684ad80bce1423249
+config     : config/nuscenes_gs25600_innovation_flow/nuscenes_gs25600_innovation_flow.py  (innovation latent FM, full data, 20 epochs)
+init       : from scratch except inherited backbone pretraining
+gpus       : 0,1,2,3,4,5,6,7  (nproc=8, port=12346)
+=== launch 2026-08-11 14:28:24 ===
+exp        : nuscenes_gs25600_innovation_flow
+git branch : splatting_redal_planner
+git commit : 8ae390a649392408b50e689684ad80bce1423249
+config     : config/nuscenes_gs25600_innovation_flow/nuscenes_gs25600_innovation_flow.py  (innovation latent FM, v3 data/schedule protocol)
+init       : from scratch except inherited backbone pretraining
+gpus       : 0,1,2,3,4,5,6,7  (nproc=8, port=12346)

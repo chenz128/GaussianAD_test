@@ -1,0 +1,1810 @@
+Namespace(gpus=2, log_name='test_ep01_corrected_metric_20260812', py_config='out/nuscenes_gs25600_base_plan/nuscenes_gs25600_base_plan.py', resume_from='out/nuscenes_gs25600_base_plan/checkpoints/epoch_1.pth', seed=42, vis_occ=False, work_dir='out/nuscenes_gs25600_base_plan')
+tcp://127.0.0.1:12519
+08/12 06:18:45 - mmengine - INFO - Config:
+_dim_ = 256
+_pos_dim_ = 128
+anno_root = 'data/nuscenes_cam/'
+aux_seg_cfg = dict(
+    bev_seg=False,
+    feat_down_sample=32,
+    pv_seg=False,
+    pv_thickness=1,
+    seg_classes=1,
+    use_aux_seg=False)
+backbone_fp16 = True
+batch_size = 1
+collect_keys = [
+    'img',
+    'projection_mat',
+    'lidar2img',
+    'lidar2global',
+    'image_wh',
+    'occ_label',
+    'occ_xyz',
+    'occ_cam_mask',
+    'gt_boxes',
+    'gt_names',
+    'gt_map',
+    'gt_velocity',
+    'num_lidar_pts',
+    'ego_his_trajs',
+    'ego_fut_trajs',
+    'ego_fut_masks',
+    'ego_fut_cmd',
+    'ego_lcf_feat',
+    'fut_valid_flag',
+    'gt_agent_fut_trajs',
+    'gt_agent_fut_masks',
+    'gt_agent_fut_goal',
+    'gt_agent_lcf_feat',
+    'gt_agent_fut_yaw',
+    'flow_info',
+    'ego2global',
+]
+data_aug_conf = dict(
+    H=900,
+    W=1600,
+    bot_pct_lim=(
+        0.0,
+        0.0,
+    ),
+    final_dim=(
+        864,
+        1600,
+    ),
+    rand_flip=True,
+    resize_lim=(
+        1.0,
+        1.0,
+    ),
+    rot_lim=(
+        0.0,
+        0.0,
+    ))
+data_root = 'data/nuscenes/'
+det_config = dict(
+    class_names=[
+        'car',
+        'truck',
+        'construction_vehicle',
+        'bus',
+        'trailer',
+        'barrier',
+        'motorcycle',
+        'bicycle',
+        'pedestrian',
+        'traffic_cone',
+    ],
+    depth_downsample_factor=None,
+    grid_size=[
+        120,
+        120,
+        8,
+    ],
+    num_point_features=28,
+    point_cloud_range=[
+        -30.0,
+        -30.0,
+        -2.0,
+        30.0,
+        30.0,
+        2.0,
+    ],
+    voxel_size=[
+        0.5,
+        0.5,
+        0.5,
+    ])
+drop_out = 0.1
+embed_dims = 128
+eval_every_epochs = 1
+find_unused_parameters = False
+fixed_ptsnum_per_gt_line = 20
+fixed_ptsnum_per_pred_line = 20
+frozen_modules = []
+gpu_ids = range(0, 2)
+grad_max_norm = 35
+grid_size = [
+    120,
+    120,
+    8,
+]
+img_norm_cfg = dict(
+    mean=[
+        123.675,
+        116.28,
+        103.53,
+    ],
+    std=[
+        58.395,
+        57.12,
+        57.375,
+    ],
+    to_rgb=True)
+include_opa = True
+input_modality = dict(
+    use_camera=True,
+    use_external=True,
+    use_lidar=False,
+    use_map=False,
+    use_radar=False)
+input_shape = (
+    1600,
+    864,
+)
+load_from = 'out/nuscenes_gs25600_base/checkpoints/epoch_15.pth'
+loss = dict(
+    loss_cfgs=[
+        dict(
+            balance_cls_weight=True,
+            empty_label=17,
+            lovasz_ignore=17,
+            manual_class_weight=[
+                1.01552756,
+                1.06897009,
+                1.30013094,
+                1.07253735,
+                0.94637502,
+                1.10087012,
+                1.26960524,
+                1.06258364,
+                1.189019,
+                1.06217292,
+                1.00595144,
+                0.85706115,
+                1.03923299,
+                0.90867526,
+                0.8936431,
+                0.85486129,
+                0.8527829,
+                0.5,
+            ],
+            multi_loss_weights=dict(
+                loss_voxel_ce_weight=10.0, loss_voxel_lovasz_weight=1.0),
+            num_classes=18,
+            type='OccupancyLoss',
+            use_dice_loss=False,
+            use_focal_loss=False,
+            use_lovasz_loss=True,
+            use_sem_geo_scal_loss=False,
+            weight=1.0),
+        dict(
+            balance_cls_weight=True,
+            empty_label=17,
+            lovasz_ignore=17,
+            manual_class_weight=[
+                1.01552756,
+                1.06897009,
+                1.30013094,
+                1.07253735,
+                0.94637502,
+                1.10087012,
+                1.26960524,
+                1.06258364,
+                1.189019,
+                1.06217292,
+                1.00595144,
+                0.85706115,
+                1.03923299,
+                0.90867526,
+                0.8936431,
+                0.85486129,
+                0.8527829,
+                0.5,
+            ],
+            multi_loss_weights=dict(
+                loss_voxel_ce_weight=10.0, loss_voxel_lovasz_weight=1.0),
+            num_classes=18,
+            type='OccupancyFlowLoss',
+            use_dice_loss=False,
+            use_focal_loss=False,
+            use_lovasz_loss=True,
+            use_sem_geo_scal_loss=False,
+            weight=1.0),
+        dict(
+            head_order=[
+                'center',
+                'center_z',
+                'dim',
+                'rot',
+                'vel',
+            ],
+            loss_weights=dict(
+                cls_weight=1.0,
+                code_weights=[
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.2,
+                    0.2,
+                    1.0,
+                    1.0,
+                ],
+                loc_weight=0.25),
+            type='DetectionLoss',
+            weight=1.0),
+        dict(
+            assigner=dict(
+                cls_cost=dict(type='FocalLossCost', weight=2.0),
+                iou_cost=dict(iou_mode='giou', type='IoUCost', weight=0.0),
+                pc_range=[
+                    -30.0,
+                    -30.0,
+                    -2.0,
+                    30.0,
+                    30.0,
+                    2.0,
+                ],
+                pts_cost=dict(type='OrderedPtsL1Cost', weight=5),
+                reg_cost=dict(
+                    box_format='xywh', type='BBoxL1Cost', weight=0.0),
+                type='MapTRAssigner'),
+            aux_seg=dict(
+                bev_seg=False,
+                feat_down_sample=32,
+                pv_seg=False,
+                pv_thickness=1,
+                seg_classes=1,
+                use_aux_seg=False),
+            code_weights=[
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+            ],
+            dir_interval=1,
+            gt_shift_pts_pattern='v2',
+            loss_bbox=dict(loss_weight=0.0, type='L1Loss'),
+            loss_cls=dict(
+                alpha=0.25,
+                gamma=2.0,
+                loss_weight=2.0,
+                type='FocalLoss',
+                use_sigmoid=True),
+            loss_dir=dict(loss_weight=0.005, type='PtsDirCosLoss'),
+            loss_iou=dict(loss_weight=0.0, type='GIoULoss'),
+            loss_pts=dict(loss_weight=5.0, type='PtsL1Loss'),
+            loss_pv_seg=dict(
+                loss_weight=2.0, pos_weight=1.0, type='SimpleLoss'),
+            loss_seg=dict(loss_weight=1.0, pos_weight=4.0, type='SimpleLoss'),
+            num_classes=3,
+            num_pts_per_gt_vec=20,
+            num_pts_per_vec=20,
+            pc_range=[
+                -30.0,
+                -30.0,
+                -2.0,
+                30.0,
+                30.0,
+                2.0,
+            ],
+            sync_cls_avg_factor=True,
+            type='MapLoss'),
+        dict(type='PlanLoss', weight=10.0),
+    ],
+    type='MultiLoss')
+loss_input_convertion = dict(
+    all_bbox_preds='all_bbox_preds',
+    all_cls_scores='all_cls_scores',
+    all_pts_preds='all_pts_preds',
+    batch_index='batch_index',
+    ego_fut_cmd='ego_fut_cmd',
+    ego_fut_gt='ego_fut_trajs',
+    ego_fut_masks='ego_fut_masks',
+    ego_fut_preds='ego_fut_preds',
+    occ_flow='occ_flow',
+    occ_mask='occ_mask',
+    pred_dicts='pred_dicts',
+    pred_occ='pred_occ',
+    sampled_label='sampled_label',
+    sampled_xyz='sampled_xyz',
+    target_dicts='target_dicts',
+    voxel_indices='voxel_indices')
+lr = 0.0002
+map_classes = [
+    'divider',
+    'ped_crossing',
+    'boundary',
+]
+map_eval_use_same_gt_sample_num_flag = True
+max_epochs = 15
+meta_keys = [
+    'img',
+    'lidar2img',
+    'cam_intrinsic',
+    'ego2img',
+    'image_wh',
+]
+model = dict(
+    decoder=dict(
+        det_config=dict(
+            class_names=[
+                'car',
+                'truck',
+                'construction_vehicle',
+                'bus',
+                'trailer',
+                'barrier',
+                'motorcycle',
+                'bicycle',
+                'pedestrian',
+                'traffic_cone',
+            ],
+            depth_downsample_factor=None,
+            grid_size=[
+                120,
+                120,
+                8,
+            ],
+            num_point_features=28,
+            point_cloud_range=[
+                -30.0,
+                -30.0,
+                -2.0,
+                30.0,
+                30.0,
+                2.0,
+            ],
+            voxel_size=[
+                0.5,
+                0.5,
+                0.5,
+            ]),
+        model_cfg=dict(
+            backbone_3d=dict(type='VoxelResBackBone8xVoxelNeXt'),
+            dense_head=dict(
+                class_agnostic=False,
+                class_names_each_head=[
+                    [
+                        'car',
+                    ],
+                    [
+                        'truck',
+                        'construction_vehicle',
+                    ],
+                    [
+                        'bus',
+                        'trailer',
+                    ],
+                    [
+                        'barrier',
+                    ],
+                    [
+                        'motorcycle',
+                        'bicycle',
+                    ],
+                    [
+                        'pedestrian',
+                        'traffic_cone',
+                    ],
+                ],
+                input_features=128,
+                kernel_size_head=1,
+                loss_config=dict(
+                    loss_weights=dict(
+                        cls_weight=1.0,
+                        code_weights=[
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0,
+                            0.2,
+                            0.2,
+                            1.0,
+                            1.0,
+                        ],
+                        loc_weight=0.25)),
+                num_hm_conv=2,
+                post_processing=dict(
+                    max_obj_per_sample=100,
+                    nms_config=dict(
+                        nms_post_maxsize=83,
+                        nms_pre_maxsize=1000,
+                        nms_thresh=0.2,
+                        nms_type='nms_gpu'),
+                    post_center_limit_range=[
+                        -30.0,
+                        -30.0,
+                        -2.0,
+                        30.0,
+                        30.0,
+                        2.0,
+                    ],
+                    score_thresh=0),
+                predict_boxes_when_training=True,
+                separate_head_cfg=dict(
+                    head_dict=dict(
+                        center=dict(num_conv=2, out_channels=2),
+                        center_z=dict(num_conv=2, out_channels=1),
+                        dim=dict(num_conv=2, out_channels=3),
+                        rot=dict(num_conv=2, out_channels=2),
+                        vel=dict(num_conv=2, out_channels=2)),
+                    head_order=[
+                        'center',
+                        'center_z',
+                        'dim',
+                        'rot',
+                        'vel',
+                    ]),
+                shared_conv_channel=128,
+                target_assigner_config=dict(
+                    feature_map_stride=8,
+                    gaussian_overlap=0.1,
+                    min_radius=2,
+                    num_max_objs=100),
+                type='VoxelNeXtHead',
+                use_bias_before_norm='true'),
+            post_processing=dict(recall_thresh_list=[
+                0.3,
+                0.5,
+                0.7,
+            ]),
+            pts_voxel_layer=dict(
+                max_num_points=32,
+                max_voxels=(
+                    25600,
+                    25600,
+                ),
+                point_cloud_range=[
+                    -30.0,
+                    -30.0,
+                    -2.0,
+                    30.0,
+                    30.0,
+                    2.0,
+                ],
+                voxel_size=[
+                    0.5,
+                    0.5,
+                    0.5,
+                ]),
+            vfe=dict(type='MeanVFE')),
+        num_class=10,
+        type='VoxelNeXt'),
+    encoder=dict(
+        anchor_encoder=dict(
+            embed_dims=128,
+            include_opa=True,
+            semantic_dim=17,
+            semantics=True,
+            type='SparseGaussian3DEncoder'),
+        deformable_model=dict(
+            attn_drop=0.15,
+            embed_dims=128,
+            kps_generator=dict(
+                embed_dims=128,
+                fix_scale=[
+                    [
+                        0,
+                        0,
+                        0,
+                    ],
+                    [
+                        0.45,
+                        0,
+                        0,
+                    ],
+                    [
+                        -0.45,
+                        0,
+                        0,
+                    ],
+                    [
+                        0,
+                        0.45,
+                        0,
+                    ],
+                    [
+                        0,
+                        -0.45,
+                        0,
+                    ],
+                    [
+                        0,
+                        0,
+                        0.45,
+                    ],
+                    [
+                        0,
+                        0,
+                        -0.45,
+                    ],
+                ],
+                learnable_scale=5,
+                num_learnable_pts=6,
+                pc_range=[
+                    -30.0,
+                    -30.0,
+                    -2.0,
+                    30.0,
+                    30.0,
+                    2.0,
+                ],
+                phi_activation='sigmoid',
+                scale_range=[
+                    0.08,
+                    0.64,
+                ],
+                type='SparseGaussian3DKeyPointsGenerator',
+                xyz_coordinate='cartesian'),
+            num_cams=6,
+            num_groups=4,
+            num_levels=4,
+            residual_mode='cat',
+            type='DeformableFeatureAggregation',
+            use_camera_embed=True,
+            use_deformable_func=True),
+        ffn=dict(
+            act_cfg=dict(inplace=True, type='ReLU'),
+            embed_dims=128,
+            feedforward_channels=512,
+            ffn_drop=0.1,
+            in_channels=256,
+            num_fcs=2,
+            pre_norm=dict(type='LN'),
+            type='AsymmetricFFN'),
+        norm_layer=dict(normalized_shape=128, type='LN'),
+        num_decoder=4,
+        num_single_frame_decoder=1,
+        operation_order=[
+            'deformable',
+            'ffn',
+            'norm',
+            'refine',
+            'spconv',
+            'norm',
+            'deformable',
+            'ffn',
+            'norm',
+            'refine',
+            'spconv',
+            'norm',
+            'deformable',
+            'ffn',
+            'norm',
+            'refine',
+            'spconv',
+            'norm',
+            'deformable',
+            'ffn',
+            'norm',
+            'refine',
+        ],
+        refine_layer=dict(
+            embed_dims=128,
+            include_opa=True,
+            pc_range=[
+                -30.0,
+                -30.0,
+                -2.0,
+                30.0,
+                30.0,
+                2.0,
+            ],
+            phi_activation='sigmoid',
+            refine_manual=[
+                0,
+                1,
+                2,
+            ],
+            restrict_xyz=True,
+            scale_range=[
+                0.08,
+                0.64,
+            ],
+            semantic_dim=17,
+            semantics=True,
+            semantics_activation='softplus',
+            type='SparseGaussian3DRefinementModule',
+            unit_xyz=[
+                2.0,
+                2.0,
+                0.5,
+            ],
+            xyz_coordinate='cartesian'),
+        spconv_layer=dict(
+            dilation=[
+                1,
+                1,
+                1,
+            ],
+            embed_channels=128,
+            grid_size=[
+                0.5,
+                0.5,
+                0.5,
+            ],
+            in_channels=128,
+            kernel_size=[
+                5,
+                5,
+                5,
+            ],
+            padding=[
+                2,
+                2,
+                2,
+            ],
+            pc_range=[
+                -30.0,
+                -30.0,
+                -2.0,
+                30.0,
+                30.0,
+                2.0,
+            ],
+            stride=[
+                1,
+                1,
+                1,
+            ],
+            type='SparseConv3DBlock',
+            use_out_proj=True),
+        type='GaussianOccEncoder',
+        with_cp=False),
+    head=dict(
+        apply_loss_type='random_1',
+        cuda_kwargs=dict(
+            D=8,
+            H=120,
+            W=120,
+            grid_size=0.5,
+            pc_min=[
+                -30.0,
+                -30.0,
+                -2.0,
+            ],
+            scale_multiplier=5),
+        empty_args=dict(mean=[
+            0,
+            0,
+            -1.0,
+        ], scale=[
+            60,
+            60,
+            4.0,
+        ]),
+        num_classes=18,
+        type='GaussianHead',
+        with_empty=True),
+    history_no_grad=False,
+    img_backbone=dict(
+        dcn=dict(deform_groups=1, fallback_on_stride=False, type='DCNv2'),
+        depth=101,
+        frozen_stages=1,
+        norm_cfg=dict(requires_grad=False, type='BN2d'),
+        norm_eval=True,
+        num_stages=4,
+        out_indices=(
+            0,
+            1,
+            2,
+            3,
+        ),
+        stage_with_dcn=(
+            False,
+            False,
+            True,
+            True,
+        ),
+        style='caffe',
+        type='ResNet',
+        with_cp=True),
+    img_backbone_out_indices=[
+        0,
+        1,
+        2,
+        3,
+    ],
+    img_neck=dict(
+        add_extra_convs='on_output',
+        in_channels=[
+            256,
+            512,
+            1024,
+            2048,
+        ],
+        num_outs=4,
+        out_channels=128,
+        relu_before_extra_convs=True,
+        start_level=1,
+        type='FPN'),
+    lifter=dict(
+        anchor_grad=True,
+        embed_dims=128,
+        feat_grad=False,
+        include_opa=True,
+        num_anchor=25600,
+        offset=True,
+        offset_dim=12,
+        phi_activation='loop',
+        semantic_dim=17,
+        semantics=True,
+        type='GaussianLifter'),
+    map_decoder=dict(
+        pts_bbox_head=dict(
+            as_two_stage=False,
+            aux_seg=dict(
+                bev_seg=False,
+                feat_down_sample=32,
+                pv_seg=False,
+                pv_thickness=1,
+                seg_classes=1,
+                use_aux_seg=False),
+            bbox_coder=dict(
+                max_num=50,
+                num_classes=3,
+                pc_range=[
+                    -30.0,
+                    -30.0,
+                    -2.0,
+                    30.0,
+                    30.0,
+                    2.0,
+                ],
+                post_center_range=[
+                    -20,
+                    -35,
+                    -20,
+                    -35,
+                    20,
+                    35,
+                    20,
+                    35,
+                ],
+                type='MapTRNMSFreeCoder',
+                voxel_size=[
+                    0.5,
+                    0.5,
+                    0.5,
+                ]),
+            bev_h=120,
+            bev_w=120,
+            code_size=2,
+            code_weights=[
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+            ],
+            dir_interval=1,
+            gt_shift_pts_pattern='v2',
+            in_channels=256,
+            k_one2many=6,
+            loss_bbox=dict(loss_weight=0.0, type='L1Loss'),
+            loss_cls=dict(
+                alpha=0.25,
+                gamma=2.0,
+                loss_weight=2.0,
+                type='FocalLoss',
+                use_sigmoid=True),
+            loss_dir=dict(loss_weight=0.005, type='PtsDirCosLoss'),
+            loss_iou=dict(loss_weight=0.0, type='GIoULoss'),
+            loss_pts=dict(loss_weight=5.0, type='PtsL1Loss'),
+            loss_pv_seg=dict(
+                loss_weight=2.0, pos_weight=1.0, type='SimpleLoss'),
+            loss_seg=dict(loss_weight=1.0, pos_weight=4.0, type='SimpleLoss'),
+            map_adapter_input_channels=128,
+            map_adapter_kernel_size=1,
+            map_adapter_use_bias=True,
+            num_classes=3,
+            num_map_adapter_conv=2,
+            num_pts_per_gt_vec=20,
+            num_pts_per_vec=20,
+            num_query=900,
+            num_vec_one2many=600,
+            num_vec_one2one=100,
+            positional_encoding=dict(
+                col_num_embed=120,
+                num_feats=128,
+                row_num_embed=120,
+                type='LearnedPositionalEncoding'),
+            query_embed_type='instance',
+            sync_cls_avg_factor=True,
+            transform_method='minmax',
+            type='MapTRv2Head',
+            with_box_refine=True),
+        train_cfg=dict(
+            pts=dict(
+                assigner=dict(
+                    cls_cost=dict(type='FocalLossCost', weight=2.0),
+                    iou_cost=dict(iou_mode='giou', type='IoUCost', weight=0.0),
+                    pc_range=[
+                        -30.0,
+                        -30.0,
+                        -2.0,
+                        30.0,
+                        30.0,
+                        2.0,
+                    ],
+                    pts_cost=dict(type='OrderedPtsL1Cost', weight=5),
+                    reg_cost=dict(
+                        box_format='xywh', type='BBoxL1Cost', weight=0.0),
+                    type='MapTRAssigner'),
+                grid_size=[
+                    120,
+                    120,
+                    8,
+                ],
+                out_size_factor=4,
+                point_cloud_range=[
+                    -30.0,
+                    -30.0,
+                    -2.0,
+                    30.0,
+                    30.0,
+                    2.0,
+                ],
+                voxel_size=[
+                    0.5,
+                    0.5,
+                    0.5,
+                ])),
+        type='MapTRv2',
+        use_grid_mask=True,
+        video_test_mode=False),
+    planner_head=dict(
+        ego_agent_decoder=dict(
+            num_layers=1,
+            return_intermediate=False,
+            transformerlayers=dict(
+                attn_cfgs=[
+                    dict(
+                        dropout=0.1,
+                        embed_dims=128,
+                        num_heads=8,
+                        type='MultiheadAttention'),
+                ],
+                batch_first=False,
+                feedforward_channels=256,
+                ffn_dropout=0.1,
+                operation_order=(
+                    'cross_attn',
+                    'norm',
+                    'ffn',
+                    'norm',
+                ),
+                type='MyCustomBaseTransformerLayer'),
+            type='CustomTransformerDecoder'),
+        ego_fut_mode=3,
+        ego_gaussian_decoder=dict(
+            num_layers=1,
+            return_intermediate=False,
+            transformerlayers=dict(
+                attn_cfgs=[
+                    dict(
+                        dropout=0.1,
+                        embed_dims=128,
+                        num_heads=8,
+                        type='MultiheadAttention'),
+                ],
+                batch_first=False,
+                feedforward_channels=256,
+                ffn_dropout=0.1,
+                operation_order=(
+                    'cross_attn',
+                    'norm',
+                    'ffn',
+                    'norm',
+                ),
+                type='MyCustomBaseTransformerLayer'),
+            type='CustomTransformerDecoder'),
+        ego_map_decoder=dict(
+            num_layers=1,
+            return_intermediate=False,
+            transformerlayers=dict(
+                attn_cfgs=[
+                    dict(
+                        dropout=0.1,
+                        embed_dims=128,
+                        num_heads=8,
+                        type='MultiheadAttention'),
+                ],
+                batch_first=False,
+                feedforward_channels=256,
+                ffn_dropout=0.1,
+                operation_order=(
+                    'cross_attn',
+                    'norm',
+                    'ffn',
+                    'norm',
+                ),
+                type='MyCustomBaseTransformerLayer'),
+            type='CustomTransformerDecoder'),
+        embed_dims=128,
+        fut_mode=6,
+        fut_ts=6,
+        type='VADHead'),
+    temporal_encoder=dict(
+        anchor_encoder=dict(
+            embed_dims=128,
+            include_opa=True,
+            semantic_dim=17,
+            semantics=True,
+            type='SparseGaussian3DEncoder'),
+        ffn=dict(
+            act_cfg=dict(inplace=True, type='ReLU'),
+            embed_dims=128,
+            feedforward_channels=256,
+            num_fcs=2,
+            type='FFN'),
+        norm_layer=dict(normalized_shape=128, type='LN'),
+        num_anchor=25600,
+        num_encoder=3,
+        operation_order=[
+            'spconv',
+            'refine',
+            'spconv',
+            'refine',
+            'spconv',
+            'refine',
+        ],
+        pc_range=[
+            -30.0,
+            -30.0,
+            -2.0,
+            30.0,
+            30.0,
+            2.0,
+        ],
+        refine_layer=dict(
+            embed_dims=128,
+            include_opa=True,
+            pc_range=[
+                -30.0,
+                -30.0,
+                -2.0,
+                30.0,
+                30.0,
+                2.0,
+            ],
+            phi_activation='sigmoid',
+            refine_manual=[
+                0,
+                1,
+                2,
+            ],
+            restrict_xyz=True,
+            scale_range=[
+                0.08,
+                0.64,
+            ],
+            semantic_dim=17,
+            semantics=True,
+            semantics_activation='softplus',
+            type='SparseGaussian3DRefinementModule',
+            unit_xyz=[
+                2.0,
+                2.0,
+                0.5,
+            ],
+            xyz_coordinate='cartesian'),
+        spconv_layer=dict(
+            dilation=[
+                [
+                    1,
+                    1,
+                    1,
+                    1,
+                ],
+                [
+                    1,
+                    1,
+                    1,
+                    1,
+                ],
+                [
+                    1,
+                    1,
+                    1,
+                    1,
+                ],
+            ],
+            embed_channels=128,
+            grid_size=[
+                0.5,
+                0.5,
+                0.5,
+            ],
+            in_channels=128,
+            kernel_size=[
+                [
+                    5,
+                    5,
+                    5,
+                    5,
+                ],
+                [
+                    5,
+                    5,
+                    5,
+                    5,
+                ],
+                [
+                    5,
+                    5,
+                    5,
+                    5,
+                ],
+            ],
+            padding=[
+                [
+                    2,
+                    2,
+                    2,
+                    2,
+                ],
+                [
+                    2,
+                    2,
+                    2,
+                    2,
+                ],
+                [
+                    2,
+                    2,
+                    2,
+                    2,
+                ],
+            ],
+            pc_range=[
+                -30.0,
+                -30.0,
+                -2.0,
+                30.0,
+                30.0,
+                2.0,
+            ],
+            spatial_shape=[
+                4,
+                120,
+                120,
+                8,
+            ],
+            stride=[
+                [
+                    1,
+                    1,
+                    1,
+                    1,
+                ],
+                [
+                    1,
+                    1,
+                    1,
+                    1,
+                ],
+                [
+                    1,
+                    1,
+                    1,
+                    1,
+                ],
+            ],
+            type='SparseConv4D',
+            use_out_proj=True),
+        type='GaussianTemporalEncoder',
+        with_cp=False),
+    type='BEVSegmentor')
+model_pc_range = [
+    5.0,
+    1.2,
+    0,
+    60.0,
+    1.95,
+    6.283185307,
+]
+num_decoder = 4
+num_frames = 4
+num_groups = 4
+num_levels = 4
+num_map_classes = 3
+num_single_frame_decoder = 1
+offset = True
+offset_dim = 12
+optimizer = dict(
+    optimizer=dict(lr=0.0002, type='AdamW', weight_decay=0.01),
+    paramwise_cfg=dict(custom_keys=dict(img_backbone=dict(lr_mult=0.1))))
+pc_range = [
+    -30.0,
+    -30.0,
+    -2.0,
+    30.0,
+    30.0,
+    2.0,
+]
+phi_activation = 'sigmoid'
+print_freq = 50
+scale_range = [
+    0.08,
+    0.64,
+]
+semantic_dim = 17
+semantics = True
+test_pipeline = [
+    dict(to_float32=True, type='LoadMultiViewImageFromFiles'),
+    dict(type='LoadMultiViewImageFromMultiSweeps'),
+    dict(
+        occ_path='data/surroundocc/val_samples',
+        semantic=True,
+        type='LoadOccupancySurroundOcc',
+        use_ego=False),
+    dict(type='ResizeCropFlipImage'),
+    dict(
+        mean=[
+            123.675,
+            116.28,
+            103.53,
+        ],
+        std=[
+            58.395,
+            57.12,
+            57.375,
+        ],
+        to_rgb=True,
+        type='NormalizeMultiviewImage'),
+    dict(type='DefaultFormatBundle'),
+    dict(
+        meta_keys=[
+            'img',
+            'lidar2img',
+            'cam_intrinsic',
+            'ego2img',
+            'image_wh',
+        ],
+        num_cams=6,
+        num_frames=4,
+        type='NuScenesAdaptor',
+        use_ego=False),
+    dict(
+        keys=[
+            'img',
+            'projection_mat',
+            'lidar2img',
+            'lidar2global',
+            'image_wh',
+            'occ_label',
+            'occ_xyz',
+            'occ_cam_mask',
+            'gt_boxes',
+            'gt_names',
+            'gt_map',
+            'gt_velocity',
+            'num_lidar_pts',
+            'ego_his_trajs',
+            'ego_fut_trajs',
+            'ego_fut_masks',
+            'ego_fut_cmd',
+            'ego_lcf_feat',
+            'fut_valid_flag',
+            'gt_agent_fut_trajs',
+            'gt_agent_fut_masks',
+            'gt_agent_fut_goal',
+            'gt_agent_lcf_feat',
+            'gt_agent_fut_yaw',
+            'flow_info',
+            'ego2global',
+        ],
+        type='CustomCollect3D'),
+]
+train_dataset_config = dict(
+    aux_seg=dict(
+        bev_seg=False,
+        feat_down_sample=32,
+        pv_seg=False,
+        pv_thickness=1,
+        seg_classes=1,
+        use_aux_seg=False),
+    bev_size=(
+        200,
+        200,
+    ),
+    class_names=[
+        'car',
+        'truck',
+        'construction_vehicle',
+        'bus',
+        'trailer',
+        'barrier',
+        'motorcycle',
+        'bicycle',
+        'pedestrian',
+        'traffic_cone',
+    ],
+    data_aug_conf=dict(
+        H=900,
+        W=1600,
+        bot_pct_lim=(
+            0.0,
+            0.0,
+        ),
+        final_dim=(
+            864,
+            1600,
+        ),
+        rand_flip=True,
+        resize_lim=(
+            1.0,
+            1.0,
+        ),
+        rot_lim=(
+            0.0,
+            0.0,
+        )),
+    data_root='data/nuscenes/',
+    fixed_ptsnum_per_line=20,
+    imageset='data/nuscenes_cam/nuscenes_infos_train_gaussian_ad_v4.pkl',
+    map_classes=[
+        'divider',
+        'ped_crossing',
+        'boundary',
+    ],
+    map_eval_use_same_gt_sample_num_flag=True,
+    modality=dict(
+        use_camera=True,
+        use_external=True,
+        use_lidar=False,
+        use_map=False,
+        use_radar=False),
+    num_frames=4,
+    num_samples=3000,
+    padding_value=-10000,
+    pc_range=[
+        -30.0,
+        -30.0,
+        -2.0,
+        30.0,
+        30.0,
+        2.0,
+    ],
+    phase='train',
+    pipeline=[
+        dict(to_float32=True, type='LoadMultiViewImageFromFiles'),
+        dict(type='LoadMultiViewImageFromMultiSweeps'),
+        dict(
+            occ_path='data/surroundocc/train_samples',
+            semantic=True,
+            type='LoadOccupancySurroundOcc',
+            use_ego=False),
+        dict(type='ResizeCropFlipImage'),
+        dict(type='PhotoMetricDistortionMultiViewImage'),
+        dict(
+            mean=[
+                123.675,
+                116.28,
+                103.53,
+            ],
+            std=[
+                58.395,
+                57.12,
+                57.375,
+            ],
+            to_rgb=True,
+            type='NormalizeMultiviewImage'),
+        dict(type='DefaultFormatBundle'),
+        dict(
+            meta_keys=[
+                'img',
+                'lidar2img',
+                'cam_intrinsic',
+                'ego2img',
+                'image_wh',
+            ],
+            num_cams=6,
+            num_frames=4,
+            type='NuScenesAdaptor',
+            use_ego=False),
+        dict(
+            keys=[
+                'img',
+                'projection_mat',
+                'lidar2img',
+                'lidar2global',
+                'image_wh',
+                'occ_label',
+                'occ_xyz',
+                'occ_cam_mask',
+                'gt_boxes',
+                'gt_names',
+                'gt_map',
+                'gt_velocity',
+                'num_lidar_pts',
+                'ego_his_trajs',
+                'ego_fut_trajs',
+                'ego_fut_masks',
+                'ego_fut_cmd',
+                'ego_lcf_feat',
+                'fut_valid_flag',
+                'gt_agent_fut_trajs',
+                'gt_agent_fut_masks',
+                'gt_agent_fut_goal',
+                'gt_agent_lcf_feat',
+                'gt_agent_fut_yaw',
+                'flow_info',
+                'ego2global',
+            ],
+            type='CustomCollect3D'),
+    ],
+    subsample_seed=42,
+    type='NuScenesDataset')
+train_loader = dict(batch_size=1, num_workers=2, shuffle=True)
+train_occ_path = 'data/surroundocc/train_samples'
+train_pipeline = [
+    dict(to_float32=True, type='LoadMultiViewImageFromFiles'),
+    dict(type='LoadMultiViewImageFromMultiSweeps'),
+    dict(
+        occ_path='data/surroundocc/train_samples',
+        semantic=True,
+        type='LoadOccupancySurroundOcc',
+        use_ego=False),
+    dict(type='ResizeCropFlipImage'),
+    dict(type='PhotoMetricDistortionMultiViewImage'),
+    dict(
+        mean=[
+            123.675,
+            116.28,
+            103.53,
+        ],
+        std=[
+            58.395,
+            57.12,
+            57.375,
+        ],
+        to_rgb=True,
+        type='NormalizeMultiviewImage'),
+    dict(type='DefaultFormatBundle'),
+    dict(
+        meta_keys=[
+            'img',
+            'lidar2img',
+            'cam_intrinsic',
+            'ego2img',
+            'image_wh',
+        ],
+        num_cams=6,
+        num_frames=4,
+        type='NuScenesAdaptor',
+        use_ego=False),
+    dict(
+        keys=[
+            'img',
+            'projection_mat',
+            'lidar2img',
+            'lidar2global',
+            'image_wh',
+            'occ_label',
+            'occ_xyz',
+            'occ_cam_mask',
+            'gt_boxes',
+            'gt_names',
+            'gt_map',
+            'gt_velocity',
+            'num_lidar_pts',
+            'ego_his_trajs',
+            'ego_fut_trajs',
+            'ego_fut_masks',
+            'ego_fut_cmd',
+            'ego_lcf_feat',
+            'fut_valid_flag',
+            'gt_agent_fut_trajs',
+            'gt_agent_fut_masks',
+            'gt_agent_fut_goal',
+            'gt_agent_lcf_feat',
+            'gt_agent_fut_yaw',
+            'flow_info',
+            'ego2global',
+        ],
+        type='CustomCollect3D'),
+]
+use_deformable_func = True
+val_dataset_config = dict(
+    bev_size=(
+        200,
+        200,
+    ),
+    class_names=[
+        'car',
+        'truck',
+        'construction_vehicle',
+        'bus',
+        'trailer',
+        'barrier',
+        'motorcycle',
+        'bicycle',
+        'pedestrian',
+        'traffic_cone',
+    ],
+    data_aug_conf=dict(
+        H=900,
+        W=1600,
+        bot_pct_lim=(
+            0.0,
+            0.0,
+        ),
+        final_dim=(
+            864,
+            1600,
+        ),
+        rand_flip=True,
+        resize_lim=(
+            1.0,
+            1.0,
+        ),
+        rot_lim=(
+            0.0,
+            0.0,
+        )),
+    data_root='data/nuscenes/',
+    fixed_ptsnum_per_line=20,
+    imageset='data/nuscenes_cam/nuscenes_infos_val_gaussian_ad_v4.pkl',
+    map_classes=[
+        'divider',
+        'ped_crossing',
+        'boundary',
+    ],
+    map_eval_use_same_gt_sample_num_flag=True,
+    modality=dict(
+        use_camera=True,
+        use_external=True,
+        use_lidar=False,
+        use_map=False,
+        use_radar=False),
+    num_frames=4,
+    num_samples=2000,
+    padding_value=-10000,
+    pc_range=[
+        -30.0,
+        -30.0,
+        -2.0,
+        30.0,
+        30.0,
+        2.0,
+    ],
+    phase='val',
+    pipeline=[
+        dict(to_float32=True, type='LoadMultiViewImageFromFiles'),
+        dict(type='LoadMultiViewImageFromMultiSweeps'),
+        dict(
+            occ_path='data/surroundocc/val_samples',
+            semantic=True,
+            type='LoadOccupancySurroundOcc',
+            use_ego=False),
+        dict(type='ResizeCropFlipImage'),
+        dict(
+            mean=[
+                123.675,
+                116.28,
+                103.53,
+            ],
+            std=[
+                58.395,
+                57.12,
+                57.375,
+            ],
+            to_rgb=True,
+            type='NormalizeMultiviewImage'),
+        dict(type='DefaultFormatBundle'),
+        dict(
+            meta_keys=[
+                'img',
+                'lidar2img',
+                'cam_intrinsic',
+                'ego2img',
+                'image_wh',
+            ],
+            num_cams=6,
+            num_frames=4,
+            type='NuScenesAdaptor',
+            use_ego=False),
+        dict(
+            keys=[
+                'img',
+                'projection_mat',
+                'lidar2img',
+                'lidar2global',
+                'image_wh',
+                'occ_label',
+                'occ_xyz',
+                'occ_cam_mask',
+                'gt_boxes',
+                'gt_names',
+                'gt_map',
+                'gt_velocity',
+                'num_lidar_pts',
+                'ego_his_trajs',
+                'ego_fut_trajs',
+                'ego_fut_masks',
+                'ego_fut_cmd',
+                'ego_lcf_feat',
+                'fut_valid_flag',
+                'gt_agent_fut_trajs',
+                'gt_agent_fut_masks',
+                'gt_agent_fut_goal',
+                'gt_agent_lcf_feat',
+                'gt_agent_fut_yaw',
+                'flow_info',
+                'ego2global',
+            ],
+            type='CustomCollect3D'),
+    ],
+    subsample_seed=42,
+    type='NuScenesDataset')
+val_loader = dict(batch_size=1, num_workers=2)
+val_occ_path = 'data/surroundocc/val_samples'
+voxel_size = [
+    0.5,
+    0.5,
+    0.5,
+]
+work_dir = 'out/nuscenes_gs25600_base_plan'
+xyz_coordinate = 'cartesian'
+
+08/12 06:18:49 - mmengine - INFO - Number of params: 168334828
+08/12 06:18:49 - mmengine - INFO - converted sync bn.
+08/12 06:18:50 - mmengine - INFO - done ddp model
+08/12 06:19:34 - mmengine - INFO - resume from: out/nuscenes_gs25600_base_plan/checkpoints/epoch_1.pth
+08/12 06:19:34 - mmengine - INFO - work dir: out/nuscenes_gs25600_base_plan
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.0.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.1.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.2.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.3.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.4.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.5.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.6.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.7.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.8.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.9.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.10.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.11.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.12.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.13.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.14.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.15.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.16.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.17.conv2 is upgraded to version 2.
+tcp://127.0.0.1:12519
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.18.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.19.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.20.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.21.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer3.22.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer4.0.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer4.1.conv2 is upgraded to version 2.
+08/12 06:21:11 - mmengine - INFO - ModulatedDeformConvPack img_backbone.layer4.2.conv2 is upgraded to version 2.
+successfully resumed.
+08/12 06:24:00 - mmengine - INFO - [EVAL] Iter     0
+08/12 06:24:55 - mmengine - INFO - [EVAL] Iter    50
+08/12 06:25:50 - mmengine - INFO - [EVAL] Iter   100
+08/12 06:26:46 - mmengine - INFO - [EVAL] Iter   150
+08/12 06:27:41 - mmengine - INFO - [EVAL] Iter   200
+08/12 06:28:36 - mmengine - INFO - [EVAL] Iter   250
+08/12 06:29:32 - mmengine - INFO - [EVAL] Iter   300
+08/12 06:30:27 - mmengine - INFO - [EVAL] Iter   350
+08/12 06:31:22 - mmengine - INFO - [EVAL] Iter   400
+08/12 06:32:17 - mmengine - INFO - [EVAL] Iter   450
+08/12 06:33:13 - mmengine - INFO - [EVAL] Iter   500
+08/12 06:34:08 - mmengine - INFO - [EVAL] Iter   550
+08/12 06:35:04 - mmengine - INFO - [EVAL] Iter   600
+08/12 06:35:59 - mmengine - INFO - [EVAL] Iter   650
+08/12 06:36:54 - mmengine - INFO - [EVAL] Iter   700
+08/12 06:37:50 - mmengine - INFO - [EVAL] Iter   750
+08/12 06:38:50 - mmengine - INFO - [EVAL] Iter   800
+08/12 06:39:45 - mmengine - INFO - [EVAL] Iter   850
+08/12 06:40:40 - mmengine - INFO - [EVAL] Iter   900
+08/12 06:41:35 - mmengine - INFO - [EVAL] Iter   950
+08/12 06:42:39 - mmengine - INFO - Validation per class iou none:
+08/12 06:42:39 - mmengine - INFO - barrier : 7.30%, 0.17, 0.11
+08/12 06:42:39 - mmengine - INFO - bicycle : 0.00%, 0.00, 0.00
+08/12 06:42:39 - mmengine - INFO - bus : 10.00%, 0.23, 0.15
+08/12 06:42:39 - mmengine - INFO - car : 11.94%, 0.22, 0.21
+08/12 06:42:39 - mmengine - INFO - construction_vehicle : 0.36%, 0.03, 0.00
+08/12 06:42:39 - mmengine - INFO - motorcycle : 0.00%, 0.00, 0.00
+08/12 06:42:39 - mmengine - INFO - pedestrian : 0.27%, 0.03, 0.00
+08/12 06:42:39 - mmengine - INFO - traffic_cone : 0.17%, 0.02, 0.00
+08/12 06:42:39 - mmengine - INFO - trailer : 2.91%, 0.09, 0.04
+08/12 06:42:39 - mmengine - INFO - truck : 6.40%, 0.18, 0.09
+08/12 06:42:39 - mmengine - INFO - driveable_surface : 31.07%, 0.47, 0.48
+08/12 06:42:39 - mmengine - INFO - other_flat : 13.90%, 0.28, 0.21
+08/12 06:42:40 - mmengine - INFO - sidewalk : 13.72%, 0.23, 0.26
+08/12 06:42:40 - mmengine - INFO - terrain : 7.44%, 0.35, 0.09
+08/12 06:42:40 - mmengine - INFO - manmade : 2.78%, 0.16, 0.03
+08/12 06:42:40 - mmengine - INFO - vegetation : 5.11%, 0.31, 0.06
+08/12 06:42:40 - mmengine - INFO - tensor([  213109,    14566,   204192,  1435223,   106632,    22025,   206833,
+           42653,   134799,   555406,  7051599,   345594,  2482869,  3418334,
+         7852446,  8317553, 32659904], device='cuda:0', dtype=torch.int32)
+08/12 06:42:40 - mmengine - INFO - tensor([  23902,       0,   31116,  299635,     428,       0,     597,      81,
+           5584,   49655, 3388342,   73900,  634669,  296107,  254430,  479798,
+        8433072], device='cuda:0', dtype=torch.int32)
+08/12 06:42:40 - mmengine - INFO - tensor([  138434,        0,   138051,  1373215,    12606,        0,    18749,
+            4355,    62858,   270599,  7240705,   259805,  2777912,   857581,
+         1565074,  1549180, 16269124], device='cuda:0', dtype=torch.int32)
+08/12 06:42:40 - mmengine - INFO - mIoU: 7.085436105990084, iou2: 20.824480056762695
+08/12 06:42:40 - mmengine - INFO - -------------- Future Occupancy (occ_flow) --------------
+08/12 06:42:40 - mmengine - INFO - Validation per class iou future_0.5s:
+08/12 06:42:40 - mmengine - INFO - barrier : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - bicycle : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - bus : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - car : 0.03%, 0.38, 0.00
+08/12 06:42:40 - mmengine - INFO - construction_vehicle : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - motorcycle : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - pedestrian : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - traffic_cone : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - trailer : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - truck : 0.00%, 0.29, 0.00
+08/12 06:42:40 - mmengine - INFO - driveable_surface : 0.29%, 0.93, 0.00
+08/12 06:42:40 - mmengine - INFO - other_flat : 0.02%, 0.89, 0.00
+08/12 06:42:40 - mmengine - INFO - sidewalk : 0.02%, 0.62, 0.00
+08/12 06:42:40 - mmengine - INFO - terrain : 0.00%, 0.53, 0.00
+08/12 06:42:40 - mmengine - INFO - manmade : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - vegetation : 0.00%, 0.13, 0.00
+08/12 06:42:40 - mmengine - INFO - tensor([  209489,    14294,   200991,  1400539,   105183,    21663,   201252,
+           41443,   130221,   540633,  6853959,   335183,  2411040,  3326564,
+         7698346,  8105356, 31846652], device='cuda:0', dtype=torch.int32)
+08/12 06:42:40 - mmengine - INFO - tensor([    0,     0,     0,   363,     0,     0,     0,     0,     0,    10,
+        19590,    79,   450,   127,     0,    29, 21719], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:40 - mmengine - INFO - tensor([    0,     0,     3,   956,     0,     0,     0,     0,    16,    35,
+        20963,    89,   723,   241,     0,   222, 23248], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:40 - mmengine - INFO - [Future 0.5s] mIoU: 0.02, iou(geo): 0.07
+08/12 06:42:40 - mmengine - INFO - Validation per class iou future_1.0s:
+08/12 06:42:40 - mmengine - INFO - barrier : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - bicycle : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - bus : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - car : 0.02%, 0.35, 0.00
+08/12 06:42:40 - mmengine - INFO - construction_vehicle : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - motorcycle : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - pedestrian : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - traffic_cone : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - trailer : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - truck : 0.00%, 0.21, 0.00
+08/12 06:42:40 - mmengine - INFO - driveable_surface : 0.22%, 0.91, 0.00
+08/12 06:42:40 - mmengine - INFO - other_flat : 0.02%, 0.83, 0.00
+08/12 06:42:40 - mmengine - INFO - sidewalk : 0.03%, 0.66, 0.00
+08/12 06:42:40 - mmengine - INFO - terrain : 0.00%, 0.57, 0.00
+08/12 06:42:40 - mmengine - INFO - manmade : 0.00%, 0.11, 0.00
+08/12 06:42:40 - mmengine - INFO - vegetation : 0.00%, 0.14, 0.00
+08/12 06:42:40 - mmengine - INFO - tensor([  204379,    14490,   197283,  1369428,   102703,    20903,   195848,
+           40200,   131063,   527106,  6669856,   327787,  2349280,  3248943,
+         7511970,  7934125, 31087596], device='cuda:0', dtype=torch.int32)
+08/12 06:42:40 - mmengine - INFO - tensor([    0,     0,     0,   223,     0,     0,     0,     0,     0,     4,
+        14855,    79,   622,   113,     2,    37, 16741], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:40 - mmengine - INFO - tensor([    0,     0,    21,   644,     0,     0,     0,     0,     8,    19,
+        16401,    95,   947,   198,    19,   268, 18620], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:40 - mmengine - INFO - [Future 1.0s] mIoU: 0.02, iou(geo): 0.05
+08/12 06:42:40 - mmengine - INFO - Validation per class iou future_1.5s:
+08/12 06:42:40 - mmengine - INFO - barrier : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - bicycle : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - bus : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - car : 0.01%, 0.32, 0.00
+08/12 06:42:40 - mmengine - INFO - construction_vehicle : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - motorcycle : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - pedestrian : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - traffic_cone : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - trailer : 0.00%, 0.00, 0.00
+08/12 06:42:40 - mmengine - INFO - truck : 0.00%, 0.27, 0.00
+08/12 06:42:40 - mmengine - INFO - driveable_surface : 0.20%, 0.81, 0.00
+08/12 06:42:40 - mmengine - INFO - other_flat : 0.02%, 0.69, 0.00
+08/12 06:42:40 - mmengine - INFO - sidewalk : 0.02%, 0.59, 0.00
+08/12 06:42:41 - mmengine - INFO - terrain : 0.00%, 0.49, 0.00
+08/12 06:42:41 - mmengine - INFO - manmade : 0.00%, 0.22, 0.00
+08/12 06:42:41 - mmengine - INFO - vegetation : 0.00%, 0.19, 0.00
+08/12 06:42:41 - mmengine - INFO - tensor([  198896,    13960,   191671,  1341061,    99132,    20308,   189302,
+           38847,   129068,   515129,  6500939,   323178,  2292246,  3168192,
+         7329441,  7784161, 30373440], device='cuda:0', dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - tensor([    0,     0,     0,   124,     0,     0,     0,     0,     0,     4,
+        12961,    50,   442,   125,    24,    59, 14598], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - tensor([    0,     0,    43,   393,     0,     0,     0,     0,     4,    15,
+        15914,    72,   751,   254,   111,   313, 17870], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - [Future 1.5s] mIoU: 0.02, iou(geo): 0.05
+08/12 06:42:41 - mmengine - INFO - Validation per class iou future_2.0s:
+08/12 06:42:41 - mmengine - INFO - barrier : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - bicycle : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - bus : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - car : 0.02%, 0.26, 0.00
+08/12 06:42:41 - mmengine - INFO - construction_vehicle : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - motorcycle : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - pedestrian : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - traffic_cone : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - trailer : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - truck : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - driveable_surface : 0.16%, 0.69, 0.00
+08/12 06:42:41 - mmengine - INFO - other_flat : 0.01%, 0.43, 0.00
+08/12 06:42:41 - mmengine - INFO - sidewalk : 0.01%, 0.33, 0.00
+08/12 06:42:41 - mmengine - INFO - terrain : 0.00%, 0.52, 0.00
+08/12 06:42:41 - mmengine - INFO - manmade : 0.00%, 0.03, 0.00
+08/12 06:42:41 - mmengine - INFO - vegetation : 0.00%, 0.22, 0.00
+08/12 06:42:41 - mmengine - INFO - tensor([  193358,    13261,   184507,  1306820,    94313,    20092,   183977,
+           37733,   127368,   498827,  6309730,   317917,  2228202,  3078446,
+         7156399,  7628265, 29611648], device='cuda:0', dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - tensor([    0,     0,     0,   221,     0,     0,     0,     0,     0,     0,
+         9951,    32,   302,   134,    21,    75, 12228], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - tensor([   21,     0,    75,   840,     0,     0,     0,     0,    12,    33,
+        14438,    75,   903,   257,   612,   338, 17604], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - [Future 2.0s] mIoU: 0.01, iou(geo): 0.04
+08/12 06:42:41 - mmengine - INFO - Validation per class iou future_2.5s:
+08/12 06:42:41 - mmengine - INFO - barrier : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - bicycle : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - bus : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - car : 0.03%, 0.22, 0.00
+08/12 06:42:41 - mmengine - INFO - construction_vehicle : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - motorcycle : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - pedestrian : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - traffic_cone : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - trailer : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - truck : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - driveable_surface : 0.14%, 0.53, 0.00
+08/12 06:42:41 - mmengine - INFO - other_flat : 0.02%, 0.48, 0.00
+08/12 06:42:41 - mmengine - INFO - sidewalk : 0.02%, 0.12, 0.00
+08/12 06:42:41 - mmengine - INFO - terrain : 0.00%, 0.47, 0.00
+08/12 06:42:41 - mmengine - INFO - manmade : 0.00%, 0.04, 0.00
+08/12 06:42:41 - mmengine - INFO - vegetation : 0.00%, 0.15, 0.00
+08/12 06:42:41 - mmengine - INFO - tensor([  189899,    12929,   174880,  1270959,    90054,    19323,   180931,
+           36554,   127139,   484807,  6127837,   309407,  2178263,  3001727,
+         6957538,  7447491, 28836062], device='cuda:0', dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - tensor([    0,     0,     0,   336,     0,     0,     0,     0,     0,     0,
+         8855,    68,   370,   113,   131,    93, 14176], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - tensor([  122,     0,    87,  1559,     0,     0,    10,     0,    31,    45,
+        16788,   143,  3199,   238,  3095,   640, 25957], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - [Future 2.5s] mIoU: 0.01, iou(geo): 0.05
+08/12 06:42:41 - mmengine - INFO - Validation per class iou future_3.0s:
+08/12 06:42:41 - mmengine - INFO - barrier : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - bicycle : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - bus : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - car : 0.03%, 0.13, 0.00
+08/12 06:42:41 - mmengine - INFO - construction_vehicle : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - motorcycle : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - pedestrian : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - traffic_cone : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - trailer : 0.00%, 0.00, 0.00
+08/12 06:42:41 - mmengine - INFO - truck : 0.00%, 0.06, 0.00
+08/12 06:42:41 - mmengine - INFO - driveable_surface : 0.18%, 0.45, 0.00
+08/12 06:42:41 - mmengine - INFO - other_flat : 0.02%, 0.33, 0.00
+08/12 06:42:41 - mmengine - INFO - sidewalk : 0.02%, 0.05, 0.00
+08/12 06:42:41 - mmengine - INFO - terrain : 0.00%, 0.36, 0.00
+08/12 06:42:41 - mmengine - INFO - manmade : 0.00%, 0.02, 0.00
+08/12 06:42:41 - mmengine - INFO - vegetation : 0.00%, 0.17, 0.00
+08/12 06:42:41 - mmengine - INFO - tensor([  182394,    12470,   167677,  1231435,    87183,    18870,   173727,
+           35835,   122766,   466446,  5935946,   298962,  2113953,  2903684,
+         6751537,  7247672, 27966708], device='cuda:0', dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - tensor([    0,     0,     0,   323,     0,     0,     0,     0,     0,     9,
+        10424,    69,   396,   126,   167,   238, 20857], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - tensor([  382,     0,   225,  2462,     1,     0,    32,     0,    36,   152,
+        23374,   212,  7695,   351,  8093,  1429, 44444], device='cuda:0',
+       dtype=torch.int32)
+08/12 06:42:41 - mmengine - INFO - [Future 3.0s] mIoU: 0.02, iou(geo): 0.07
+08/12 06:42:41 - mmengine - INFO - [Future avg 0.5~3.0s] mIoU: 0.02
+-------------- Planning --------------
+plan_L2_1s:2.9905183812728406
+plan_L2_2s:4.973092360590948
+plan_L2_3s:6.957861486409908
+plan_obj_col_1s:0.01678445229681979
+plan_obj_col_2s:0.015901060070671377
+plan_obj_col_3s:0.014625049232383499
+plan_obj_box_col_1s:0.02767962308598351
+plan_obj_box_col_2s:0.03975265017667844
+plan_obj_box_col_3s:0.050058894263069253
+plan_L2_stp3_1s:3.9813949133067097
+plan_obj_col_stp3_1s:0.016489988221436984
+plan_obj_box_col_stp3_1s:0.030624263839811542
+plan_L2_stp3_2s:7.939376966347665
+plan_obj_col_stp3_2s:0.013545347467608953
+plan_obj_box_col_stp3_2s:0.06007067137809187
+plan_L2_stp3_3s:11.91702997801415
+plan_obj_col_stp3_3s:0.011189634864546525
+plan_obj_box_col_stp3_3s:0.071849234393404
+{}

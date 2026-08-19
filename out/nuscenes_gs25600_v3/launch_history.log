@@ -1,0 +1,22 @@
+=== launch 2026-08-07 08:37:39 ===
+exp        : nuscenes_gs25600_v3
+git branch : splatting_redal_planner
+git commit : 8ae390a649392408b50e689684ad80bce1423249
+config     : config/nuscenes_gs25600_v3/nuscenes_gs25600_v3.py
+code       : direct 12800 shared bank; ordered 4-frame fusion
+gpus       : 4,5,6,7 (nproc=4, port=12347)
+=== test launch 2026-08-10 02:06:50 ===
+exp        : nuscenes_gs25600_v3
+git branch : splatting_redal_planner
+git commit : 8ae390a649392408b50e689684ad80bce1423249
+config     : config/nuscenes_gs25600_v3/nuscenes_gs25600_v3.py
+ckpt       : out/nuscenes_gs25600_v3/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7
+=== test launch 2026-08-10 02:18:46 ===
+exp        : nuscenes_gs25600_v3
+worktree   : /data/chenz/GaussianAD_splatting
+git branch : splatting
+git commit : 733d94f732091bfdfe3bdfa4d841de801cb598ec
+config     : config/nuscenes_gs25600_v3/nuscenes_gs25600_v3.py
+ckpt       : /data/chenz/GaussianAD/out/nuscenes_gs25600_v3/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7

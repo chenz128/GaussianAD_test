@@ -1,0 +1,14 @@
+=== launch 2026-08-04 12:51:25 ===
+exp        : nuscenes_gs25600_frontier_v2
+git branch : HEAD
+git commit : 22c4cc91d68f2088e86a7802d6bb3a376a6bf534
+config     : config/nuscenes_gs25600_frontier_v2/nuscenes_gs25600_frontier_v2.py
+delta      : fixed 25600 real + 1 empty; Gaussian/image context frontier
+gpus       : 4,5,6,7 (nproc=4, port=12481)
+=== launch 2026-08-04 12:54:50 ===
+exp        : nuscenes_gs25600_frontier_v2
+git branch : HEAD
+git commit : 22c4cc91d68f2088e86a7802d6bb3a376a6bf534
+config     : config/nuscenes_gs25600_frontier_v2/nuscenes_gs25600_frontier_v2.py
+delta      : fixed 25600 real + 1 empty; Gaussian/image context frontier
+gpus       : 4,5,6,7 (nproc=4, port=12481)

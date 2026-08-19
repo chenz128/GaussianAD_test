@@ -1,0 +1,23 @@
+=== launch 2026-07-27 05:50:28 ===
+exp        : nuscenes_gs25600_base_gt_ego
+git branch : splatting
+git commit : 3d131133caa4a81ece6672d5b379bf049d7b5e0d
+config     : config/nuscenes_gs25600_base_gt_ego/nuscenes_gs25600_base_gt_ego.py
+gpus       : 4,5,6,7  (nproc=4, port=12470)
+=== launch 2026-07-28 06:14:43 ===
+exp        : nuscenes_gs25600_base_gt_ego
+git branch : splatting
+git commit : 3cecfd61ce591e1fc3d93f9ee18afa708aa0627b
+config     : config/nuscenes_gs25600_base_gt_ego/nuscenes_gs25600_base_gt_ego.py
+gpus       : 4,5,6,7  (nproc=4, port=12470)
+=== test launch 2026-07-29 02:00:01 ===
+exp        : nuscenes_gs25600_base_gt_ego
+git branch : splatting
+git commit : 17a71e45773cd193e325b91def13ba4cd492afe2
+config     : config/nuscenes_gs25600_base_gt_ego/nuscenes_gs25600_base_gt_ego.py
+ckpt       : out/nuscenes_gs25600_base_gt_ego/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7
+=== test launch 2026-07-29 03:17:21 ===
+exp   : base_gt_ego (flow_include_empty=True, BUGFIX)
+commit: cfb1356f7bd824b5eb820fbe94c2e3f5a629e4d1
+note  : legacy ckpt + fixed inference path (train/test mismatch expected)

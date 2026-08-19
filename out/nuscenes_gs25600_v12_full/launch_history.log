@@ -1,0 +1,21 @@
+=== launch 2026-07-30 11:20:28 ===
+exp        : nuscenes_gs25600_v12_full
+git branch : splatting
+git commit : 0d67120807e5a09c8262e19dd922c1eb856a70a1
+config     : config/nuscenes_gs25600_v12_full/nuscenes_gs25600_v12_full.py  (v12 + full train/val, max_epochs=20)
+code       : includes empty-gaussian bugfix cfb1356
+gpus       : 4,5,6,7  (nproc=4, port=12481)
+=== launch 2026-07-31 03:56:41 ===
+exp        : nuscenes_gs25600_v12_full
+git branch : splatting
+git commit : 0d67120807e5a09c8262e19dd922c1eb856a70a1
+config     : config/nuscenes_gs25600_v12_full/nuscenes_gs25600_v12_full.py  (v12 + full train/val, max_epochs=20)
+code       : includes empty-gaussian bugfix cfb1356
+gpus       : 4,5,6,7  (nproc=4, port=12481)
+=== launch 2026-07-31 05:41:46 ===
+exp        : nuscenes_gs25600_v12_full
+git branch : splatting
+git commit : 79b4d97499fd1af12fd4c4300deb205e0537c9f9
+config     : config/nuscenes_gs25600_v12_full/nuscenes_gs25600_v12_full.py  (v12 + full train/val, max_epochs=20)
+code       : includes empty-gaussian bugfix cfb1356
+gpus       : 0,1,2,3,4,5,6,7  (nproc=8, port=12345)

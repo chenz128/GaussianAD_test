@@ -1,0 +1,13 @@
+=== launch 2026-08-14 07:38:05 ===
+exp        : nuscenes_gs25600_innovation_flow_new
+git branch : splatting
+git commit : 65aed5b5e69275fb4ba440d8b9ed1751504d95bd
+config     : config/nuscenes_gs25600_innovation_flow_new/nuscenes_gs25600_innovation_flow_new.py  (FM v2: per-query image ctx + SE3 + center-only mask)
+gpus       : 0,1,2,3  (nproc=4, port=12348)
+=== test launch 2026-08-17 02:01:31 ===
+exp        : nuscenes_gs25600_innovation_flow_new
+git branch : splatting
+git commit : 65aed5b5e69275fb4ba440d8b9ed1751504d95bd
+config     : config/nuscenes_gs25600_innovation_flow_new/nuscenes_gs25600_innovation_flow_new.py
+ckpt       : out/nuscenes_gs25600_innovation_flow_new/checkpoints/epoch_15.pth
+gpus       : 6,7

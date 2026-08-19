@@ -1,0 +1,7 @@
+=== launch 2026-08-04 03:30:30 ===
+exp        : nuscenes_gs25600_frontier_v1
+git branch : splatting_redal_planner
+git commit : 8ae390a649392408b50e689684ad80bce1423249
+config     : config/nuscenes_gs25600_frontier_v1/nuscenes_gs25600_frontier_v1.py
+delta      : v12 + GaussianHeadFrontier (fixed-slot frontier completion)
+gpus       : 4,5,6,7  (nproc=4, port=12480)

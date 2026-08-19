@@ -1,0 +1,10 @@
+=== launch 2026-08-11 07:53:39 ===
+exp        : nuscenes_gs25600_v3_se3
+worktree   : /data/chenz/GaussianAD_splatting
+git branch : splatting
+git commit : 881bee67fed683c7af2adeda109c76b380c51f0e
+config     : config/nuscenes_gs25600_v3_se3/nuscenes_gs25600_v3_se3.py
+init       : ckpts/r101_dcn_fcos3d_pretrain.pth (no resume)
+gpus       : 4,5,6,7
+nproc      : 4
+master_port: 12467

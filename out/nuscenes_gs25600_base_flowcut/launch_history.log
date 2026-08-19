@@ -1,0 +1,14 @@
+=== launch 2026-07-30 02:52:31 ===
+exp        : nuscenes_gs25600_base_flowcut
+git branch : splatting
+git commit : 2bf532fe036ac5ff8cc5152974111b26183bb78f
+config     : config/nuscenes_gs25600_base_flowcut/nuscenes_gs25600_base_flowcut.py
+delta      : base_gt_ego + head.flow_grad_scale=0.0 (single variable)
+gpus       : 4,5,6,7  (nproc=4, port=12473)
+=== test launch 2026-07-31 01:58:56 ===
+exp        : nuscenes_gs25600_base_flowcut
+git branch : splatting
+git commit : 0d67120807e5a09c8262e19dd922c1eb856a70a1
+config     : config/nuscenes_gs25600_base_flowcut/nuscenes_gs25600_base_flowcut.py
+ckpt       : out/nuscenes_gs25600_base_flowcut/checkpoints/epoch_15.pth
+gpus       : 4

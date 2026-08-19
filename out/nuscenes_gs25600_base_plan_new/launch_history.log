@@ -1,0 +1,16 @@
+=== launch 2026-08-17 03:52:14 ===
+exp        : nuscenes_gs25600_base_plan_new
+git branch : splatting
+git commit : 239f24530db9a9414bfbb6d858d9f422e2b8f079
+config     : config/nuscenes_gs25600_base_plan_new/nuscenes_gs25600_base_plan_new.py
+init from  : out/nuscenes_gs25600_base_gt_ego_fixempty/checkpoints/epoch_15.pth (load_from)
+delta      : use_plan_ego=True + unfreeze map/plan + MapLoss/PlanLoss
+gpus       : 0,1,2,3  (nproc=4, port=12483)
+=== test launch 2026-08-18 01:29:18 ===
+exp        : nuscenes_gs25600_base_plan_new
+git branch : splatting
+git commit : 239f24530db9a9414bfbb6d858d9f422e2b8f079
+config     : config/nuscenes_gs25600_base_plan_new/nuscenes_gs25600_base_plan_new.py
+ckpt       : out/nuscenes_gs25600_base_plan_new/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7
+port       : 20521

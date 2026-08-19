@@ -1,0 +1,15 @@
+=== launch 2026-07-31 06:08:13 ===
+exp        : nuscenes_gs25600_base_decouple
+git branch : splatting
+git commit : 79b4d97499fd1af12fd4c4300deb205e0537c9f9
+config     : config/nuscenes_gs25600_base_decouple/nuscenes_gs25600_base_decouple.py
+delta      : v12 with DynamicLoss/PhysicsLoss weights set to 0
+gpus       : 4,5,6,7  (nproc=4, port=12474)
+=== test launch 2026-08-03 02:01:15 ===
+exp        : nuscenes_gs25600_base_decouple
+git branch : splatting
+git commit : 79b4d97499fd1af12fd4c4300deb205e0537c9f9
+config     : config/nuscenes_gs25600_base_decouple/nuscenes_gs25600_base_decouple.py
+ckpt       : out/nuscenes_gs25600_base_decouple/checkpoints/epoch_15.pth
+gpus       : 4,5,6,7
+val samples: 2000

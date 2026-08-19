@@ -1,0 +1,7 @@
+=== launch 2026-08-05 15:18:53 ===
+exp        : nuscenes_gs25600_froniter_v2_fix
+git branch : splatting_redal_planner
+git commit : 8ae390a649392408b50e689684ad80bce1423249
+config     : config/nuscenes_gs25600_froniter_v2_fix/nuscenes_gs25600_froniter_v2_fix.py  (frontier-v2 + temporal current-index fix)
+code       : current_frame_index=0 + >=99% current Gaussian assertion
+gpus       : 0,1,2,3,4,5,6,7  (nproc=8, port=12346)
