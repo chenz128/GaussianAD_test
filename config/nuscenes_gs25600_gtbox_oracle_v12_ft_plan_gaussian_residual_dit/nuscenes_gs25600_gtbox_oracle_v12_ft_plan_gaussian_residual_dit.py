@@ -25,6 +25,10 @@ load_from = (
     'checkpoints/epoch_15.pth')
 max_epochs = 15
 
+# 关闭训练阶段 EVAL：epoch % eval_every_epochs != 0 时跳过验证，
+# 设为 100（> max_epochs）则整个训练期间都不跑 EVAL，避免浪费时间。
+eval_every_epochs = 100
+
 lr = float(os.environ.get('LR', 2e-4))
 optimizer = dict(
     optimizer=dict(type='AdamW', lr=lr, weight_decay=0.01),

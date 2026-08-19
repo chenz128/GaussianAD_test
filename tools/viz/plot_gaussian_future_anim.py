@@ -241,6 +241,36 @@ def build_anim(attr_path, future_path, out_html, opa_thr=0.1, scalar=2.0,
     ttypes.append('scatter3d')
     builders.append(lambda t: ([0.0], [0.0], [0.0]))
 
+    # ---- planner predicted trajectory (cumulative, incl. origin) ----
+    ntraj = planner.shape[0]  # 6 future steps
+    pred_pts = np.concatenate([
+        np.zeros((1, 3), np.float32),
+        np.concatenate([planner, np.zeros((ntraj, 1), np.float32)], axis=-1)], axis=0)
+    traces.append(go.Scatter3d(
+        x=pred_pts[:, 0], y=pred_pts[:, 1], z=pred_pts[:, 2],
+        mode='lines+markers',
+        line=dict(color='limegreen', width=6, dash='solid'),
+        marker=dict(size=4, color='limegreen'),
+        name='Pred planner traj'))
+    cats.append('dyn')
+    ttypes.append('scatter3d')
+    builders.append(lambda t: (pred_pts[:, 0], pred_pts[:, 1], pred_pts[:, 2]))
+
+    # ---- GT ego trajectory (cumulative, incl. origin) ----
+    if gt_ego_loaded is not None:
+        gt3 = np.concatenate(
+            [gt_ego_loaded, np.zeros((gt_ego_loaded.shape[0], 1), np.float32)], axis=-1)
+        gt_pts = np.concatenate([np.zeros((1, 3), np.float32), gt3], axis=0)
+        traces.append(go.Scatter3d(
+            x=gt_pts[:, 0], y=gt_pts[:, 1], z=gt_pts[:, 2],
+            mode='lines+markers',
+            line=dict(color='black', width=5, dash='dash'),
+            marker=dict(size=3, color='black'),
+            name='GT ego traj'))
+        cats.append('dyn')
+        ttypes.append('scatter3d')
+        builders.append(lambda t: (gt_pts[:, 0], gt_pts[:, 1], gt_pts[:, 2]))
+
     # ---- build animation frames ----
     frame_labels = ['t=0 (now)']
     for i in range(T - 1):

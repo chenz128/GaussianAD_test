@@ -1,3 +1,15 @@
+"""
+cd /data/xinyao/navsim_workspace/GaussianAD
+
+export CUDA_VISIBLE_DEVICES=4,5
+/data/chenz/conda_env/splatting/bin/python visualize.py \
+    --py-config /data/xinyao/navsim_workspace/GaussianAD/config/nuscenes_gs25600_v12_fixempty_ft_plan_timequery_residual/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_timequery_residual.py \
+    --work-dir /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_timequery_residual \
+    --resume-from /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_timequery_residual/checkpoints/epoch_15.pth \
+    --vis-gaussian --vis-occ \
+    --num-samples 6
+"""
+
 try:
     from vis import save_occ, save_gaussian
 except:
@@ -177,16 +189,14 @@ def main(local_rank, args):
                 pred_occ = pred.argmax(0)
                 gt_occ = result_dict['sampled_label'][idx]
                 if args.vis_occ:
-                    save_occ(
-                        os.path.join(args.work_dir, 'vis'),
-                        pred_occ.reshape(1, 200, 200, 16),
-                        f'val_{i_iter_val}_pred',
-                        True, 0)
-                    save_occ(
-                        os.path.join(args.work_dir, 'vis'),
-                        gt_occ.reshape(1, 200, 200, 16),
-                        f'val_{i_iter_val}_gt',
-                        True, 0)
+                    # 导出 occ npz（不依赖 Mayavi，网格随 sampled_xyz 自适应
+                    # H=120 W=120 D=8 → N=115200），格式与 tools/viz/export_occ_npz.py 一致：
+                    # xyz/pred/gt，plot_occ_interactive.py 可直接消费。
+                    np.savez_compressed(
+                        os.path.join(args.work_dir, 'vis', f'val_{i_iter_val}_occ.npz'),
+                        xyz=result_dict['sampled_xyz'][idx].cpu().numpy().astype(np.float32),
+                        pred=pred_occ.cpu().numpy().astype(np.int16),
+                        gt=gt_occ.cpu().numpy().astype(np.int16))
                 if args.vis_gaussian and local_rank == 0:
                     save_gaussian(
                         os.path.join(args.work_dir, 'vis'),

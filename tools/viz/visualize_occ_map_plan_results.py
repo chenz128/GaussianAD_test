@@ -1,4 +1,26 @@
+"""
+cd /data/xinyao/navsim_workspace/GaussianAD
+
+/data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
+    --py-config /data/xinyao/navsim_workspace/GaussianAD/config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_timequery_residual/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_timequery_residual.py \
+    --work-dir /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_timequery_residual \
+    --resume-from /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_timequery_residual/checkpoints/epoch_15.pth \
+    --num-samples 6 \
+    --start-index 0 \
+    --out-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_timequery_residual/occ_map_plan_vis
+"""
 #!/usr/bin/env python3
+
+# 确保 import model / dataset 解析到当前工作区（而非 sys.path 里残留的
+# /data/chenz/GaussianAD 等旧路径）
+import os
+import sys as _sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.dirname(os.path.dirname(_HERE))
+if _REPO not in _sys.path:
+    _sys.path.insert(0, _REPO)
+if os.getcwd() not in _sys.path:
+    _sys.path.insert(0, os.getcwd())
 
 import argparse
 import os.path as osp
@@ -82,11 +104,18 @@ def parse_args():
     parser.add_argument("--out-dir", default="", help="Directory to save figures.")
     parser.add_argument("--split", choices=("val", "train"), default="val", help="Dataset split to visualize.")
     parser.add_argument("--num-samples", type=int, default=4, help="How many samples to draw.")
+    parser.add_argument("--vis-index", type=int, nargs="+", default=None,
+                        help="Explicit keyframe indices (keeps scene continuity, e.g. a whole scene's 40 "
+                             "frames: --vis-index 0 1 2 ... 39). Overrides --num-samples sampling.")
     parser.add_argument("--start-index", type=int, default=0, help="Start index in the chosen dataloader.")
     parser.add_argument("--score-thresh", type=float, default=0.35, help="Map prediction score threshold.")
     parser.add_argument("--device", default="cuda:0", help="Device for inference.")
     parser.add_argument("--dpi", type=int, default=180, help="Saved figure DPI.")
     parser.add_argument("--gif-ms", type=int, default=350, help="Frame duration in milliseconds for scene GIF output.")
+    parser.add_argument("--no-video", action="store_true",
+                        help="Only save per-frame PNGs; skip scene GIF/MP4 synthesis.")
+    parser.add_argument("--no-png", action="store_true",
+                        help="Keep only GIF/MP4; delete per-frame PNGs after scene synthesis.")
     parser.add_argument("--grid-shape", type=int, nargs=3, default=(200, 200, 16), help="Occupancy grid shape as X Y Z.")
     parser.add_argument("--empty-label", type=int, default=17, help="Class id used for empty voxels.")
     return parser.parse_args()
@@ -551,6 +580,9 @@ def main():
     checkpoint_path = _checkpoint_path(args)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     model_instance = _load_model(cfg, checkpoint_path, device)
+    if args.vis_index is not None and len(args.vis_index) > 0:
+        # 显式索引会覆盖随机抽样，保持同 scene 帧连续（视频需要）
+        cfg.val_dataset_config.update({"vis_indices": args.vis_index, "num_samples": 0})
     loader = _build_loader(cfg, args.split)
 
     pc_range = np.asarray(cfg.pc_range, dtype=np.float32)
@@ -570,7 +602,7 @@ def main():
         for batch_index, data in enumerate(loader):
             if batch_index < args.start_index:
                 continue
-            if saved >= args.num_samples:
+            if args.num_samples > 0 and saved >= args.num_samples:
                 break
 
             sample_token = _sample_token_from_batch(data)
@@ -581,20 +613,26 @@ def main():
                 scene_frame_index = batch_index
 
             if current_scene_token is not None and scene_token != current_scene_token:
-                gif_path, mp4_path = _save_scene_animations(
-                    current_scene_token,
-                    current_scene_image_paths,
-                    current_scene_dir,
-                    args.gif_ms,
-                    current_scene_first_batch_index,
-                    current_scene_last_batch_index,
-                )
-                if gif_path is not None:
-                    print(f"[OK] saved {gif_path}")
-                    saved_gifs += 1
-                if mp4_path is not None:
-                    print(f"[OK] saved {mp4_path}")
-                    saved_mp4s += 1
+                if not args.no_video:
+                    gif_path, mp4_path = _save_scene_animations(
+                        current_scene_token,
+                        current_scene_image_paths,
+                        current_scene_dir,
+                        args.gif_ms,
+                        current_scene_first_batch_index,
+                        current_scene_last_batch_index,
+                    )
+                    if gif_path is not None:
+                        print(f"[OK] saved {gif_path}")
+                        saved_gifs += 1
+                    if mp4_path is not None:
+                        print(f"[OK] saved {mp4_path}")
+                        saved_mp4s += 1
+                    if args.no_png:
+                        for tmp_png in current_scene_image_paths:
+                            if os.path.exists(tmp_png):
+                                os.remove(tmp_png)
+                        print(f"[cleanup] removed {len(current_scene_image_paths)} frame PNGs for {current_scene_token}")
                 current_scene_image_paths = []
                 current_scene_first_batch_index = None
                 current_scene_last_batch_index = None
@@ -655,7 +693,7 @@ def main():
             current_scene_last_batch_index = batch_index
             saved += 1
 
-    if current_scene_image_paths:
+    if current_scene_image_paths and not args.no_video:
         gif_path, mp4_path = _save_scene_animations(
             current_scene_token,
             current_scene_image_paths,
@@ -670,7 +708,11 @@ def main():
         if mp4_path is not None:
             print(f"[OK] saved {mp4_path}")
             saved_mp4s += 1
-            
+        if args.no_png:
+            for tmp_png in current_scene_image_paths:
+                if os.path.exists(tmp_png):
+                    os.remove(tmp_png)
+            print(f"[cleanup] removed {len(current_scene_image_paths)} frame PNGs for {current_scene_token}")
 
     if saved == 0:
         raise SystemExit("No samples were visualized. Check --start-index and dataset length.")
@@ -683,6 +725,17 @@ if __name__ == "__main__":
 
 '''
 #!/usr/bin/env python3
+
+# 确保 import model / dataset 解析到当前工作区（而非 sys.path 里残留的
+# /data/chenz/GaussianAD 等旧路径）
+import os
+import sys as _sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.dirname(os.path.dirname(_HERE))
+if _REPO not in _sys.path:
+    _sys.path.insert(0, _REPO)
+if os.getcwd() not in _sys.path:
+    _sys.path.insert(0, os.getcwd())
 
 import argparse
 import os.path as osp
@@ -764,12 +817,17 @@ def parse_args():
     parser.add_argument("--out-dir", default="", help="Directory to save figures.")
     parser.add_argument("--split", choices=("val", "train"), default="val", help="Dataset split to visualize.")
     parser.add_argument("--num-samples", type=int, default=4, help="How many samples to draw.")
+    parser.add_argument("--vis-index", type=int, nargs="+", default=None,
+                        help="Explicit keyframe indices (keeps scene continuity, e.g. a whole scene's 40 "
+                             "frames: --vis-index 0 1 2 ... 39). Overrides --num-samples sampling.")
     parser.add_argument("--start-index", type=int, default=0, help="Start index in the chosen dataloader.")
     parser.add_argument("--score-thresh", type=float, default=0.35, help="Map prediction score threshold.")
     parser.add_argument("--device", default="cuda:0", help="Device for inference.")
     parser.add_argument("--dpi", type=int, default=180, help="Saved figure DPI.")
     parser.add_argument("--grid-shape", type=int, nargs=3, default=(200, 200, 16), help="Occupancy grid shape as X Y Z.")
     parser.add_argument("--empty-label", type=int, default=17, help="Class id used for empty voxels.")
+    parser.add_argument("--no-video", action="store_true",
+                            help="Only save per-frame PNGs; skip scene GIF/MP4 synthesis.")
     return parser.parse_args()
 
 
@@ -1135,6 +1193,9 @@ def main():
     checkpoint_path = _checkpoint_path(args)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     model_instance = _load_model(cfg, checkpoint_path, device)
+    if args.vis_index is not None and len(args.vis_index) > 0:
+        # 显式索引会覆盖随机抽样，保持同 scene 帧连续（视频需要）
+        cfg.val_dataset_config.update({"vis_indices": args.vis_index, "num_samples": 0})
     loader = _build_loader(cfg, args.split)
 
     pc_range = np.asarray(cfg.pc_range, dtype=np.float32)
@@ -1146,7 +1207,7 @@ def main():
         for batch_index, data in enumerate(loader):
             if batch_index < args.start_index:
                 continue
-            if saved >= args.num_samples:
+            if args.num_samples > 0 and saved >= args.num_samples:
                 break
 
             sample_token = _sample_token_from_batch(data)

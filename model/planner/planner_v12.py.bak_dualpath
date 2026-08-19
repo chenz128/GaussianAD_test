@@ -1,0 +1,175 @@
+import torch
+import torch.nn as nn
+from mmcv.cnn.bricks.transformer import build_transformer_layer_sequence
+from mmengine.registry import MODELS
+
+from .planner_v11 import VADHeadTimeAlignedGaussian
+
+
+@MODELS.register_module()
+class VADHeadTimeAlignedGaussianDualPath(VADHeadTimeAlignedGaussian):
+    """Collision-safe time-aligned base + global trajectory-shape refinement.
+
+    Motivation (from the L2-vs-collision study of the planner variants):
+      * L2 accuracy comes from a GLOBAL trajectory-shape predictor that sees the
+        whole scene at once and regresses a smooth, GT-imitation path.
+      * Collision avoidance comes from PER-FRAME Gaussian cross-attention where
+        every ego frame attends ONLY its own frame's future Gaussians, so each
+        waypoint is grounded in local occupancy.
+    ``VADHeadTimeAlignedGaussian`` (the ``time_aligned_gaussian`` model) keeps
+    only the per-frame path, so it has an excellent collision rate but its L2
+    lags the baseline, and the gap grows with the horizon.
+
+    This head keeps that per-frame path unchanged as a *protected*
+    collision-safe base and adds a second GLOBAL branch: the ego query attends
+    ALL future-frame Gaussians at once and a joint MLP regresses the whole
+    trajectory (this is exactly the mechanism that gives the residual variants
+    their low L2).  The two paths are fused with a per-sample, per-timestep gate
+    whose head is ZERO-initialized (``tanh(0)=0``), so at initialization the
+    module is mathematically identical to ``VADHeadTimeAlignedGaussian`` and
+    inherits its collision rate exactly.  Training then opens the gate only
+    where trusting the global shape lowers the planning L2 (typically the far
+    horizon), while the collision-safe base still handles the near/critical
+    frames.
+
+    The global branch is exposed as ``ego_fut_aux_preds`` and is meant to be
+    supervised by its own imitation loss so its gradient does NOT depend on the
+    gate (this avoids the ``dead-gate`` failure where a zero gate starves the
+    auxiliary branch of gradient).  An optional collision loss on the fused
+    output (``ego_fut_preds``) directly holds the collision metric as the gate
+    opens.
+    """
+
+    def __init__(self, *args, ego_global_gaussian_decoder=None, **kwargs):
+        self.ego_global_gaussian_decoder = ego_global_gaussian_decoder
+        super().__init__(*args, **kwargs)
+
+    def _init_layers(self):
+        super()._init_layers()
+
+        if self.ego_global_gaussian_decoder is not None:
+            self.ego_global_gaussian_decoder = build_transformer_layer_sequence(
+                self.ego_global_gaussian_decoder)
+
+        # Global features = concat(ego_agent, ego_map, ego_gaussian, ego_global).
+        global_dim = self.embed_dims * 4
+        self.global_shape_mlp = nn.Sequential(
+            nn.Linear(global_dim, global_dim),
+            nn.ReLU(),
+            nn.Linear(global_dim, global_dim),
+            nn.ReLU(),
+            nn.Linear(global_dim, self.ego_fut_mode * self.fut_ts * 2))
+
+        # Per-sample, per-timestep fusion gate.  The final layer is
+        # zero-initialized in ``init_weights`` so ``tanh(0)=0`` -> at init the
+        # fused output equals the collision-safe aligned path exactly.
+        # Gate input = whole-trajectory global summary (broadcast to every frame)
+        # concatenated with the per-frame collision-safe aligned feature, so the
+        # gate can stay CLOSED at collision-critical frames (local Gaussian
+        # grounding) and open only where the global shape lowers L2 (far horizon).
+        self.refine_gate_mlp = nn.Sequential(
+            nn.Linear(global_dim + self.embed_dims, self.embed_dims),
+            nn.ReLU(),
+            nn.Linear(self.embed_dims, 1))
+
+    def init_weights(self):
+        super().init_weights()
+        if self.ego_global_gaussian_decoder is not None:
+            for parameter in self.ego_global_gaussian_decoder.parameters():
+                if parameter.dim() > 1:
+                    nn.init.xavier_uniform_(parameter)
+        # Close the residual at init so collision behaviour is preserved.
+        nn.init.zeros_(self.refine_gate_mlp[-1].weight)
+        nn.init.zeros_(self.refine_gate_mlp[-1].bias)
+
+    def forward(self, results):
+        agent_query, agent_mask = self.prepare_agent_query(results)
+        map_query = self.prepare_map_query(results)
+        gaussian_query = self.gaussian_fus_mlp(results['gaussian_output'])
+
+        batch = agent_query.shape[0]
+        ego_query = self.ego_query.weight.unsqueeze(0).expand(batch, -1, -1)
+        ego_agent_query = self.ego_agent_decoder(
+            query=ego_query.permute(1, 0, 2),
+            key=agent_query.permute(1, 0, 2),
+            value=agent_query.permute(1, 0, 2),
+            key_padding_mask=agent_mask)
+        ego_map_query = self.ego_map_decoder(
+            query=ego_agent_query,
+            key=map_query.permute(1, 0, 2),
+            value=map_query.permute(1, 0, 2))
+        ego_gaussian_query = self.ego_gaussian_decoder(
+            query=ego_map_query,
+            key=gaussian_query.permute(1, 0, 2),
+            value=gaussian_query.permute(1, 0, 2))
+
+        current_features = torch.cat([
+            ego_agent_query.permute(1, 0, 2),
+            ego_map_query.permute(1, 0, 2),
+            ego_gaussian_query.permute(1, 0, 2),
+        ], dim=-1)
+        scene_token = self.ego_to_fut(current_features)
+        time_code = self._build_continuous_time_code(scene_token)
+        future_content = self._build_future_gaussians(results)
+        num_gaussians = future_content.shape[2]
+
+        # ---- Collision-safe aligned base (identical to time_aligned) ----
+        time_query = scene_token.expand(-1, self.fut_ts, -1)
+        time_query = (
+            time_query
+            + self.fut_pos.weight[None, :, :]
+            + self.query_cont_gate.tanh() * time_code[None]).permute(1, 0, 2)
+        if self.fut_self_decoder is not None:
+            time_query = self.fut_self_decoder(
+                query=time_query, key=time_query, value=time_query,
+                attn_masks=[self._self_attention_bias(time_query)])
+
+        folded_query = time_query.permute(1, 0, 2).reshape(
+            batch * self.fut_ts, self.embed_dims).unsqueeze(0)
+        folded_kv = future_content.reshape(
+            batch * self.fut_ts, num_gaussians,
+            self.embed_dims).permute(1, 0, 2)
+        if self.ego_fut_gaussian_decoder is not None:
+            folded_query = self.ego_fut_gaussian_decoder(
+                query=folded_query, key=folded_kv, value=folded_kv)
+        aligned_features = folded_query.squeeze(0).reshape(
+            batch, self.fut_ts, self.embed_dims)
+        aligned_prediction = self.fut_out_mlp(aligned_features).reshape(
+            batch, self.fut_ts, self.ego_fut_mode, 2).permute(0, 2, 1, 3)
+
+        # ---- Global trajectory-shape refinement branch ----
+        # Every ego frame is summarized by one query that attends ALL future
+        # Gaussians (flattened over time), capturing the global scene layout.
+        global_kv = future_content.reshape(
+            batch, self.fut_ts * num_gaussians,
+            self.embed_dims).permute(1, 0, 2)
+        if self.ego_global_gaussian_decoder is not None:
+            global_query = self.ego_global_gaussian_decoder(
+                query=ego_gaussian_query, key=global_kv, value=global_kv)
+        else:
+            global_query = ego_gaussian_query
+        global_features = torch.cat([
+            current_features,
+            global_query.permute(1, 0, 2),
+        ], dim=-1)
+        global_prediction = self.global_shape_mlp(global_features).reshape(
+            batch, self.ego_fut_mode, self.fut_ts, 2)
+
+        # ---- Zero-initialized per-sample per-timestep gated fusion ----
+        # The gate sees BOTH the whole-trajectory global summary and each frame's
+        # collision-safe aligned feature, so it opens per-frame only where the
+        # global shape helps L2 without weakening the local collision grounding.
+        gate_in = torch.cat([
+            global_features.expand(-1, self.fut_ts, -1),
+            aligned_features,
+        ], dim=-1)
+        gate = self.refine_gate_mlp(gate_in).tanh().reshape(
+            batch, 1, self.fut_ts, 1)
+        main_prediction = aligned_prediction + gate * (
+            global_prediction - aligned_prediction)
+
+        return {
+            'ego_fut_preds': main_prediction,
+            'ego_fut_aligned_preds': aligned_prediction,
+            'ego_fut_aux_preds': global_prediction,
+        }

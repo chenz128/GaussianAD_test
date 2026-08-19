@@ -13,3 +13,5 @@ from .planner_v8 import VADHeadGaussianResidualDiT
 from .planner_v9 import VADHeadHybridTimePositionResidual
 
 from .planner_v11 import VADHeadTimeAlignedGaussian
+
+from .planner_v12 import VADHeadFutAttnGlobalResidual
