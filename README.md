@@ -31,9 +31,9 @@
 
 在 v3 基础上做最小改动：给未来帧高斯特征按时间步加上**可学习时间位置编码 `fut_time_pos = nn.Embedding(fut_ts, D)`**，加在 **key/value 侧（高斯特征上）**，使展平后的每个 key 明确携带帧序信息。这是第一版显式引入时间编码的 planner。
 
-### 4. timequery_residual（全局路为主干，planner_v10 `VADHeadTimeQueryResidual`）
+### 4. timequery_residual（全局路为主干，planner_v6 `VADHeadTimeQueryResidual`）
 
-把"全局路"作为主干、"逐帧路"作为残差（`main = global + gate·(per_frame − global)`），并引入**连续 Fourier 时间编码**（多个频带 × 2π·t 相位 + 可学习 Embedding + LayerNorm 融合），对未来帧高斯 key 做更精细的时间建模。该变体拿到最优 L2，但由于主干不是逐帧接地，碰撞率全场最差（0.0201@3s）——**L2 与碰撞不可兼得的典型体现**。
+把"全局路"作为主干、"辅助路（aux）"作为残差（`main = global + gate·(aux − global)`，`gate` 为可学习标量门 `time_fusion_gate`，末层 tanh 零初始化），并引入**连续 Fourier 时间编码**（多个频带 × 2π·t 相位 + 可学习 Embedding + LayerNorm 融合），对未来帧高斯 key 做更精细的时间建模。该变体拿到最优 L2，但由于主干不是逐帧接地，碰撞率全场最差（0.0201@3s）——**L2 与碰撞不可兼得的典型体现**。
 
 ### 5. futattn_global_residual（逐帧路为 base + 全局门控残差，planner_v12，最终版）
 
@@ -163,7 +163,7 @@ flowchart TB
 4. **AlignedTrajectoryPositionLoss（×0.3）**：作用于 `ego_fut_aux_preds`，约束全局分支的轨迹形状，防止其在门开启帧被拉向穿障 GT。
 5. **AlignedTrajectoryPositionLoss（×0.2）**：作用于 `ego_fut_per_frame_preds`，锚定逐帧基座的位置精度，让门开启的收益真正被利用。
 
-除规划头之外，模型仍沿用 base 的 6 个三维感知损失（Occupancy / OccupancyFlow / Detection / Map 等），本配置未改动它们。
+除规划头之外，模型仍沿用 base 的 5 个基础损失（OccupancyLoss / OccupancyFlowLoss / DetectionLoss / MapLoss / PlanLoss，见 `nuscenes_gs25600_base_plan.py` 的 `MultiLoss.loss_cfgs`），本配置未改动它们。
 
 ---
 
