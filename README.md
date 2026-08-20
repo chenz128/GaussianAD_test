@@ -307,3 +307,124 @@ flowchart TB
 | 无时间编码的对照 | —                                                                                       | `futgau_detach_false`（v3 展平后无任何 PE）                                |
 
 > 简言之：**FutAttn 把时间编码放在「问的一方」（ego query），配合帧间 self-attn 让轨迹回归逐帧感知时刻**；**FutGauTime 把时间编码放在「被看的一方」（未来高斯 key），让展平的未来场景本身携带帧序信息**。两者都从 `v12_fixempty epoch_15` 续训、`plan_ego_detach=False`（occ_flow 梯度可回传 planner）。
+
+---
+
+## Planner C：FutAttnGlobalResidual（VADHeadFutAttnGlobalResidual, planner_v12）
+
+配置文件：`config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futattn_global_residual/`（base: `v12_ft_plan`）
+
+**融合策略**（翻转 timequery 的融合方向）：以 futattn 的**逐帧碰撞安全路为被保护的主干 base**，把 timequery 的**全局低-L2 路当作门控残差**：
+
+$$\text{main} = \text{per\_frame} + \text{gate} \cdot (\text{global} - \text{per\_frame})$$
+
+- **per_frame**（绿）：完全复用 futattn 逐帧 cross-attn（碰撞安全基座），门未开时（gate=0）main 严格等于 per_frame；
+- **global**（紫）：ego 对所有未来帧高斯 attn + joint MLP（低 L2）；
+- **gate**（橙）：逐样本逐帧输入相关门，末层零初始化 `tanh(0)=0`，同时看「全局摘要(4D) + 逐帧接地特征(D)」，近端时间乘系数 0.2、远端 1.0 → 近端压门保碰撞、远端开门拉 L2。
+
+```mermaid
+flowchart TB
+    classDef inp  fill:#e3f2fd,stroke:#1976d2,color:#000
+    classDef mid  fill:#e8f5e9,stroke:#1b5e20,color:#000
+    classDef base fill:#c8e6c9,stroke:#2e7d32,color:#000
+    classDef glob fill:#f3e5f5,stroke:#8e24aa,color:#000
+    classDef gate fill:#ffe0b2,stroke:#e65100,color:#000
+    classDef out  fill:#e0f7fa,stroke:#006064,color:#000
+    classDef loss fill:#ffcdd2,stroke:#c62828,color:#000
+
+    subgraph IN["① 输入（来自上游模块）"]
+        AG["agent_query<br/>当前帧检测"]:::inp
+        MP["map_query<br/>当前帧地图"]:::inp
+        GO["gaussian_output<br/>当前高斯 (B,G,28)"]:::inp
+        OF["offset<br/>flow 位移 (B,G,6·2)"]:::inp
+    end
+
+    subgraph CUR["② 当前帧融合（复用 VADHead 3 路）"]
+        EQ["ego_query"]:::mid
+        EA["ego↔agent"]:::mid
+        EM["ego↔map"]:::mid
+        EG["ego↔gaussian(当前)"]:::mid
+        CF["current_features (1,3D)"]:::mid
+    end
+
+    subgraph FUT["③ 未来帧高斯构造（两分支共享）"]
+        FG["未来帧高斯<br/>xy = 当前.xy + offset_t"]:::mid
+        FK["future_key = content + time_encoding<br/>(Fourier 8频带 + 可学习)"]:::mid
+    end
+
+    subgraph PF["④ 逐帧碰撞安全 base（被保护主干）"]
+        P1["ego_to_fut + fut_pos 帧编码"]:::base
+        P2["fut_self_decoder 时间维 self-attn"]:::base
+        P3["逐帧 cross-attn<br/>第 t 帧 ego 只看第 t 帧高斯"]:::base
+        P4["per_frame 轨迹 (3,6,2)"]:::base
+    end
+
+    subgraph GLB["④ 全局低-L2 残差（timequery 路）"]
+        G1["ego ↔ 全部未来帧高斯<br/>(global cross-attn)"]:::glob
+        G2["global_features (1,4D) 摘要"]:::glob
+        G3["global_shape_mlp joint 回归"]:::glob
+        G4["global 轨迹 (3,6,2)"]:::glob
+    end
+
+    subgraph FUS["⑤ 碰撞感知门控融合"]
+        GT["gate = tanh(MLP(全局摘要 ‖ 逐帧特征))<br/>末层零初始化，近端×0.2 → 远端×1.0"]:::gate
+        MN["main = per_frame + gate·(global − per_frame)"]:::gate
+    end
+
+    subgraph OUTV["⑥ 输出"]
+        O1["ego_fut_preds (main)"]:::out
+        O2["ego_fut_aux_preds (global)"]:::out
+        O3["ego_fut_per_frame_preds"]:::out
+    end
+
+    subgraph LOS["⑦ 损失（5 项）"]
+        L1["PlanLoss ×10<br/>L1 + map_bound + dir + SAT碰撞守卫×0.1"]:::loss
+        L2["TimeQueryPlanLoss ×2<br/>全局分支模仿损失"]:::loss
+        L3["AlignedTrajPosLoss ×0.5<br/>main 位置域（远端×1.5 加权）"]:::loss
+        L4["AlignedTrajPosLoss ×0.3<br/>aux 位置域"]:::loss
+        L5["AlignedTrajPosLoss ×0.2<br/>per_frame 位置域"]:::loss
+    end
+
+    %% ---------- 输入 → 当前帧 ----------
+    AG --> EA
+    MP --> EM
+    GO --> EG
+    EQ --> EA --> EM --> EG --> CF
+
+    %% ---------- 未来帧构造 ----------
+    GO --> FG
+    OF --> FG
+    FG --> FK
+
+    %% ---------- 逐帧 base ----------
+    CF --> P1
+    P1 --> P2 --> P3 --> P4
+    FK --> P3
+
+    %% ---------- 全局残差 ----------
+    CF --> G1
+    FK --> G1
+    G1 --> G2 --> G3 --> G4
+
+    %% ---------- 门控融合 ----------
+    P4 --> MN
+    G4 --> MN
+    G2 --> GT
+    P3 --> GT
+    GT --> MN
+
+    %% ---------- 输出 ----------
+    MN --> O1
+    G4 --> O2
+    P4 --> O3
+
+    %% ---------- 损失 ----------
+    O1 --> L1
+    O1 --> L3
+    O2 --> L2
+    O2 --> L4
+    O3 --> L5
+
+```
+
+**评测结果（epoch_15，L2↓ / 碰撞↓）**：L2 1s 0.4305 / 2s 0.7775 / 3s 1.2156（全项最优），obj_box_col 1s 0.0071 / 2s 0.0096 / 3s 0.0130（全项最优）——同时拿下 L2 与碰撞率双第一，打破"L2 与碰撞不可兼得"的权衡。
