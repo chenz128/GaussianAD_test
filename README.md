@@ -155,17 +155,155 @@ flowchart TB
 
 ## 三、损失函数
 
-`futattn_global_residual` 的训练由五类损失共同驱动（`loss/plan_loss.py`），其中前两类继承自 `ft_plan` 基础配置，后三类为本次新加的定位/形状约束：
+`futattn_global_residual` 的总损失由 `MultiLoss` 将所有子损失**简单相加**得到（`tot\_loss += loss`，各子损失内部自带权重）。完整组成如下：
 
-1. **PlanLoss（外层 ×10）**：作用在融合主线 `ego_fut_preds` 上，内部由三部分构成——**L1 位移回归**（对 GT 轨迹做逐模态加权 L1）、**PlanMapBoundLoss**（把 self 推出车道边界，距离小于阈值即惩罚、并做线段相交遮罩）、**PlanMapDirectionLoss**（让 self 朝向与车道线方向一致）。另在 `col_sat=True` 时叠加 **SAT 碰撞守卫（内层 ×0.1，有效权重 10×0.1=1.0）**：把 self 与每个 GT 车辆都建模成朝向敏感的矩形，用分离轴定理（SAT）算 4 轴投影穿透深度，`relu(穿透深度 + 0.5m 安全间隙)` 在矩形真正重叠时惩罚，梯度沿真实穿透方向回传 self 位置——与 `plan_obj_box_col` 指标（轴对齐 ego 矩形 + LiDAR 系 yaw）逐像素对齐。
-2. **TimeQueryPlanLoss（×2）**：作用于全局分支 `ego_fut_aux_preds`，是独立于门控的模仿损失，让全局残差在有梯度下训练，避免"zero-gate 饿死残差"。
-3. **AlignedTrajectoryPositionLoss（×0.5）**：PlanLoss 只在位移域做 L1，缺少对累积位置的监督，会造成远端 L2 漂移；此项读 `ego_fut_preds`，对 cumsum 后的轨迹做**远端加重（1s→3s 权重 0.5→1.5）**的位置域监督，补齐主线的绝对位置精度（不带碰撞惩罚，保住碰撞率）。
-4. **AlignedTrajectoryPositionLoss（×0.3）**：作用于 `ego_fut_aux_preds`，约束全局分支的轨迹形状，防止其在门开启帧被拉向穿障 GT。
-5. **AlignedTrajectoryPositionLoss（×0.2）**：作用于 `ego_fut_per_frame_preds`，锚定逐帧基座的位置精度，让门开启的收益真正被利用。
+$$
+\mathcal{L}_{\text{total}} = \underbrace{\mathcal{L}_{occ} + \mathcal{L}_{flow} + \mathcal{L}_{det} + \mathcal{L}_{render} + \mathcal{L}_{dyn} + \mathcal{L}_{phy}}_{\text{① 感知基础损失（×1）}} + \underbrace{\mathcal{L}_{map}}_{\text{② 地图损失}} + \underbrace{10\cdot\big(\mathcal{L}_{l1}+\mathcal{L}_{bound}+\mathcal{L}_{dir}+\mathcal{L}_{col}\big)}_{\text{③ 规划损失 PlanLoss}} + \underbrace{2\cdot\mathcal{L}_{tq} + 0.5\cdot\mathcal{L}_{pos}^{main} + 0.3\cdot\mathcal{L}_{pos}^{aux} + 0.2\cdot\mathcal{L}_{pos}^{per}}_{\text{④ 新增辅助规划损失}}
+$$
 
-除规划头之外，模型仍沿用 base 的 5 个基础损失（OccupancyLoss / OccupancyFlowLoss / DetectionLoss / MapLoss / PlanLoss，见 `nuscenes_gs25600_base_plan.py` 的 `MultiLoss.loss_cfgs`），本配置未改动它们。
+> 其中 ①②③ 继承自 `ft_plan` 基础配置（不可见改动），④ 为本配置（`futattn_global_residual`）新增。`RenderLoss` 的 `weight=0`，只渲染不参与训练。
 
 ---
+
+### ① 感知基础损失（继承自 base，×1）
+
+| 损失 | 公式 | 监督对象 | 作用 |
+|------|------|---------|------|
+| **OccupancyLoss** `OccupancyLoss` | $$\mathcal{L}_{occ}=10\cdot\text{CE}(\hat s, s_{gt}) + \text{Lov'{a}sz}(\hat s, s_{gt})$$ | 当前帧语义占据（18 类体素） | 让高斯表示还原场景几何+语义，是倒推出"哪里可走/哪里会撞"的第一个前提 |
+| **OccupancyFlowLoss** `OccupancyFlowLoss` | $$\mathcal{L}_{flow}=10\cdot\text{CE}(\hat f, f_{gt}) + \text{Lov'{a}sz}(\hat f, f_{gt})$$ | 未来帧占据流动（offset） | 让未来帧占据可被正确预测 → planner 才能"看到未来场景怎么动" |
+| **DetectionLoss** `DetectionLoss` | $$\mathcal{L}_{det}=\underbrace{\text{Focal}(\hat y_c, y_c)}_{cls=1.0} + 0.25\cdot\underbrace{\sum_d w_d\,\text{L1}(\hat b_d, b_d)}_{loc=0.25,\, \text{code\_weights}}$$ | 3D 检测框（center/dim/rot/vel） | 给 planner 准确的动态目标（agent 框），碰撞守卫直接复用这些 GT 框 |
+| **RenderLoss** `RenderLoss`（weight=0） | $$\mathcal{L}_{render}=5\cdot\text{CE}_{sem}(\hat r) + 0.5\cdot\text{L1}_{depth}(\hat r)$$ | 高斯渲染的语义/深度图（监督信号=0，不参与训练） | 仅保留可视化/诊断，不回传梯度 |
+| **DynamicLoss** `DynamicLoss` | $$\mathcal{L}_{dyn}=\text{BCE}_{w/pos}(\hat v, v_{gt}) + 0.5\cdot\text{BCE}_{extra}$$ | 高斯速度场（动态/静态二分类） | 区分动态-静态高斯，只让可移动目标的速度被监督 |
+| **PhysicsLoss** `PhysicsLoss` | $$\mathcal{L}_{phy}=\underbrace{1.0\cdot\text{SmoothL1}_{static}}_{\text{static\_w}} + \underbrace{1.0\cdot\text{rigid}}_{\text{rigid\_w}} + \underbrace{4.0\cdot\text{SmoothL1}_{traj}}_{\text{traj\_w}}$$ | 高斯运动的物理合理性（静态惩罚/刚体/真实轨迹跟随） | 约束 offset 满足物理（静态不乱动、刚体不变形、按 GT 轨迹移动） |
+
+> 作用总体：**6 个感知损失把上游感知模块训好，planner 拿到的 agent/map/gaussian/offset 表征才可靠** —— 但它们不直接监督轨迹，是规划质量的前提条件。
+
+---
+
+### ② 地图损失 MapLoss（继承自 ft_plan）
+
+$$
+\mathcal{L}_{map} = \underbrace{5.0\cdot\text{PtsL1}(\hat p^{pts}, p_{gt})}_{\text{loss\_pts}} + \underbrace{1.0\cdot\text{SimpleLoss}_{seg}}_{\text{loss\_seg}} + \underbrace{2.0\cdot\text{SimpleLoss}_{pv\_seg}}_{\text{loss\_pv\_seg}} + 0.005\cdot\mathcal{L}_{dir}
+$$
+
+- **监督对象**：地图元素（车道线/边界/人行道等）的点、分割、方向。
+- **作用**：为 planner 提供高质量地图 token（供 `ego↔map` decoder 交互），并且是下方 PlanLoss 的 `bound`/`dir` 子损失的地图来源——地图不准，压线惩罚与航向监督会误导。
+
+---
+
+### ③ 规划损失 PlanLoss（×10，作用在 fused 主线 `ego_fut_preds`）
+
+$$
+\mathcal{L}_{plan} = \underbrace{\mathcal{L}_{l1}}_{\text{L1 位移}} + \underbrace{\mathcal{L}_{bound}}_{\text{车道边界}} + \underbrace{\mathcal{L}_{dir}}_{\text{航向对齐}} + \underbrace{\mathcal{L}_{col}}_{\text{SAT 碰撞守卫}}
+$$
+
+#### (1) L1 位移回归 —— 整条轨迹形状的主监督
+
+$$
+\mathcal{L}_{l1} = \frac{1}{\sum_t w_t}\sum_t w_t\,\big|\, \Delta\hat{p}_t - \Delta p^{gt}_t \,\big|,\qquad w_t = cmd \cdot \mathbb{1}[\text{mask}_t]
+$$
+
+- **监督对象**：逐帧位移 $\Delta\hat p_t$（预测）对 GT 位移（命令模式选中的那条）。
+- **作用**：轨迹"形状"主监督，保证整条轨迹贴合 GT —— 直接抑制 L2 误差。
+
+#### (2) 车道边界约束 —— 不压线/不出路
+
+$$
+\mathcal{L}_{bound} = \sum_t \max\big(0,\ D_{th} - d_t\big)\cdot\mathbb{1}[d_t \le D_{th}],\qquad d_t = \min_{map}\big|p_t^{cum} - map^{lane}\big|,\ D_{th}=1.0\text{m}
+$$
+
+- **监督对象**：累计位置 $p_t^{cum}=\sum_{\tau\le t}\Delta p_\tau$ 到最近车道线的距离（并做线段相交遮罩，已相交帧之后置 0）。
+- **作用**：把轨迹压回车道内，**防止轨迹压到路沿/车道边界** → 同时降低 L2 与"地图碰撞"。
+
+#### (3) 航向对齐 —— 方向顺/拐弯贴
+
+$$
+\mathcal{L}_{dir} = \frac{1}{2}\sum_t \big|\,\text{yaw}(\hat p_t) - \text{yaw}(\text{lane}_t)\,\big| \cdot \mathbb{1}[d_t\le 2\text{m},\ \text{非静止}]
+$$
+
+- **监督对象**：ego 航向角 vs 最近车道的航向角（仅当附近有车道且 ego 非静止）。
+- **作用**：让轨迹方向与道路方向一致，直行/转弯都贴合车道 → 减少横向偏移，改进 L2。
+
+#### (4) SAT 碰撞守卫 —— 不撞车（权重 10×0.1=1.0，本配置的安全项）
+
+$$
+\mathcal{L}_{col} = \frac{1}{\#(b,t)}\!\sum_{b,t}\!\text{ReLU}\big(\,\underbrace{-\max_{4\,\text{轴}} sep_{b,t}}_{\text{SAT 穿透深度}} + \underbrace{0.5}_{\text{safe\_margin}}\,\big)
+$$
+
+- **计算**：把 ego 视为轴对齐矩形、每个 GT agent 视为朝向矩形，用**分离轴定理（SAT）**在 4 条轴（agent 局部 2 轴 + ego 世界 2 轴）上算分离量 $sep$；4 轴全重叠时 $-\max sep$ 即穿透深度。
+- **梯度**：ego 累计位置 $\sum\Delta p$ 与每个 agent 的未来足迹（含 yaw 累积）判交，**只对 ego 位置可微**，agent 是固定目标。
+- **作用**：把 ego 推出每个 GT agent 的未来足迹 +0.5m 安全边距 —— **碰撞率下降的直接来源**。`col_sat=True` 确保与 `plan_obj_box_col` 指标（轴对齐 ego 矩形 + LiDAR 系 yaw）逐像素对齐。
+
+---
+
+### ④ 新增辅助规划损失（本配置专属，共 4 项）
+
+#### (1) TimeQueryPlanLoss（×2）→ 监督全局分支 `ego_fut_aux_preds`
+
+$$
+\mathcal{L}_{tq} = \underbrace{\text{SmoothL1}_{\beta=0.5}\big(\Delta\hat p^{global},\ \Delta p^{gt}\big)}_{\text{位移域}} + 1.0\cdot\underbrace{\text{SmoothL1}_{\beta=0.5}\big(\text{cumsum}(\Delta\hat p^{global}),\ \text{cumsum}(\Delta p^{gt})\big)}_{\text{累积位置域}}
+$$
+
+- **监督对象**：裸全局分支（`global_shape_mlp` 输出，未过门控）。
+- **作用**：**不依赖门直接监督全局路**，让"低 L2"的全局路即使门是关的也能学到轨迹形状 → 避免"zero-gate 饿死残差分支"的 dead-gate 失效。
+
+#### (2) AlignedTrajectoryPositionLoss（×0.5）→ 监督 fused main `ego_fut_preds`
+
+$$
+\mathcal{L}_{pos}^{main}=0.5\cdot\frac{\sum_t w_t^{time}\;\text{SmoothL1}_{\beta=0.5}\big(\text{cumsum}(\hat p^{main})_t,\ \text{cumsum}(p^{gt})_t\big)}{\sum_t w_t^{time}},\qquad w^{time}=(0.5,0.75,1,1,1.25,1.5)
+$$
+
+- **监督对象**：融合后的最终轨迹（`ego_fut_preds`）的**累计位置**。
+- **作用**：PlanLoss 的 L1 只在**位移**域监督，缺累积位置监督 → 远端（t=5,6）L2 漂移；此项对 cumsum 位置做**远端加重（1s→3s：0.5→1.5）**位置监督，**专补远端绝对位置精度**（不带碰撞惩罚，保住碰撞率）。
+
+#### (3) AlignedTrajectoryPositionLoss（×0.3）→ 监督全局分支位置
+
+$$
+\mathcal{L}_{pos}^{aux}=0.3\cdot\underbrace{\frac{\sum_t w_t^{time}\;\text{SmoothL1}\big(\text{cumsum}(\hat p^{aux})_t,\ \text{cumsum}(p^{gt})_t\big)}{\sum_t w_t^{time}}}_{\text{同 (2) 但 pred=aux}}
+$$
+
+- **监督对象**：全局分支（`ego_fut_aux_preds`）的累计位置。
+- **作用**：在位移域之外约束全局分支的轨迹**形状**，防止全局路被拉向穿障的极端低 L2 形状（门开启帧时尤其关键）。
+
+#### (4) AlignedTrajectoryPositionLoss（×0.2）→ 监督逐帧 base 位置
+
+$$
+\mathcal{L}_{pos}^{per}=0.2\cdot\underbrace{\frac{\sum_t w_t^{time}\;\text{SmoothL1}\big(\text{cumsum}(\hat p^{per})_t,\ \text{cumsum}(p^{gt})_t\big)}{\sum_t w_t^{time}}}_{\text{同 (2) 但 pred=per\_frame}}
+$$
+
+- **监督对象**：逐帧碰撞安全 base（`ego_fut_per_frame_preds`）的累计位置。
+- **作用**：逐帧 base 是门控的"碰撞锚点"（初始 main==per_frame）。给它位置监督保住它的位置精度 → 门开启时全局残差带来的收益才是"锦上添花"而非"带偏"；也防止逐帧 base 精度变差导致门被迫全开。
+
+---
+
+### 监督对象分配总览
+
+```
+                    感知网络（6 loss + MapLoss 监督）
+                              │
+        ┌─────────────────────┴───────────────────────┐
+   ego feature (3D)        未来高斯 kv (fut_content)     offset
+        │                     │
+   ┌────┴────┐          ┌─────┴──────┐
+   │per_frame│          │   global   │
+   │折叠逐帧路│          │全局 joint 路│
+   └────┬────┘          └─────┬──────┘
+     per_frame_preds     global_preds (aux)
+        │  │                  │
+        │  │  TimeQueryPlanLoss (×2) ────► ④(1) 监督 global 位移+位置
+        │  │                  │
+        │  AlignedPos_aux (×0.3) ────────► ④(3) 监督 global 位置
+        │  AlignedPos_per (×0.2) ────────► ④(4) 监督 per_frame 位置
+        └──┴── gate 融合 ──► main = per_frame + gate·(global − per_frame)
+                     │
+              ego_fut_preds
+                     │
+   PlanLoss (×10) ──► L1(位移) + Bound(车道) + Dir(航向) + SAT碰撞(×0.1)
+                     │
+   AlignedPos_main (×0.5) ──► ④(2) 监督 fused 累计位置（远端加重）
+```
+
+**一句话总结**：感知 6 loss + MapLoss 负责把"场景理解"训好；PlanLoss 在位移/车道/航向/碰撞 4 个域直接约束最终轨迹；新增的 4 项辅助损失按"全局路练形状、逐帧路稳住碰撞、主线补远端位置"的分工，让门控融合的两个分支都被充分监督、各司其职 —— 这是 `futattn_global_residual` 同时压低 L2 与碰撞率的损失侧保障。
 
 ## 四、实验结果（NuScenes 验证集，epoch_15）
 

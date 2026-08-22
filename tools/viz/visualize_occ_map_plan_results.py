@@ -1,13 +1,27 @@
 """
+=============================================================================
+ futattn_global_residual 模型可视化启动命令（10 个连续场景 × 40 帧 -> GIF + MP4）
+=============================================================================
 cd /data/xinyao/navsim_workspace/GaussianAD
 
 /data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
-    --py-config /data/xinyao/navsim_workspace/GaussianAD/config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_timequery_residual/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_timequery_residual.py \
-    --work-dir /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_timequery_residual \
-    --resume-from /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_timequery_residual/checkpoints/epoch_15.pth \
-    --num-samples 6 \
-    --start-index 0 \
-    --out-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_timequery_residual/occ_map_plan_vis
+    --py-config /data/xinyao/navsim_workspace/GaussianAD/config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futattn_global_residual/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futattn_global_residual.py \
+    --work-dir /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual \
+    --resume-from /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/checkpoints/epoch_15.pth \
+    --scenes 10 \
+    --gif-ms 120 \
+    --no-png \
+    --out-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/occ_map_plan_vis
+
+说明：
+- --scenes 10：自动取前 10 个完整场景，每场景固定取前 40 帧（数据集中每场景
+  ~40 帧，个别 41/39 帧会自动截断到 40），10 个场景共产出 400 帧。
+- 每场景 40 帧 -> 自动合成 1 个 GIF（40 帧，120ms/帧）+ 1 个 MP4，保存于
+  <out-dir>/scene_<scene_token>/ 下，输出时不保留中间单帧 PNG（--no-png）。
+- 脚本按 scene_token 分组、跨场景切换时自动落盘动画，共产出 10 个 GIF + 10 个 MP4。
+- 若需自定义帧数/场景数：--scenes N --frames-per-scene M（需先加参数），
+  或直接给 --vis-index（须手动列出所有帧索引）。
+=============================================================================
 """
 #!/usr/bin/env python3
 
@@ -107,6 +121,15 @@ def parse_args():
     parser.add_argument("--vis-index", type=int, nargs="+", default=None,
                         help="Explicit keyframe indices (keeps scene continuity, e.g. a whole scene's 40 "
                              "frames: --vis-index 0 1 2 ... 39). Overrides --num-samples sampling.")
+    parser.add_argument("--scenes", type=int, default=0,
+                        help="Number of leading complete scenes to visualize (e.g. 10). Each scene "
+                             "yields one GIF/MP4 with exactly --frames-per-scene frames.")
+    parser.add_argument("--frames-per-scene", type=int, default=40,
+                        help="How many frames per scene to take (default 40). Scenes with more "
+                             "frames are truncated; with fewer they keep all their frames.")
+    parser.add_argument("--scene-start", type=int, default=0,
+                        help="Start scene index (0-based). Combined with --scenes N, visualizes "
+                             "scenes [scene_start, scene_start+N).")
     parser.add_argument("--start-index", type=int, default=0, help="Start index in the chosen dataloader.")
     parser.add_argument("--score-thresh", type=float, default=0.35, help="Map prediction score threshold.")
     parser.add_argument("--device", default="cuda:0", help="Device for inference.")
@@ -193,6 +216,16 @@ def _scene_output_dir(root_out_dir, scene_token):
     scene_dir = root_out_dir / f"scene_{scene_token}"
     scene_dir.mkdir(parents=True, exist_ok=True)
     return scene_dir
+
+
+def _dataset_len(cfg, split):
+    """返回未抽样情况下数据集的总帧数（用 num_samples=0 + 全索引 vis_indices）。"""
+    from pathlib import Path
+    imageset = cfg.val_dataset_config.get('imageset') if split == 'val' else \
+        cfg.train_dataset_config.get('imageset')
+    import mmengine
+    data = mmengine.load(imageset)
+    return len(data['metadata'])
 
 
 def _checkpoint_path(args):
@@ -583,6 +616,39 @@ def main():
     if args.vis_index is not None and len(args.vis_index) > 0:
         # 显式索引会覆盖随机抽样，保持同 scene 帧连续（视频需要）
         cfg.val_dataset_config.update({"vis_indices": args.vis_index, "num_samples": 0})
+        # 关键修复：--vis-index 显式列出所有帧时，覆盖默认 --num-samples
+        # （默认 4 会在 4 帧后 break，导致 40 帧场景只出 4 帧）
+        args.num_samples = len(args.vis_index)
+    if args.scenes > 0:
+        # --scenes N：自动取前 N 个完整场景，每场景固定取前 frames_per_scene 帧
+        # （默认 40），保证每个场景 GIF 恰好 40 帧。按场景边界对齐，超出部分
+        # （数据集个别场景 41/39 帧）自动截断。
+        # 关键：统计场景时必须禁用 dataset 的随机抽样（num_samples>0 会按
+        # subsample_seed 抽帧，导致场景统计与真实 keyframes 错位），因此显式
+        # 用 num_samples=0 + 完整 vis_indices 构建一次"未抽样"数据集来数帧。
+        from collections import OrderedDict
+        frames_per_scene = getattr(args, 'frames_per_scene', 40)
+        # 临时禁用抽样，统计完整 keyframes 的场景边界
+        _full_vis = list(range(_dataset_len(cfg, args.split)))
+        _save_cfg = dict(cfg.val_dataset_config)
+        cfg.val_dataset_config.update({"vis_indices": _full_vis, "num_samples": 0})
+        loader_tmp = _build_loader(cfg, args.split)
+        keyframes = _resolve_dataset_keyframes(loader_tmp.dataset)
+        cfg.val_dataset_config.clear()
+        cfg.val_dataset_config.update(_save_cfg)
+        scene_frame_counts = OrderedDict()
+        for token, _idx in keyframes:
+            scene_frame_counts.setdefault(token, 0)
+            scene_frame_counts[token] += 1
+        scenes_list = list(scene_frame_counts.items())[args.scene_start:args.scene_start + args.scenes]
+        scene_start = sum(cnt for _tok, cnt in list(scene_frame_counts.items())[:args.scene_start])
+        vis_indices = []
+        for token, count in scenes_list:
+            take = min(count, frames_per_scene)
+            vis_indices.extend(range(scene_start, scene_start + take))
+            scene_start += count
+        cfg.val_dataset_config.update({"vis_indices": vis_indices, "num_samples": 0})
+        args.num_samples = len(vis_indices)
     loader = _build_loader(cfg, args.split)
 
     pc_range = np.asarray(cfg.pc_range, dtype=np.float32)
