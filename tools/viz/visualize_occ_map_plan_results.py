@@ -1,5 +1,30 @@
 """
 =============================================================================
+ time_aligned_gaussian 模型可视化启动命令（1 个连续场景 × 40 帧 -> GIF + MP4）
+=============================================================================
+cd /data/xinyao/navsim_workspace/GaussianAD
+
+/data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
+    --py-config /data/xinyao/navsim_workspace/GaussianAD/config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_time_aligned_gaussian/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_time_aligned_gaussian.py \
+    --work-dir /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_time_aligned_gaussian \
+    --resume-from /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_time_aligned_gaussian/checkpoints/epoch_15.pth \
+    --vis-index 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 \
+    --num-samples 0 \
+    --start-index 0 \
+    --no-png \
+    --out-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_time_aligned_gaussian/occ_map_plan_vis
+
+说明：
+- 用 --vis-index 0..39 显式选择同一场景连续 40 帧（保持时间连续性），并配合
+  --num-samples 0 禁用主循环的样本截断（脚本默认 --num-samples 4，不设会只跑
+  前 4 帧！）。
+- 每场景 40 帧 -> 合成 1 个 GIF（350ms/帧，可用 --gif-ms 调）+ 1 个 MP4。
+- --no-png 在合成动画后删除中间单帧 PNG，只保留 GIF/MP4。
+- 更简单的等价方式：--scenes 1 --frames-per-scene 40（自动取场景，免手写索引）。
+
+=============================================================================
+
+=============================================================================
  futattn_global_residual 模型可视化启动命令（10 个连续场景 × 40 帧 -> GIF + MP4）
 =============================================================================
 cd /data/xinyao/navsim_workspace/GaussianAD
