@@ -20,6 +20,7 @@ import torch.nn as nn
 from mmengine.registry import MODELS
 
 from .planner_v12 import VADHeadFutAttnGlobalResidual
+from ..utils.utils import get_rotation_matrix
 
 
 @MODELS.register_module()
@@ -48,8 +49,8 @@ class VADHeadFutAttnRiskAwareGlobalResidual(
             risk_margin=0.5,
             risk_uncertainty_growth=0.15,
             risk_safety_temperature=8.0,
-            planner_gaussian_grad_scale=0.1,
-            planner_offset_grad_scale=0.1,
+            planner_gaussian_grad_scale=1.0,
+            planner_offset_grad_scale=1.0,
             dynamic_semantic_dims=10,
             ego_width=1.85,
             ego_length=4.084,
@@ -139,7 +140,13 @@ class VADHeadFutAttnRiskAwareGlobalResidual(
             dynamic_probability = opacity.new_ones(
                 opacity.shape[0], opacity.shape[2], 1)
         importance = opacity * dynamic_probability[:, None, :, :]
-        return future_xy, scales_xy, importance
+
+        # GaussianAD stores a normalized quaternion in [6:10].  The occupancy
+        # renderer forms Cov = R^T S^2 R, therefore R maps a world-frame delta
+        # into the Gaussian scale axes.  Keep the XY block for planner risk.
+        rotation = get_rotation_matrix(gaussian_output[..., 6:10])
+        rotation_xy = rotation[..., :2, :2]
+        return future_xy, scales_xy, importance, rotation_xy
 
     def _trajectory_risk(self, results, prediction):
         """Evaluate candidate trajectories against time-aligned Gaussians.
@@ -150,24 +157,33 @@ class VADHeadFutAttnRiskAwareGlobalResidual(
         XY scale.  Top-k aggregation avoids dilution by the 25,600 mostly
         irrelevant Gaussians.
         """
-        future_xy, scales_xy, importance = self._future_geometry(results)
+        future_xy, scales_xy, importance, rotation_xy = (
+            self._future_geometry(results))
         position = prediction.cumsum(dim=2)
 
         delta = position[:, :, :, None, :] - future_xy[:, None, :, :, :]
+        local_delta = torch.einsum(
+            'bgij,bmtgj->bmtgi', rotation_xy, delta)
         time = torch.arange(
             1, self.fut_ts + 1, device=position.device,
             dtype=position.dtype).reshape(1, 1, self.fut_ts, 1, 1)
-        ego_extent = position.new_tensor([
-            0.5 * self.ego_length,
-            0.5 * self.ego_width,
-        ]).reshape(1, 1, 1, 1, 2)
+        rotation_abs = rotation_xy.abs()
+        projected_ego_x = (
+            0.5 * self.ego_length * rotation_abs[..., 0, 0]
+            + 0.5 * self.ego_width * rotation_abs[..., 0, 1])
+        projected_ego_y = (
+            0.5 * self.ego_length * rotation_abs[..., 1, 0]
+            + 0.5 * self.ego_width * rotation_abs[..., 1, 1])
+        projected_ego_extent = torch.stack([
+            projected_ego_x, projected_ego_y,
+        ], dim=-1)[:, None, None, :, :]
         radius = (
             scales_xy[:, None, :, :, :]
-            + ego_extent
+            + projected_ego_extent
             + self.risk_margin
             + self.risk_uncertainty_growth * time)
-        normalized_distance2 = (delta / radius.clamp_min(0.1)).square().sum(
-            dim=-1)
+        normalized_distance2 = (
+            local_delta / radius.clamp_min(0.1)).square().sum(dim=-1)
         density = torch.exp(-0.5 * normalized_distance2)
         weighted_density = density * importance[:, None, :, :, 0]
         weighted_density = torch.nan_to_num(

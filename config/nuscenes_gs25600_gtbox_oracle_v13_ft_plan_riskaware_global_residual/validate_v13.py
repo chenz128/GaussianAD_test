@@ -41,6 +41,8 @@ assert config.load_from == (
     'exp/nuscenes_gs25600_v12_fixempty/checkpoints/epoch_15.pth')
 assert config.max_epochs == 15
 assert config.lr == 2e-4
+assert config.model.planner_head.planner_gaussian_grad_scale == 1.0
+assert config.model.planner_head.planner_offset_grad_scale == 1.0
 assert MODELS.get('VADHeadFutAttnRiskAwareGlobalResidual') is not None
 assert OPENOCC_LOSS.get('RiskAwarePlanLoss') is not None
 assert OPENOCC_LOSS.get('RiskAwareGateLoss') is not None
@@ -84,6 +86,23 @@ contrast_output[..., 3:6] = 0.35
 contrast_output[..., 6] = 1.0
 contrast_output[..., 10] = 0.8
 contrast_output[..., 11 + 3] = 1.0
+
+# GaussianAD defines Cov = R^T S^2 R, so R maps world-space deltas into
+# Gaussian-local axes.  Lock that convention here: a +90 degree yaw swaps the
+# absolute x/y axis contributions used by the conservative box projection.
+rotated_output = contrast_output[:, :1].clone()
+half_sqrt_two = 2.0 ** -0.5
+rotated_output[..., 6] = half_sqrt_two
+rotated_output[..., 9] = half_sqrt_two
+_, _, _, rotated_xy = planner._future_geometry({
+    'gaussian_output': rotated_output,
+    'offset': torch.zeros(1, 1, timesteps * 2),
+})
+expected_abs_rotation = torch.tensor(
+    [[0.0, 1.0], [1.0, 0.0]], dtype=rotated_xy.dtype)
+assert torch.allclose(
+    rotated_xy[0, 0].abs(), expected_abs_rotation, atol=1e-5)
+
 contrast_prediction = torch.zeros(1, 2, timesteps, 2)
 contrast_prediction[:, :, :, 0] = 2.0
 contrast_prediction[:, 1, 0, 1] = 8.0
@@ -118,10 +137,13 @@ print('planner:', config.model.planner_head.type)
 print('load_from:', config.load_from)
 print('epochs/lr:', config.max_epochs, config.lr)
 print('all non-planner/loss base config keys unchanged: OK')
+print('planner Gaussian/offset gradient scale:',
+      config.model.planner_head.planner_gaussian_grad_scale)
 print('random numerical smoke shape/range:', tuple(risk.shape),
       float(risk.min()), float(risk.max()))
 print('contrast collision/safe risk:',
       float(collision_risk), float(safe_risk))
+print('rotation-aware Gaussian local geometry: OK')
 print('zero-init gate: OK')
 print('hard-negative SAT forward/backward: OK', float(collision_loss))
 print('default COL_W=0.1 and SAT enabled: OK')

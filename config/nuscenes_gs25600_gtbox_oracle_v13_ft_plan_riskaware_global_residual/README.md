@@ -22,8 +22,12 @@ checkpoints, and experiment directories are not changed.
 - Gate-ranking loss chooses the expert with lower cumulative error plus risk.
 - Hard-negative SAT loss uses normalized log-sum-exp over agents and stronger
   late-horizon weights instead of averaging risk over every safe agent.
-- Planner gradients into Gaussian parameters and offsets are scaled to `0.1`
-  without changing forward values.
+- Planner gradients into Gaussian parameters and offsets default to `1.0`,
+  exactly preserving v12 training behavior.  `PLANNER_GRAD_SCALE=0.1` is kept
+  only as an explicit later ablation.
+- Quaternion rotation is used when measuring Gaussian risk: trajectory deltas
+  are transformed into each Gaussian's local scale axes and the axis-aligned
+  ego footprint is projected onto those axes.
 
 ## Commands
 
@@ -41,7 +45,7 @@ bash config/nuscenes_gs25600_gtbox_oracle_v13_ft_plan_riskaware_global_residual/
 Optional ablations preserve the default values when omitted:
 
 ```bash
-COL_W=0.1 GATE_W=0.1 AUX_W=2.0 \
+COL_W=0.1 GATE_W=0.1 AUX_W=2.0 PLANNER_GRAD_SCALE=1.0 \
   bash config/nuscenes_gs25600_gtbox_oracle_v13_ft_plan_riskaware_global_residual/train_riskaware_global_residual.sh
 ```
 

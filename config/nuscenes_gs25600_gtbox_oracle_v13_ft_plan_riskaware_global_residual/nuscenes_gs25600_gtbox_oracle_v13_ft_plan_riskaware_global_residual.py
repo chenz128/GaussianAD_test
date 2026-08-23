@@ -29,6 +29,8 @@ _base_ = [
 
 import os
 
+_planner_grad_scale = float(os.environ.get('PLANNER_GRAD_SCALE', 1.0))
+
 # 继承 ft_plan：load_from = v12_fixempty/epoch_15、max_epochs=15、lr=2e-4、
 # frozen_modules=[]、find_unused_parameters=False（与 futattn/timequery 完全一致）。
 # 训练期关闭 EVAL：epoch(1..15) 永不整除 9999 -> train.py 每轮 continue 跳过。
@@ -54,8 +56,10 @@ model = dict(
         risk_margin=0.5,
         risk_uncertainty_growth=0.15,
         risk_safety_temperature=8.0,
-        planner_gaussian_grad_scale=0.1,
-        planner_offset_grad_scale=0.1,
+        # Default 1.0 preserves the exact v12 planner->perception gradient.
+        # PLANNER_GRAD_SCALE=0.1 is available only as a separate ablation.
+        planner_gaussian_grad_scale=_planner_grad_scale,
+        planner_offset_grad_scale=_planner_grad_scale,
         dynamic_semantic_dims=10,
         # --- futattn 逐帧碰撞安全 base ---
         fut_self_decoder=dict(
