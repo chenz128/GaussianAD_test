@@ -176,6 +176,10 @@ assert config.load_from == checkpoint_text
 assert config.resume_from == ''
 assert MODELS.get('VADHeadFutAttnResidualDDIM') is not None
 assert OPENOCC_LOSS.get('ResidualDDIMPlanLoss') is not None
+loss_probe = ResidualDDIMPlanLoss()
+assert torch.allclose(
+    loss_probe._safe_divide(torch.tensor(0.5), torch.tensor(0.5)),
+    torch.tensor(1.0))
 
 # -------------------------------------------------------------------------
 # 2. Checkpoint lineage: it must strictly load the exact v12 planner.

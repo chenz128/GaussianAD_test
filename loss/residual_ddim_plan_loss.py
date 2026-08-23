@@ -57,7 +57,8 @@ class ResidualDDIMPlanLoss(nn.Module):
 
     @staticmethod
     def _safe_divide(numerator, denominator):
-        return numerator / denominator.clamp_min(1.0)
+        epsilon = torch.finfo(denominator.dtype).eps
+        return numerator / denominator.clamp_min(epsilon)
 
     def _prepare_annotations(self, inputs, prediction):
         target = self._squeeze_annotation(inputs['ego_fut_gt'], 3).to(
