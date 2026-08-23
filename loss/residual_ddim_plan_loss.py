@@ -192,9 +192,13 @@ class ResidualDDIMPlanLoss(nn.Module):
         return ranking_loss, generated_is_best
 
     def forward(self, inputs):
-        prediction = inputs.get(
-            'ego_fut_residual_preds', inputs.get('ego_fut_preds'))
+        prediction = inputs.get('ego_fut_residual_preds')
         diffusion_prediction = inputs.get('ego_fut_ddim_preds')
+        if (prediction is None) != (diffusion_prediction is None):
+            raise KeyError(
+                'ResidualDDIMPlanLoss requires both ego_fut_residual_preds '
+                'and ego_fut_ddim_preds; falling back to ego_fut_preds would '
+                'leak the new objective into the v12 baseline')
         if prediction is None or diffusion_prediction is None:
             reference = prediction
             if reference is None:

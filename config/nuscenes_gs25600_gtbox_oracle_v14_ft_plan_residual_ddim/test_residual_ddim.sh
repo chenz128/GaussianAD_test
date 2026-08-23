@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z "${VERIFIED_V12_CHECKPOINT:-}" ]]; then
-  echo "VERIFIED_V12_CHECKPOINT is required to parse the v14 config." >&2
-  exit 2
-fi
+REPO="${REPO:-/data/xinyao/navsim_workspace/GaussianAD}"
+VERIFIED_V12_CHECKPOINT="${VERIFIED_V12_CHECKPOINT:-${REPO}/exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/checkpoints/epoch_15.pth}"
+export VERIFIED_V12_CHECKPOINT
 if [[ ! -f "${VERIFIED_V12_CHECKPOINT}" ]]; then
   echo "Verified v12 checkpoint does not exist: ${VERIFIED_V12_CHECKPOINT}" >&2
   exit 2
 fi
-REPO="${REPO:-/data/xinyao/navsim_workspace/GaussianAD}"
 PYTHON="${PYTHON:-/data/chenz/conda_env/splatting/bin/python}"
 CONFIG="config/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim.py"
 WORK_DIR="${WORK_DIR:-exp/nuscenes_gs25600_v14_ft_plan_residual_ddim}"

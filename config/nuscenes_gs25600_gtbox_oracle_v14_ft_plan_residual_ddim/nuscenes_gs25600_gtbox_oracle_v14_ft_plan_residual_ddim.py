@@ -63,10 +63,9 @@ model = dict(
         residual_dropout=0.1,
         residual_scale=_residual_scale,
         residual_clip=8.0,
-        # Truncated VP corruption and deterministic two-NFE DDIM; no CFG.
-        diffusion_sigma_max=float(os.environ.get('SIGMA_MAX', 0.5)),
+        # Zero-terminal-SNR cosine VP and deterministic DDIM; no CFG.
         diffusion_train_t_min=0.02,
-        diffusion_sample_steps=2,
+        diffusion_sample_steps=int(os.environ.get('DDIM_STEPS', 4)),
         num_inference_samples=4,
         fixed_noise_seed=3407,
         # Per-horizon Gaussian corridor selection and differentiable risk.

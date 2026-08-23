@@ -69,11 +69,12 @@ fixed/train noise ε ──> z_t = α_t r* + σ_t ε
 - 轨迹只有 6 个规划点，因此使用 4-block、hidden=192 的 Micro-DiT，不照搬
   长轨迹的大型 DiT；
 - diffusion 工作在**累计位置残差**，不是完整轨迹，也不是 step displacement；
-- 训练采用截断 VP corruption，并直接预测 clean residual（`x0`）；
-- 推理采用确定性 2-NFE DDIM、固定噪声库 `K=4`，不使用 CFG；
+- 训练采用 zero-terminal-SNR cosine VP corruption，并直接预测 clean
+  residual（`x0`）；`t=1` 满足 `alpha=0, sigma=1`，与纯噪声推理先验一致；
+- 推理默认采用确定性 4-NFE DDIM、固定噪声库 `K=4`，不使用 CFG；
 - 每个规划时刻只与同一未来时刻的 Gaussian 交互，按未来位置、旋转尺度、
   opacity、动态语义和 corridor 距离选择 Top-K（默认 128）；
-- 第二次 DDIM evaluation 会围绕第一次预测的 clean path 重新选择 Gaussian；
+- 每次后续 DDIM evaluation 都围绕上一步预测的 clean path 重新选择 Gaussian；
 - 不使用连续 gate，因此不存在 `tanh` 负 gate 导致的 residual 反向外推。
 
 ## 3. 推理安全选择
@@ -94,7 +95,7 @@ candidate 1..4 = 固定噪声产生的 residual-DDIM 候选
 
 baseline 永远保留。如果 baseline 可行，且生成候选没有超过配置的 improvement
 margin，则继续使用 baseline。新增 residual output 和 quality output 的末层均为
-零初始化，所以权重加载后的初始 2-step DDIM 输出严格退化为 baseline。
+零初始化，所以权重加载后的初始 4-step DDIM 输出严格退化为 baseline。
 
 ## 4. 与基线保持一致的范围
 
@@ -114,9 +115,14 @@ v14 直接 `_base_` 继承精确的 `v12_ft_plan_futattn_global_residual` 配置
 `find_unused_parameters`、`frozen_modules` 或 backbone freeze flags。
 
 训练时，继承的 v12 planner 保持原训练模式和原梯度尺度（Gaussian/offset 均为
-1.0），并继续接受全部原基线 loss。新增 residual loss 使用 detached baseline
-reference 和 detached Gaussian context，因此该**新增 loss**不会通过条件分支改写
-旧 planner/感知参数；主 `PlanLoss` 仍通过 `ego_fut_preds` 保留原训练路径。
+1.0），并继续接受全部原基线 loss。训练态的 `ego_fut_preds` 明确保留为原始 v12
+输出，因此 legacy PlanLoss 和 Gaussian-head OccFlow 都不会看到 composite
+trajectory。新增 residual trajectory 只通过 `ego_fut_residual_preds` 送入新增 loss，
+且 baseline reference 与 Gaussian context 均 detached；所以新增 loss 不会改写旧
+planner/感知参数。推理态才把安全 selector 的最终结果写入 `ego_fut_preds`。
+
+v12 forward 已计算的 future-Gaussian content 会被 v14 捕获复用，不再对
+25,600 Gaussians 重复执行一次 future feature projection。
 
 配置验证器会检查：
 
@@ -162,10 +168,22 @@ export RESIDUAL_SCALE="0.30,0.20,0.45,0.28,0.60,0.35,0.75,0.43,0.90,0.50,1.05,0.
 
 ## 7. 训练与验证
 
+服务器脚本默认使用已经审计的 checkpoint，因此可直接运行：
+
 ```bash
-export VERIFIED_V12_CHECKPOINT=/absolute/path/to/audited_v12_global_residual.pth
 bash config/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim/train_residual_ddim.sh
 ```
+
+可先检查最终 torchrun 命令而不创建 work-dir 或启动训练：
+
+```bash
+VALIDATE_FIRST=0 DRY_RUN=1 \
+  bash config/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim/train_residual_ddim.sh
+```
+
+脚本自动令 `NPROC` 等于 `GPUS` 中设备数，默认使用 torchrun standalone
+auto-port；显式传入 `--resume-from`、复用已有 checkpoint 目录或 GPU 数量不一致都会
+立即失败。可用 `DDIM_STEPS`、`GAUSSIAN_TOPK` 和 `RESIDUAL_SCALE` 控制新增参数。
 
 launcher 会拒绝包含 `latest.pth` 的 work-dir，防止意外 resume。正式训练前还要用
 同一个真实 fixed mini-batch 对比：

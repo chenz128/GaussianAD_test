@@ -102,7 +102,6 @@ allowed_new_head_keys = {
     'residual_dropout',
     'residual_scale',
     'residual_clip',
-    'diffusion_sigma_max',
     'diffusion_train_t_min',
     'diffusion_sample_steps',
     'num_inference_samples',
@@ -251,6 +250,8 @@ assert torch.count_nonzero(planner.residual_output.weight) == 0
 assert torch.count_nonzero(planner.residual_output.bias) == 0
 assert torch.count_nonzero(planner.candidate_quality_mlp[-1].weight) == 0
 assert planner.fixed_residual_noise.shape == (4, 6, 2)
+expected_ddim_steps = int(os.environ.get('DDIM_STEPS', 4))
+assert planner.diffusion_sample_steps == expected_ddim_steps
 
 # -------------------------------------------------------------------------
 # 3. Diffusion/geometry contracts and exact zero-residual fallback.
@@ -259,8 +260,11 @@ timestep = torch.tensor([0.0, 0.5, 1.0])
 alpha, sigma = planner._diffusion_schedule(timestep)
 assert torch.allclose(sigma[:1], torch.zeros_like(sigma[:1]))
 assert torch.allclose(alpha[:1], torch.ones_like(alpha[:1]))
-assert 0.0 < float(sigma[-1]) < 1.0
-assert torch.all(alpha > 0.0)
+assert torch.allclose(sigma[-1:], torch.ones_like(sigma[-1:]), atol=1e-6)
+assert torch.allclose(alpha[-1:], torch.zeros_like(alpha[-1:]), atol=1e-6)
+assert torch.allclose(alpha.square() + sigma.square(),
+                      torch.ones_like(alpha), atol=1e-6)
+assert torch.all(alpha >= 0.0)
 
 position = torch.randn(2, 3, 6, 2)
 displacement = _positions_to_displacements(position)
@@ -289,6 +293,25 @@ assert risk.shape == (batch, modes, timesteps)
 assert torch.isfinite(tokens).all() and torch.isfinite(risk).all()
 assert (risk >= 0).all() and (risk <= 1).all()
 
+# During training the teacher must not overwrite ego_fut_preds.  This keeps
+# legacy losses and Gaussian-head OccFlow on the exact v12 output; the detached
+# residual trajectory is consumed only by ResidualDDIMPlanLoss.
+baseline_probe = baseline_displacement.clone().requires_grad_(True)
+teacher_output = planner._teacher_forward(
+    {
+        'ego_fut_trajs': baseline_displacement[:, 0].clone(),
+        'ego_fut_masks': torch.ones(batch, timesteps),
+    },
+    baseline_probe,
+    baseline_probe.cumsum(dim=-2),
+    scene)
+assert 'ego_fut_preds' not in teacher_output
+assert torch.allclose(
+    teacher_output['ego_fut_residual_preds'], baseline_probe, atol=1e-6)
+teacher_output['ego_fut_residual_preds'].sum().backward()
+assert baseline_probe.grad is None
+planner.zero_grad(set_to_none=True)
+
 planner.eval()
 with torch.no_grad():
     ddim_output = planner._ddim_sample(
@@ -311,5 +334,9 @@ for key in (
         'find_unused_parameters', 'frozen_modules'):
     if key in baseline:
         print(f'baseline parity {key}:', config[key])
-print('zero-init two-NFE DDIM == baseline (synthetic): max error < 1e-6')
+print('training legacy/OccFlow trajectory == v12 baseline: OK')
+print('new residual loss -> v12 baseline gradient: detached')
+print('zero-terminal-SNR cosine schedule: OK')
+print(f'zero-init {expected_ddim_steps}-NFE DDIM == baseline '
+      '(synthetic): max error < 1e-6')
 print('real fixed-mini-batch identity check is still required before training')

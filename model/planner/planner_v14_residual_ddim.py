@@ -2,10 +2,10 @@
 
 The trusted v12 planner remains the deterministic reference.  This module
 predicts a bounded, per-horizon normalized residual in cumulative-position
-space and never generates a complete trajectory from pure noise.  Training
-uses clean-residual (x0) prediction under a truncated VP path.  Inference uses
-deterministic DDIM with a fixed noise bank and always keeps the unmodified v12
-trajectory as candidate zero.
+space and never generates a complete trajectory from pure noise. Training uses
+clean-residual (x0) prediction under a zero-terminal-SNR cosine VP path.
+Inference uses deterministic DDIM with a fixed noise bank and always keeps the
+unmodified v12 trajectory as candidate zero.
 
 The implementation intentionally avoids a continuous fusion gate.  Candidate
 selection first applies Gaussian/dynamics feasibility checks and then uses a
@@ -125,9 +125,8 @@ class VADHeadFutAttnResidualDDIM(VADHeadFutAttnGlobalResidual):
             residual_dropout=0.1,
             residual_scale=1.0,
             residual_clip=8.0,
-            diffusion_sigma_max=0.5,
             diffusion_train_t_min=0.02,
-            diffusion_sample_steps=2,
+            diffusion_sample_steps=4,
             num_inference_samples=4,
             fixed_noise_seed=3407,
             gaussian_topk=128,
@@ -160,7 +159,6 @@ class VADHeadFutAttnResidualDDIM(VADHeadFutAttnGlobalResidual):
         self.residual_num_heads = int(residual_num_heads)
         self.residual_dropout = float(residual_dropout)
         self.residual_clip = float(residual_clip)
-        self.diffusion_sigma_max = float(diffusion_sigma_max)
         self.diffusion_train_t_min = float(diffusion_train_t_min)
         self.diffusion_sample_steps = int(diffusion_sample_steps)
         self.num_inference_samples = int(num_inference_samples)
@@ -195,8 +193,6 @@ class VADHeadFutAttnResidualDDIM(VADHeadFutAttnGlobalResidual):
         if self.residual_hidden_dims % self.residual_num_heads:
             raise ValueError(
                 'residual_hidden_dims must be divisible by residual_num_heads')
-        if not 0.0 < self.diffusion_sigma_max < 1.0:
-            raise ValueError('diffusion_sigma_max must be in (0, 1)')
         if not 0.0 <= self.diffusion_train_t_min < 1.0:
             raise ValueError('diffusion_train_t_min must be in [0, 1)')
         if self.diffusion_sample_steps < 1:
@@ -207,6 +203,11 @@ class VADHeadFutAttnResidualDDIM(VADHeadFutAttnGlobalResidual):
             raise ValueError('gaussian_topk must be positive')
 
         super().__init__(*args, time_interval=time_interval, **kwargs)
+
+        # Capture the future-Gaussian features already computed by the v12
+        # forward.  Reusing them avoids a second (B,T,25600,D) projection.
+        self._capture_future_content = False
+        self._cached_future_content = None
 
         scale = torch.as_tensor(residual_scale, dtype=torch.float32)
         if scale.numel() == 1:
@@ -359,17 +360,35 @@ class VADHeadFutAttnResidualDDIM(VADHeadFutAttnGlobalResidual):
         return value
 
     def _diffusion_schedule(self, timestep):
-        sigma = self.diffusion_sigma_max * torch.sin(
-            0.5 * math.pi * timestep)
-        alpha = (1.0 - sigma.square()).clamp_min(1e-6).sqrt()
+        # Zero-terminal-SNR cosine VP schedule.  At t=1 alpha=0, sigma=1,
+        # therefore the inference prior is exactly the training marginal and
+        # deterministic DDIM can correctly start from pure Gaussian noise.
+        bounded_timestep = timestep.clamp(0.0, 1.0)
+        angle = 0.5 * math.pi * bounded_timestep
+        alpha = angle.cos().clamp_min(0.0)
+        sigma = angle.sin().clamp(0.0, 1.0)
+        # Keep the boundary exact under fp16/bf16 as well as fp32.
+        alpha = torch.where(
+            bounded_timestep >= 1.0, torch.zeros_like(alpha), alpha)
+        sigma = torch.where(
+            bounded_timestep >= 1.0, torch.ones_like(sigma), sigma)
         return alpha, sigma
 
-    def _build_gaussian_scene(self, results):
-        if self.detach_gaussian_context:
-            with torch.no_grad():
+    def _build_future_gaussians(self, results):
+        outputs = super()._build_future_gaussians(results)
+        if self._capture_future_content:
+            self._cached_future_content = outputs[0]
+        return outputs
+
+    def _build_gaussian_scene(self, results, future_content=None):
+        if future_content is None:
+            if self.detach_gaussian_context:
+                with torch.no_grad():
+                    future_content, _, _ = self._build_future_gaussians(results)
+            else:
                 future_content, _, _ = self._build_future_gaussians(results)
-        else:
-            future_content, _, _ = self._build_future_gaussians(results)
+        elif self.detach_gaussian_context:
+            future_content = future_content.detach()
         gaussian_output = results['gaussian_output']
         batch, num_gaussians = gaussian_output.shape[:2]
         offset = results.get('offset')
@@ -718,13 +737,10 @@ class VADHeadFutAttnResidualDDIM(VADHeadFutAttnGlobalResidual):
         scale = self.residual_scale.to(
             device=reference_position.device,
             dtype=reference_position.dtype)[None, None]
-        # The legacy PlanLoss keeps its original gradient path through the
-        # v12 trajectory.  New residual-specific losses use the numerically
-        # identical detached-reference trajectory below and therefore cannot
-        # alter any baseline parameter through their target/reference path.
-        generated_position = baseline_position + scale * predicted_residual
-        generated_displacement = _positions_to_displacements(
-            generated_position)
+        # The residual branch is composed only with a detached baseline.  The
+        # caller deliberately keeps the parent's ego_fut_preds untouched, so
+        # every legacy loss and OccFlow sees the exact v12 trajectory during
+        # training while the additional loss trains only the new modules.
         residual_position = reference_position + scale * predicted_residual
         residual_displacement = _positions_to_displacements(
             residual_position)
@@ -747,9 +763,6 @@ class VADHeadFutAttnResidualDDIM(VADHeadFutAttnGlobalResidual):
             candidate_position, reference_position,
             candidate_risk, quality_logits)
         return {
-            # Training uses the generated branch directly; argmin must not
-            # block the denoiser gradient.  Inference uses hard selection.
-            'ego_fut_preds': generated_displacement,
             'ego_fut_residual_preds': residual_displacement,
             'ego_fut_ddim_preds': predicted_residual,
             'ego_fut_ddim_targets': target_residual,
@@ -865,11 +878,20 @@ class VADHeadFutAttnResidualDDIM(VADHeadFutAttnGlobalResidual):
 
     def forward(self, results):
         planner_results = self._planner_results(results)
-        if self.detach_baseline:
-            with torch.no_grad():
+        self._capture_future_content = True
+        self._cached_future_content = None
+        try:
+            if self.detach_baseline:
+                with torch.no_grad():
+                    baseline_outputs = super().forward(planner_results)
+            else:
                 baseline_outputs = super().forward(planner_results)
-        else:
-            baseline_outputs = super().forward(planner_results)
+        finally:
+            self._capture_future_content = False
+        future_content = self._cached_future_content
+        self._cached_future_content = None
+        if future_content is None:
+            raise RuntimeError('v12 planner did not build future Gaussians')
         baseline_displacement = torch.nan_to_num(
             baseline_outputs['ego_fut_preds'],
             nan=0.0, posinf=0.0, neginf=0.0)
@@ -885,7 +907,8 @@ class VADHeadFutAttnResidualDDIM(VADHeadFutAttnGlobalResidual):
         else:
             outputs = dict(baseline_outputs)
         outputs['ego_fut_base_preds'] = baseline_displacement
-        scene = self._build_gaussian_scene(planner_results)
+        scene = self._build_gaussian_scene(
+            planner_results, future_content=future_content)
         teacher_outputs = self._teacher_forward(
             planner_results, baseline_displacement, baseline_position, scene)
         if teacher_outputs is not None:
