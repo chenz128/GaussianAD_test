@@ -1,4 +1,4 @@
-"""Metric-aligned safety calibration for the v15 residual DDIM planner."""
+"""Collision-guard supervision for the v15 residual DDIM planner."""
 
 import math
 
@@ -11,11 +11,12 @@ from .residual_ddim_plan_loss import ResidualDDIMPlanLoss
 
 
 class MetricAlignedVehicleSAT(nn.Module):
-    """Create candidate collision labels with the planning metric's geometry.
+    """Create conservative candidate labels with planning-metric geometry.
 
     Important differences from the legacy training SAT loss are deliberate:
 
-    * only nuScenes vehicle categories are included, matching ``box_col``;
+    * both nuScenes vehicle and human categories are included, matching the
+      vehicle-or-pedestrian occupancy used by ``compute_planner_metric_stp3``;
     * the fixed ego centre offset ``(+0.5, 0)`` is applied;
     * timesteps where the GT ego trajectory already collides are excluded, as
       done by ``PlanningMetric.evaluate_coll``;
@@ -31,6 +32,8 @@ class MetricAlignedVehicleSAT(nn.Module):
             safety_margin=0.5,
             target_temperature=0.25,
             collision_margin=0.0,
+            gt_collision_margin=0.0,
+            human_category_ids=(2, 3, 4, 5, 6, 7, 8),
             vehicle_category_ids=(14, 15, 16, 17, 18,
                                   19, 20, 21, 22, 23)):
         super().__init__()
@@ -40,9 +43,13 @@ class MetricAlignedVehicleSAT(nn.Module):
         self.safety_margin = float(safety_margin)
         self.target_temperature = float(target_temperature)
         self.collision_margin = float(collision_margin)
+        self.gt_collision_margin = float(gt_collision_margin)
         self.register_buffer(
             'vehicle_category_ids',
             torch.as_tensor(vehicle_category_ids, dtype=torch.long))
+        self.register_buffer(
+            'human_category_ids',
+            torch.as_tensor(human_category_ids, dtype=torch.long))
 
     @staticmethod
     def _sample_valid(value, batch_index):
@@ -114,11 +121,15 @@ class MetricAlignedVehicleSAT(nn.Module):
             :, t3 + 10:t3 + 10 + self.fut_ts][:, :timesteps]
 
         category = attr_value[:, t3 + 9].round().long()
-        vehicle_ids = self.vehicle_category_ids.to(device=device)
-        vehicle = (category[:, None] == vehicle_ids[None]).any(dim=-1)
-        future_mask = future_mask & vehicle[:, None]
+        collision_ids = torch.cat([
+            self.vehicle_category_ids,
+            self.human_category_ids,
+        ]).to(device=device)
+        collision_category = (
+            category[:, None] == collision_ids[None]).any(dim=-1)
+        future_mask = future_mask & collision_category[:, None]
         if not future_mask.any():
-            return far, gt_far <= self.collision_margin
+            return far, gt_far
 
         boxes = boxes_value
         if boxes is not None and boxes.shape[-1] >= 7:
@@ -200,7 +211,7 @@ class MetricAlignedVehicleSAT(nn.Module):
         clearance = torch.where(
             has_vehicle, clearance,
             clearance.new_full((), 50.0))
-        return clearance[:-1], clearance[-1] <= self.collision_margin
+        return clearance[:-1], clearance[-1]
 
     @torch.no_grad()
     def forward(
@@ -228,10 +239,15 @@ class MetricAlignedVehicleSAT(nn.Module):
             boxes = self._sample_item(
                 gt_boxes, batch_index,
                 candidate_displacement.device, candidate_displacement.dtype)
-            clearance, gt_coll = self._sample_clearance(
+            clearance, gt_clearance = self._sample_clearance(
                 candidate_displacement[batch_index],
                 target_displacement[batch_index],
                 attr, boxes, timesteps)
+            # Candidate labels deliberately include a conservative buffer,
+            # while GT-collision masking follows the unbuffered formal metric.
+            # Sharing one margin would discard precisely the near-miss GT
+            # frames that the safety head needs to learn from.
+            gt_coll = gt_clearance <= self.gt_collision_margin
             gt_collision[batch_index] = gt_coll
             hard = clearance <= self.collision_margin
             soft = torch.sigmoid(
@@ -263,22 +279,47 @@ class SafetyCalibratedResidualDDIMPlanLoss(ResidualDDIMPlanLoss):
             *args,
             safety_calibration_weight=0.25,
             safety_brier_weight=0.25,
+            safety_near_miss_weight=0.25,
             safety_rank_weight=0.1,
-            safety_positive_weight=4.0,
+            safety_positive_weight=12.0,
+            safety_negative_weight=0.25,
+            safety_near_negative_weight=0.75,
+            safety_rank_target_margin=0.05,
+            safety_rank_logit_scale=5.0,
             sat_safety_margin=0.5,
             sat_target_temperature=0.25,
             sat_collision_margin=0.0,
+            sat_gt_collision_margin=0.0,
             **kwargs):
         super().__init__(*args, **kwargs)
         self.safety_calibration_weight = float(safety_calibration_weight)
         self.safety_brier_weight = float(safety_brier_weight)
+        self.safety_near_miss_weight = float(safety_near_miss_weight)
         self.safety_rank_weight = float(safety_rank_weight)
         self.safety_positive_weight = float(safety_positive_weight)
+        self.safety_negative_weight = float(safety_negative_weight)
+        self.safety_near_negative_weight = float(
+            safety_near_negative_weight)
+        self.safety_rank_target_margin = float(safety_rank_target_margin)
+        self.safety_rank_logit_scale = float(safety_rank_logit_scale)
+        if self.safety_positive_weight < 1.0:
+            raise ValueError('safety_positive_weight must be at least one')
+        if self.safety_negative_weight <= 0.0:
+            raise ValueError('safety_negative_weight must be positive')
+        if self.safety_near_negative_weight < 0.0:
+            raise ValueError(
+                'safety_near_negative_weight must be non-negative')
+        if self.safety_rank_target_margin < 0.0:
+            raise ValueError(
+                'safety_rank_target_margin must be non-negative')
+        if self.safety_rank_logit_scale <= 0.0:
+            raise ValueError('safety_rank_logit_scale must be positive')
         self.metric_sat = MetricAlignedVehicleSAT(
             fut_ts=len(self.timestep_weights),
             safety_margin=sat_safety_margin,
             target_temperature=sat_target_temperature,
-            collision_margin=sat_collision_margin)
+            collision_margin=sat_collision_margin,
+            gt_collision_margin=sat_gt_collision_margin)
 
     def _calibration_loss(self, inputs, target, mask, command):
         logits = inputs.get('ego_fut_candidate_collision_logits')
@@ -310,24 +351,38 @@ class SafetyCalibratedResidualDDIMPlanLoss(ResidualDDIMPlanLoss):
             fut_valid_flag=inputs['fut_valid_flag'])
         soft_target = sat['soft_target'].to(selected_logits.dtype)
         hard_target = sat['hard_target']
+        hard_float = hard_target.to(selected_logits.dtype)
         valid = sat['valid'].to(selected_logits.dtype)
 
         timestep_weight = self.timestep_weights[
             :selected_logits.shape[-1]].to(
                 device=selected_logits.device, dtype=selected_logits.dtype)
         base_weight = valid * timestep_weight[None, None]
-        positive_weight = (
-            1.0
-            + (self.safety_positive_weight - 1.0) * soft_target)
-        bce_weight = base_weight * positive_weight
+        # The primary output predicts conservative hard collision, not the
+        # previous mixture of collision and near-miss probabilities.  Far safe
+        # negatives are down-weighted, while near misses remain useful hard
+        # negatives and every true positive is retained.
+        negative_weight = (
+            self.safety_negative_weight
+            + self.safety_near_negative_weight * soft_target)
+        class_weight = torch.where(
+            hard_target,
+            hard_float.new_full((), self.safety_positive_weight),
+            negative_weight)
+        bce_weight = base_weight * class_weight
         element_bce = F.binary_cross_entropy_with_logits(
-            selected_logits, soft_target, reduction='none')
+            selected_logits, hard_float, reduction='none')
         bce = self._safe_divide(
             (element_bce * bce_weight).sum(), bce_weight.sum())
 
         probability = selected_logits.sigmoid()
+        near_miss_bce = self._safe_divide(
+            (F.binary_cross_entropy_with_logits(
+                selected_logits, soft_target, reduction='none')
+             * base_weight).sum(),
+            base_weight.sum())
         brier = self._safe_divide(
-            ((probability - soft_target).square() * base_weight).sum(),
+            ((probability - hard_float).square() * base_weight).sum(),
             base_weight.sum())
 
         valid_bool = valid > 0
@@ -336,20 +391,47 @@ class SafetyCalibratedResidualDDIMPlanLoss(ResidualDDIMPlanLoss):
         target_risk = target_for_max.max(dim=-1).values
         predicted_risk = probability_for_max.max(dim=-1).values
         best_candidate = target_risk.argmin(dim=-1)
-        valid_sample = (valid.sum(dim=(-1, -2)) > 0).to(logits.dtype)
-        rank_element = F.cross_entropy(
-            -5.0 * predicted_risk,
-            best_candidate,
-            reduction='none')
-        rank = self._safe_divide(
-            (rank_element * valid_sample).sum(), valid_sample.sum())
 
-        calibration = bce + self.safety_brier_weight * brier
+        # Pairwise ranking ignores target ties.  The previous argmin+CE loss
+        # made candidate zero the target whenever equally safe candidates tied,
+        # creating a systematic index bias rather than a safety preference.
+        candidate_count = target_risk.shape[-1]
+        if candidate_count > 1:
+            pair_index = torch.triu_indices(
+                candidate_count, candidate_count, offset=1,
+                device=target_risk.device)
+            target_difference = (
+                target_risk[:, pair_index[0]]
+                - target_risk[:, pair_index[1]])
+            predicted_difference = (
+                predicted_risk[:, pair_index[0]]
+                - predicted_risk[:, pair_index[1]])
+            candidate_valid = valid.sum(dim=-1) > 0
+            pair_valid = (
+                candidate_valid[:, pair_index[0]]
+                & candidate_valid[:, pair_index[1]]
+                & (target_difference.abs()
+                   >= self.safety_rank_target_margin))
+            target_sign = target_difference.sign()
+            rank_element = F.softplus(
+                -self.safety_rank_logit_scale
+                * target_sign * predicted_difference)
+            rank = self._safe_divide(
+                (rank_element * pair_valid.to(rank_element.dtype)).sum(),
+                pair_valid.to(rank_element.dtype).sum())
+        else:
+            rank = selected_logits.new_zeros(())
+
+        calibration = (
+            bce
+            + self.safety_near_miss_weight * near_miss_bce
+            + self.safety_brier_weight * brier)
         extra = (
             self.safety_calibration_weight * calibration
             + self.safety_rank_weight * rank)
         return extra, {
             'bce': bce,
+            'near_miss_bce': near_miss_bce,
             'brier': brier,
             'rank': rank,
             'probability': probability,
@@ -394,6 +476,10 @@ class SafetyCalibratedResidualDDIMPlanLoss(ResidualDDIMPlanLoss):
             sample_valid.to(valid.dtype).sum())
 
         selected_collision_rate = hard_rate.new_zeros(())
+        legacy_selected_collision_rate = hard_rate.new_zeros(())
+        selection_changed_rate = hard_rate.new_zeros(())
+        informative_rate = hard_rate.new_zeros(())
+        override_rate = hard_rate.new_zeros(())
         command_baseline_rate = hard_rate.new_zeros(())
         all_infeasible_rate = hard_rate.new_zeros(())
         selected_histogram = []
@@ -410,6 +496,39 @@ class SafetyCalibratedResidualDDIMPlanLoss(ResidualDDIMPlanLoss):
             selected_collision_rate = self._safe_divide(
                 (selected_collision * sample_valid.to(valid.dtype)).sum(),
                 sample_valid.to(valid.dtype).sum())
+
+            legacy_selected = inputs.get('ego_fut_legacy_selected_index')
+            if legacy_selected is not None:
+                legacy_for_command = legacy_selected[
+                    torch.arange(batch, device=legacy_selected.device),
+                    mode_index].clamp(0, trajectory_collision.shape[1] - 1)
+                legacy_collision = trajectory_collision.gather(
+                    1, legacy_for_command[:, None]).squeeze(1).to(valid.dtype)
+                legacy_selected_collision_rate = self._safe_divide(
+                    (legacy_collision * sample_valid.to(valid.dtype)).sum(),
+                    sample_valid.to(valid.dtype).sum())
+                selection_changed_rate = self._safe_divide(
+                    (((selected_for_command != legacy_for_command).to(valid.dtype))
+                     * sample_valid.to(valid.dtype)).sum(),
+                    sample_valid.to(valid.dtype).sum())
+
+            informative = inputs.get(
+                'ego_fut_candidate_safety_informative')
+            if informative is not None:
+                informative_for_command = informative[
+                    torch.arange(batch, device=informative.device), mode_index]
+                informative_rate = self._safe_divide(
+                    (informative_for_command.to(valid.dtype)
+                     * sample_valid.to(valid.dtype)).sum(),
+                    sample_valid.to(valid.dtype).sum())
+            override = inputs.get('ego_fut_candidate_safety_override')
+            if override is not None:
+                override_for_command = override[
+                    torch.arange(batch, device=override.device), mode_index]
+                override_rate = self._safe_divide(
+                    (override_for_command.to(valid.dtype)
+                     * sample_valid.to(valid.dtype)).sum(),
+                    sample_valid.to(valid.dtype).sum())
             command_baseline_rate = self._safe_divide(
                 ((selected_for_command == 0).to(valid.dtype)
                  * sample_valid.to(valid.dtype)).sum(),
@@ -432,6 +551,8 @@ class SafetyCalibratedResidualDDIMPlanLoss(ResidualDDIMPlanLoss):
         log_values.update({
             'loss_plan_safety_calibrated_ddim': total.detach().item(),
             'loss_safety_calibration_bce': details['bce'].detach().item(),
+            'loss_safety_near_miss_bce': (
+                details['near_miss_bce'].detach().item()),
             'loss_safety_calibration_brier': details['brier'].detach().item(),
             'loss_safety_candidate_rank': details['rank'].detach().item(),
             'sat_candidate_collision_rate': hard_rate.detach().item(),
@@ -441,7 +562,16 @@ class SafetyCalibratedResidualDDIMPlanLoss(ResidualDDIMPlanLoss):
                 oracle_collision_rate.detach().item()),
             'sat_selected_trajectory_collision_rate': (
                 selected_collision_rate.detach().item()),
+            'sat_legacy_selected_trajectory_collision_rate': (
+                legacy_selected_collision_rate.detach().item()),
+            'sat_selected_minus_legacy_collision_rate': (
+                (selected_collision_rate
+                 - legacy_selected_collision_rate).detach().item()),
             'safety_probability_mean': probability_mean.detach().item(),
+            'safety_selection_changed_from_v14_rate': (
+                selection_changed_rate.detach().item()),
+            'safety_informative_rate': informative_rate.detach().item(),
+            'safety_override_rate': override_rate.detach().item(),
             'safety_command_baseline_selected_rate': (
                 command_baseline_rate.detach().item()),
             'safety_all_infeasible_rate': all_infeasible_rate.detach().item(),

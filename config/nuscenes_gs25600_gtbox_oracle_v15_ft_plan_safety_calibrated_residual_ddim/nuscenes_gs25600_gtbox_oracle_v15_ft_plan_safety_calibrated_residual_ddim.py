@@ -1,11 +1,13 @@
-"""v15: v14 residual DDIM + metric-aligned safety calibration/re-ranking.
+"""v15 revised: v14 residual DDIM + collision-guarded Pareto selection.
 
 This is a strict extension of the audited v12 global-residual baseline.  Every
 dataset/model setting outside ``planner_head``, every legacy loss, optimizer,
 LR schedule, epoch count, evaluation option and freeze setting is inherited
 without modification.  For a fair controlled comparison with v14, weights are
 initialized from the same audited v12-fixempty epoch-15 baseline.  Both the
-residual-DDIM modules and the v15 safety modules are new parameters.
+residual-DDIM modules and the v15 safety modules are new parameters.  The
+learned safety head is a high-confidence veto only; v14 Gaussian feasibility
+and its L2-aware candidate cost remain authoritative.
 """
 
 import os
@@ -82,19 +84,31 @@ model = dict(
         selector_max_normalized_residual=6.0,
         selector_max_acceleration=8.0,
         selector_max_jerk=15.0,
-        # New v15 candidate-count-invariant temporal safety head.
+        # Collision guard.  Training uses the exact fixed-noise 4-NFE DDIM
+        # proposals seen at inference (baseline + four candidates).  Dropout
+        # is disabled and RNG state is restored around the detached sampler.
         safety_hidden_dims=96,
         safety_num_layers=2,
         safety_num_heads=4,
-        safety_dropout=0.1,
+        safety_dropout=0.0,
         safety_probability_threshold=float(
-            os.environ.get('SAFETY_PROB_THRESHOLD', 0.5)),
+            os.environ.get('SAFETY_PROB_THRESHOLD', 0.60)),
+        safety_safe_probability_threshold=float(
+            os.environ.get('SAFETY_SAFE_PROB_THRESHOLD', 0.30)),
         safety_cvar_fraction=1.0 / 3.0,
         safety_max_weight=1.0,
         safety_cvar_weight=0.5,
-        safety_priority_weight=20.0,
-        safety_tiebreak_weight=0.1,
+        # v14 cost is primary; learned safety only breaks near ties and may
+        # override a high-confidence unsafe -> safe transition.
+        safety_tiebreak_weight=0.01,
         safety_baseline_margin=0.02,
+        safety_override_margin=0.15,
+        safety_min_informative_spread=0.05,
+        # A generated candidate cannot regress Gaussian risk relative to a
+        # feasible deterministic baseline beyond these tiny tolerances.
+        safety_gaussian_risk_mean_tolerance=0.01,
+        safety_gaussian_risk_max_tolerance=0.01,
+        safety_training_candidate_count=5,
     ),
 )
 
@@ -114,14 +128,25 @@ _safety_calibrated_loss = dict(
     max_acceleration=8.0,
     max_jerk=15.0,
     timestep_weights=(0.5, 0.75, 1.0, 1.0, 1.25, 1.5),
-    # New detached metric-aligned calibration objective.
+    # Detached collision-guard objective.  Hard collision is primary; a dense
+    # near-miss auxiliary target supplies useful signal in sparse scenes.
     safety_calibration_weight=0.25,
     safety_brier_weight=0.25,
-    safety_rank_weight=0.1,
-    safety_positive_weight=4.0,
-    sat_safety_margin=0.5,
+    safety_near_miss_weight=0.25,
+    safety_rank_weight=0.05,
+    safety_positive_weight=12.0,
+    safety_negative_weight=0.25,
+    safety_near_negative_weight=0.75,
+    safety_rank_target_margin=0.05,
+    safety_rank_logit_scale=5.0,
+    # Include a 0.25 m conservative buffer for the official 0.5 m rasterized
+    # box-collision metric; the 0.75 m target trains boundary awareness.
+    sat_safety_margin=0.75,
     sat_target_temperature=0.25,
-    sat_collision_margin=0.0)
+    sat_collision_margin=0.25,
+    # Formal metric masks only truly colliding GT frames; do not let the
+    # conservative candidate buffer erase near-miss supervision.
+    sat_gt_collision_margin=0.0)
 
 # Preserve every baseline loss and append one self-contained v15 loss.  The
 # latter includes the exact v14 residual objective plus safety calibration.
@@ -141,6 +166,10 @@ loss_input_convertion = dict(
         'ego_fut_candidate_collision_logits'),
     ego_fut_candidate_feasible='ego_fut_candidate_feasible',
     ego_fut_selected_index='ego_fut_selected_index',
+    ego_fut_legacy_selected_index='ego_fut_legacy_selected_index',
+    ego_fut_candidate_safety_informative=(
+        'ego_fut_candidate_safety_informative'),
+    ego_fut_candidate_safety_override='ego_fut_candidate_safety_override',
     ego_fut_generated_risk='ego_fut_generated_risk',
     # PlanLoss historically reads these annotations from ``metas`` itself.
     # The standalone v15 calibration loss needs explicit top-level mappings;

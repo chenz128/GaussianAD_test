@@ -5,12 +5,12 @@ REPO="${REPO:-/data/xinyao/navsim_workspace/GaussianAD}"
 PYTHON="${PYTHON:-/data/chenz/conda_env/splatting/bin/python}"
 CONFIG="config/nuscenes_gs25600_gtbox_oracle_v15_ft_plan_safety_calibrated_residual_ddim/nuscenes_gs25600_gtbox_oracle_v15_ft_plan_safety_calibrated_residual_ddim.py"
 VERIFIED_V12_CHECKPOINT="${VERIFIED_V12_CHECKPOINT:-${REPO}/exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/checkpoints/epoch_15.pth}"
-WORK_DIR="${WORK_DIR:-exp/nuscenes_gs25600_v15_ft_plan_safety_calibrated_residual_ddim}"
+WORK_DIR="${WORK_DIR:-exp/nuscenes_gs25600_v15b_ft_plan_collision_guarded_residual_ddim}"
 EPOCH="${EPOCH:-15}"
 CHECKPOINT="${CHECKPOINT:-${WORK_DIR}/checkpoints/epoch_${EPOCH}.pth}"
 LOG_NAME="${LOG_NAME:-test_epoch${EPOCH}}"
 GPUS="${GPUS:-4,5,6,7}"
-MASTER_PORT="${MASTER_PORT:-20795}"
+MASTER_PORT="${MASTER_PORT:-20796}"
 export VERIFIED_V12_CHECKPOINT
 
 if [[ ! -d "${REPO}" || ! -x "${PYTHON}" ]]; then
@@ -39,10 +39,10 @@ fi
 mkdir -p "${WORK_DIR}"
 
 {
-  echo "=== v15 safety-calibrated residual DDIM test $(date '+%Y-%m-%d %H:%M:%S') ==="
+  echo "=== v15b collision-guarded residual DDIM test $(date '+%Y-%m-%d %H:%M:%S') ==="
   echo "config     : ${CONFIG}"
   echo "checkpoint : ${CHECKPOINT}"
-  echo "threshold  : ${SAFETY_PROB_THRESHOLD:-0.5}"
+  echo "thresholds : unsafe=${SAFETY_PROB_THRESHOLD:-0.60}, safe=${SAFETY_SAFE_PROB_THRESHOLD:-0.30}"
   echo "gpus       : ${GPUS} (port=${MASTER_PORT})"
 } | tee -a "${WORK_DIR}/launch_history.log"
 

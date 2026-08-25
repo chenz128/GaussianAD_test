@@ -121,12 +121,17 @@ v15_only_head_keys = {
     'safety_num_heads',
     'safety_dropout',
     'safety_probability_threshold',
+    'safety_safe_probability_threshold',
     'safety_cvar_fraction',
     'safety_max_weight',
     'safety_cvar_weight',
-    'safety_priority_weight',
     'safety_tiebreak_weight',
     'safety_baseline_margin',
+    'safety_override_margin',
+    'safety_min_informative_spread',
+    'safety_gaussian_risk_mean_tolerance',
+    'safety_gaussian_risk_max_tolerance',
+    'safety_training_candidate_count',
 }
 for key in sorted(v14_head.keys()):
     if key != 'type':
@@ -149,11 +154,17 @@ for key, value in v14_residual_loss.items():
 allowed_v15_loss_keys = {
     'safety_calibration_weight',
     'safety_brier_weight',
+    'safety_near_miss_weight',
     'safety_rank_weight',
     'safety_positive_weight',
+    'safety_negative_weight',
+    'safety_near_negative_weight',
+    'safety_rank_target_margin',
+    'safety_rank_logit_scale',
     'sat_safety_margin',
     'sat_target_temperature',
     'sat_collision_margin',
+    'sat_gt_collision_margin',
 }
 unexpected_v15_loss = (
     set(v15_losses[-1].keys())
@@ -179,6 +190,9 @@ _assert_equal(
     {
         'ego_fut_candidate_collision_logits',
         'ego_fut_candidate_feasible',
+        'ego_fut_legacy_selected_index',
+        'ego_fut_candidate_safety_informative',
+        'ego_fut_candidate_safety_override',
         'fut_valid_flag',
     },
     'loss inputs added beyond v14')
@@ -229,6 +243,7 @@ initialization_seed = 3407
 torch.manual_seed(initialization_seed)
 v14_planner = MODELS.build(v14_head)
 v14_planner.init_weights()
+v14_post_init_rng = torch.random.get_rng_state().clone()
 v14_load = v14_planner.load_state_dict(planner_state, strict=False)
 v14_state = v14_planner.state_dict()
 v14_new_keys = set(v14_state) - set(baseline_state)
@@ -251,6 +266,7 @@ if illegal_v14_new:
 torch.manual_seed(initialization_seed)
 planner = MODELS.build(v15_head)
 planner.init_weights()
+v15_post_init_rng = torch.random.get_rng_state().clone()
 v15_load = planner.load_state_dict(planner_state, strict=False)
 v15_state = planner.state_dict()
 v15_new_keys = set(v15_state) - set(baseline_state)
@@ -285,6 +301,8 @@ for key, value in v14_state.items():
     if key not in v15_state or not torch.equal(v15_state[key], value):
         raise AssertionError(
             f'v15 DDIM initialization differs from same-seed v14: {key}')
+assert torch.equal(v15_post_init_rng, v14_post_init_rng), (
+    'v15 safety initialization changed the post-init RNG stream')
 assert torch.count_nonzero(planner.residual_output.weight) == 0
 assert torch.count_nonzero(planner.residual_output.bias) == 0
 assert torch.count_nonzero(planner.candidate_quality_mlp[-1].weight) == 0
@@ -377,6 +395,74 @@ assert torch.equal(old_selection['selected'], new_selection['selected'])
 assert not new_selection['safety_informative'].any()
 assert torch.isfinite(new_selection['costs']).all()
 
+# Safety/ranking supervision must see the exact candidate distribution used
+# at evaluation, while preserving every module training flag and RNG stream.
+teacher_stub = {
+    'ego_fut_generated_risk': candidate_risk[:, :, 0].clone(),
+}
+planner.train()
+residual_modules = {}
+for child_name in VADHeadFutAttnResidualDDIM._residual_child_names():
+    child = getattr(planner, child_name)
+    for child_module in child.modules():
+        residual_modules[id(child_module)] = child_module
+training_flags_before = {
+    module_id: module.training
+    for module_id, module in residual_modules.items()
+}
+teacher_rng_before = torch.random.get_rng_state().clone()
+inference_matched = planner._replace_teacher_safety_candidates(
+    teacher_stub, baseline_displacement, baseline_position, synthetic_scene)
+assert torch.equal(torch.random.get_rng_state(), teacher_rng_before)
+assert all(
+    module.training == training_flags_before[module_id]
+    for module_id, module in residual_modules.items())
+assert inference_matched['ego_fut_candidates'].shape[2] == candidates
+assert torch.allclose(
+    inference_matched['ego_fut_candidates'],
+    ddim_output['ego_fut_candidates'], atol=1e-6)
+assert torch.allclose(
+    inference_matched['ego_fut_candidate_risk'],
+    ddim_output['ego_fut_candidate_risk'], atol=1e-6)
+assert inference_matched['ego_fut_candidate_quality_logits'].requires_grad
+assert torch.equal(
+    inference_matched['ego_fut_generated_risk'],
+    teacher_stub['ego_fut_generated_risk'])
+planner.eval()
+
+# A learned low probability may never bypass the inherited Gaussian-risk hard
+# guard.  Candidate one has attractive quality but violates risk threshold.
+guard_position = baseline_position[:, :, None].expand(
+    -1, -1, candidates, -1, -1).clone()
+guard_risk = torch.full_like(candidate_risk, 0.05)
+guard_risk[:, :, 1] = 0.80
+guard_quality = torch.zeros_like(quality_logits)
+guard_quality[:, :, 1] = 10.0
+guard_logits = torch.full_like(candidate_risk, 2.0)
+guard_logits[:, :, 0] = -2.0
+guard_logits[:, :, 1] = -8.0
+guard_selection = planner._safety_first_selection(
+    guard_position, baseline_position,
+    guard_risk, guard_quality, guard_logits)
+assert not (guard_selection['selected'] == 1).any()
+assert not guard_selection['legacy_feasible'][:, :, 1].any()
+
+# When a generated candidate is hard-feasible, Gaussian-risk non-regressive,
+# learned-safe, and decisively better under the v14 quality cost, it remains
+# selectable so the collision guard does not collapse L2 to baseline-only.
+quality_position = guard_position.clone()
+quality_risk = torch.full_like(candidate_risk, 0.05)
+quality_logits = torch.zeros_like(quality_logits)
+quality_logits[:, :, 1] = 10.0
+quality_safety_logits = torch.full_like(candidate_risk, 2.0)
+quality_safety_logits[:, :, 0] = -2.0
+quality_safety_logits[:, :, 1] = -4.0
+quality_selection = planner._safety_first_selection(
+    quality_position, baseline_position,
+    quality_risk, quality_logits, quality_safety_logits)
+assert (quality_selection['selected'] == 1).all()
+assert quality_selection['risk_non_regressive'][:, :, 1].all()
+
 
 # -------------------------------------------------------------------------
 # 4. Metric-aligned SAT label contracts and calibration gradient isolation.
@@ -408,7 +494,21 @@ pedestrian_attr[..., 27] = 2.0
 pedestrian_output = sat(
     candidate_displacement, safe_target, ego_mask,
     pedestrian_attr, boxes, torch.ones(1, dtype=torch.bool))
-assert not pedestrian_output['hard_target'].any()
+assert pedestrian_output['hard_target'][0, 0].any()
+assert not pedestrian_output['hard_target'][0, 1].any()
+
+# The candidate buffer must not leak into formal GT-collision masking.  At the
+# first step these boxes have positive clearance below 0.25 m: the candidate is
+# conservatively positive, while the GT step remains valid supervision.
+near_boxes = boxes.clone()
+near_boxes[..., 0] = 5.2
+buffered_sat = MetricAlignedVehicleSAT(
+    collision_margin=0.25, gt_collision_margin=0.0)
+buffered_output = buffered_sat(
+    candidate_displacement, candidate_displacement[:, 0], ego_mask,
+    attr, near_boxes, torch.ones(1, dtype=torch.bool))
+assert buffered_output['hard_target'][0, 0, 0]
+assert buffered_output['valid'][0, 0, 0] == 1
 
 gt_collision_output = sat(
     candidate_displacement, candidate_displacement[:, 0], ego_mask,
@@ -435,6 +535,12 @@ loss_inputs = {
     'ego_fut_candidate_quality_logits': torch.zeros(1, modes, 2),
     'ego_fut_candidate_collision_logits': collision_logits,
     'ego_fut_selected_index': torch.zeros(1, modes, dtype=torch.long),
+    'ego_fut_legacy_selected_index': torch.zeros(
+        1, modes, dtype=torch.long),
+    'ego_fut_candidate_safety_informative': torch.zeros(
+        1, modes, dtype=torch.bool),
+    'ego_fut_candidate_safety_override': torch.zeros(
+        1, modes, dtype=torch.bool),
     'ego_fut_gt': safe_target,
     'ego_fut_masks': ego_mask,
     'ego_fut_cmd': torch.tensor([[1.0, 0.0, 0.0]]),
@@ -450,6 +556,8 @@ assert torch.isfinite(collision_logits.grad).all()
 # construction and the v14 ranking target, so calibration cannot move them.
 assert candidate_probe.grad is None
 assert 'sat_oracle_all_candidates_collision_rate' in probe_logs
+assert 'sat_selected_minus_legacy_collision_rate' in probe_logs
+assert 'safety_selection_changed_from_v14_rate' in probe_logs
 
 missing_annotation_inputs = dict(loss_inputs)
 missing_annotation_inputs.pop('gt_boxes')
@@ -478,7 +586,10 @@ for key in (
         print(f'baseline parity {key}:', config[key])
 print('zero-logit v15 selection == v14 selection: OK')
 print('trajectory-aligned Gaussian safety branch: OK')
-print('vehicle-only SAT + GT-collision masking: OK')
+print('vehicle+human conservative SAT + GT-collision masking: OK')
 print('metric SAT annotation mapping/fail-fast: OK')
 print('safety calibration gradient -> safety head only: OK')
 print('same-seed v14/v15 DDIM initialization parity: OK')
+print('same-seed post-init RNG parity: OK')
+print('Gaussian hard guard cannot be bypassed by safety logits: OK')
+print('safe quality-improving generated candidate remains selectable: OK')

@@ -78,11 +78,38 @@ if mask.shape != target.shape[:2]:
         f'ego mask/target mismatch: {tuple(mask.shape)} vs '
         f'{tuple(target.shape)}')
 
+attr = _tensor(
+    mapped['attr_labels_planner'], 'attr_labels_planner').float()
+while attr.dim() > 3 and attr.shape[1] == 1:
+    attr = attr.squeeze(1)
+if attr.dim() == 2:
+    attr = attr[None]
+if attr.dim() != 3 or attr.shape[-1] < 34:
+    raise ValueError(
+        f'unexpected attr_labels_planner shape: {tuple(attr.shape)}')
+category_ids = set(attr[..., 27].round().long().reshape(-1).tolist())
+vehicle_ids = set(range(14, 24))
+human_ids = set(range(2, 9))
+observed_vehicle_ids = sorted(category_ids & vehicle_ids)
+observed_human_ids = sorted(category_ids & human_ids)
+if not observed_vehicle_ids:
+    raise AssertionError(
+        'real-data audit did not observe any nuScenes vehicle category')
+# A single scene is not guaranteed to contain pedestrians.  The strict
+# validator exercises category id 2 with deterministic geometry; this real
+# batch smoke test verifies the collated field/layout and reports whether a
+# human happens to be present instead of incorrectly blocking startup.
+
 # Candidate zero is GT and candidate one is a deliberately shifted trajectory;
 # this checks annotation decoding and SAT tensor contracts, not model quality.
 candidates = torch.stack([target, target.clone()], dim=1)
 candidates[:, 1, 0, 1] += 10.0
-sat = MetricAlignedVehicleSAT()
+safety_loss_cfg = config.loss.loss_cfgs[-1]
+sat = MetricAlignedVehicleSAT(
+    safety_margin=safety_loss_cfg.sat_safety_margin,
+    target_temperature=safety_loss_cfg.sat_target_temperature,
+    collision_margin=safety_loss_cfg.sat_collision_margin,
+    gt_collision_margin=safety_loss_cfg.sat_gt_collision_margin)
 sat_output = sat(
     candidates,
     target,
@@ -104,3 +131,6 @@ print('batch keys:', ', '.join(sorted(batch.keys())))
 print('ego target shape:', tuple(target.shape))
 print('SAT valid elements:', int(sat_output['valid'].sum().item()))
 print('SAT hard collisions:', int(sat_output['hard_target'].sum().item()))
+print('observed collision category ids:', sorted(category_ids))
+print('observed vehicle category ids:', observed_vehicle_ids)
+print('observed human category ids:', observed_human_ids or 'none in this batch')
