@@ -1,53 +1,57 @@
 """
 =============================================================================
- time_aligned_gaussian 模型可视化启动命令（1 个连续场景 × 40 帧 -> GIF + MP4）
+ 三算法横向对比可视化启动命令（各 10 个场景，场景索引一致便于对比）
 =============================================================================
-cd /data/xinyao/navsim_workspace/GaussianAD
-
-/data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
-    --py-config /data/xinyao/navsim_workspace/GaussianAD/config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_time_aligned_gaussian/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_time_aligned_gaussian.py \
-    --work-dir /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_time_aligned_gaussian \
-    --resume-from /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_time_aligned_gaussian/checkpoints/epoch_15.pth \
-    --vis-index 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 \
-    --num-samples 0 \
-    --start-index 0 \
-    --no-png \
-    --out-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_time_aligned_gaussian/occ_map_plan_vis
-
 说明：
-- 用 --vis-index 0..39 显式选择同一场景连续 40 帧（保持时间连续性），并配合
-  --num-samples 0 禁用主循环的样本截断（脚本默认 --num-samples 4，不设会只跑
-  前 4 帧！）。
-- 每场景 40 帧 -> 合成 1 个 GIF（350ms/帧，可用 --gif-ms 调）+ 1 个 MP4。
-- --no-png 在合成动画后删除中间单帧 PNG，只保留 GIF/MP4。
-- 更简单的等价方式：--scenes 1 --frames-per-scene 40（自动取场景，免手写索引）。
+- 三个实验均使用各自 checkpoints/epoch_15.pth。
+- 10 个场景索引 = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135]，均匀覆盖
+  验证集 150 个场景（0-149）。每个场景产出：七图 GIF/MP4 + 轨迹 GIF/MP4
+  + 每帧轨迹 PNG（七图 PNG 默认清理，--keep-seven-png 可保留）。
+- 每个实验以独立 --out-dir 保存，输出目录结构相同
+  （scene_<token>/），便于横向对比。
 
-=============================================================================
-
-=============================================================================
- futattn_global_residual 模型可视化启动命令（10 个连续场景 × 40 帧 -> GIF + MP4）
-=============================================================================
+[1] nuscenes_gs25600_base_plan_new（base planner 基线）
 cd /data/xinyao/navsim_workspace/GaussianAD
-
 /data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
-    --py-config /data/xinyao/navsim_workspace/GaussianAD/config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futattn_global_residual/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futattn_global_residual.py \
-    --work-dir /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual \
-    --resume-from /data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/checkpoints/epoch_15.pth \
-    --scenes 10 \
+    --py-config config/nuscenes_gs25600_base_plan_new/nuscenes_gs25600_base_plan_new.py \
+    --work-dir exp/nuscenes_gs25600_base_plan_new \
+    --resume-from exp/nuscenes_gs25600_base_plan_new/checkpoints/epoch_15.pth \
+    --scene-indices 0 15 30 45 60 75 90 105 120 135 \
+    --device cuda:0 \
     --gif-ms 120 \
-    --no-png \
-    --out-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/occ_map_plan_vis
+    --out-dir exp/nuscenes_gs25600_base_plan_new/vis_occ_map_plan_results_cmp
 
-说明：
-- --scenes 10：自动取前 10 个完整场景，每场景固定取前 40 帧（数据集中每场景
-  ~40 帧，个别 41/39 帧会自动截断到 40），10 个场景共产出 400 帧。
-- 每场景 40 帧 -> 自动合成 1 个 GIF（40 帧，120ms/帧）+ 1 个 MP4，保存于
-  <out-dir>/scene_<scene_token>/ 下，输出时不保留中间单帧 PNG（--no-png）。
-- 脚本按 scene_token 分组、跨场景切换时自动落盘动画，共产出 10 个 GIF + 10 个 MP4。
-- 若需自定义帧数/场景数：--scenes N --frames-per-scene M（需先加参数），
-  或直接给 --vis-index（须手动列出所有帧索引）。
+[2] nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual（v12 fut-attn global-residual）
+cd /data/xinyao/navsim_workspace/GaussianAD
+/data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
+    --py-config config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futattn_global_residual/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futattn_global_residual.py \
+    --work-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual \
+    --resume-from exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/checkpoints/epoch_15.pth \
+    --scene-indices 0 15 30 45 60 75 90 105 120 135 \
+    --device cuda:1 \
+    --gif-ms 120 \
+    --out-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/vis_occ_map_plan_results_cmp
+
+[3] nuscenes_gs25600_v14_ft_plan_residual_ddim（v14 residual-DDIM，需 VERIFIED_V12_CHECKPOINT）
+cd /data/xinyao/navsim_workspace/GaussianAD
+export VERIFIED_V12_CHECKPOINT=/data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/checkpoints/epoch_15.pth
+/data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
+    --py-config config/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim.py \
+    --work-dir exp/nuscenes_gs25600_v14_ft_plan_residual_ddim \
+    --resume-from exp/nuscenes_gs25600_v14_ft_plan_residual_ddim/checkpoints/epoch_15.pth \
+    --scene-indices 0 15 30 45 60 75 90 105 120 135 \
+    --device cuda:2 \
+    --gif-ms 120 \
+    --out-dir exp/nuscenes_gs25600_v14_ft_plan_residual_ddim/vis_occ_map_plan_results_cmp
+
+常用参数：
+- --scene-indices A B C：自定义场景序号（--list-scenes 可查看全部 150 个场景序号）
+- --scenes N [--scene-start S]：连续 N 个场景
+- --gif-ms：GIF 每帧时长（默认 350ms）
+- --no-video：只保存 PNG 不合成视频；--keep-seven-png：保留七图帧 PNG
 =============================================================================
 """
+
 #!/usr/bin/env python3
 
 # 确保 import model / dataset 解析到当前工作区（而非 sys.path 里残留的
@@ -155,6 +159,13 @@ def parse_args():
     parser.add_argument("--scene-start", type=int, default=0,
                         help="Start scene index (0-based). Combined with --scenes N, visualizes "
                              "scenes [scene_start, scene_start+N).")
+    parser.add_argument("--scene-indices", type=int, nargs="+", default=None,
+                        help="Custom scene indices (0-based, see --list-scenes) to visualize in the "
+                             "given order, e.g. --scene-indices 3 7 12. Each selected scene yields "
+                             "its own GIF/MP4; overrides --scenes / --vis-index.")
+    parser.add_argument("--list-scenes", action="store_true",
+                        help="Print all scene indices (idx: scene_token: frames) and exit without "
+                             "loading the model.")
     parser.add_argument("--start-index", type=int, default=0, help="Start index in the chosen dataloader.")
     parser.add_argument("--score-thresh", type=float, default=0.35, help="Map prediction score threshold.")
     parser.add_argument("--device", default="cuda:0", help="Device for inference.")
@@ -164,6 +175,9 @@ def parse_args():
                         help="Only save per-frame PNGs; skip scene GIF/MP4 synthesis.")
     parser.add_argument("--no-png", action="store_true",
                         help="Keep only GIF/MP4; delete per-frame PNGs after scene synthesis.")
+    parser.add_argument("--keep-seven-png", action="store_true",
+                        help="Keep per-frame 7-panel PNGs after scene animation synthesis "
+                             "(default: remove them, keeping only the 7-panel videos).")
     parser.add_argument("--grid-shape", type=int, nargs=3, default=(200, 200, 16), help="Occupancy grid shape as X Y Z.")
     parser.add_argument("--empty-label", type=int, default=17, help="Class id used for empty voxels.")
     return parser.parse_args()
@@ -553,7 +567,53 @@ def _save_combined_figure(
     plt.close(fig)
 
 
-def _save_scene_gif(scene_token, image_paths, scene_dir, gif_ms, first_batch_index, last_batch_index):
+def _save_traj_figure(
+    gt_map,
+    pred_map,
+    gt_traj,
+    pred_traj,
+    sample_token,
+    out_file,
+    x_range,
+    y_range,
+    command_idx,
+    dpi,
+):
+    """Standalone trajectory comparison figure: GT vs Pred plan only."""
+    fig = plt.figure(figsize=(8, 8), dpi=dpi)
+    ax = fig.add_subplot(1, 1, 1)
+
+    _setup_map_axis(ax, x_range, y_range, f"Trajectory GT vs Pred (mode {command_idx})")
+    _draw_map(ax, gt_map, "GT", alpha=0.25, linestyle="--", linewidth=1.2, add_legend=True)
+    _draw_map(ax, pred_map, "Pred", alpha=0.40, linestyle=":", linewidth=1.2, add_legend=True)
+    _draw_traj(ax, gt_traj, "GT trajectory", "black", "--", 2.2)
+    _draw_traj(ax, pred_traj, "Pred trajectory", "limegreen", "-", 2.5)
+    ax.legend(fontsize=9, loc="upper right")
+
+    fig.suptitle(f"sample: {sample_token}", fontsize=12)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+    fig.savefig(out_file, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _cleanup_scene_pngs(seven_paths, traj_paths, scene_token, keep_seven=False, keep_traj=True):
+    if not keep_seven and seven_paths:
+        removed = 0
+        for tmp_png in seven_paths:
+            if os.path.exists(tmp_png):
+                os.remove(tmp_png)
+                removed += 1
+        print(f"[cleanup] removed {removed} 7-panel PNGs for {scene_token}")
+    if not keep_traj and traj_paths:
+        removed = 0
+        for tmp_png in traj_paths:
+            if os.path.exists(tmp_png):
+                os.remove(tmp_png)
+                removed += 1
+        print(f"[cleanup] removed {removed} trajectory PNGs for {scene_token}")
+
+
+def _save_scene_gif(scene_token, image_paths, scene_dir, gif_ms, first_batch_index, last_batch_index, file_suffix=""):
     if not image_paths:
         return None
 
@@ -562,7 +622,7 @@ def _save_scene_gif(scene_token, image_paths, scene_dir, gif_ms, first_batch_ind
         with Image.open(image_path) as image:
             frames.append(image.convert("RGBA").copy())
 
-    gif_path = scene_dir / f"scene_{scene_token}_{first_batch_index:06d}_{last_batch_index:06d}.gif"
+    gif_path = scene_dir / f"scene_{scene_token}{file_suffix}_{first_batch_index:06d}_{last_batch_index:06d}.gif"
     frames[0].save(
         gif_path,
         save_all=True,
@@ -573,7 +633,7 @@ def _save_scene_gif(scene_token, image_paths, scene_dir, gif_ms, first_batch_ind
     return gif_path
 
 
-def _save_scene_mp4(scene_token, image_paths, scene_dir, gif_ms, first_batch_index, last_batch_index):
+def _save_scene_mp4(scene_token, image_paths, scene_dir, gif_ms, first_batch_index, last_batch_index, file_suffix=""):
     if not image_paths:
         return None
 
@@ -584,7 +644,7 @@ def _save_scene_mp4(scene_token, image_paths, scene_dir, gif_ms, first_batch_ind
 
     frame_height, frame_width = frames[0].shape[:2]
     fps = max(1.0, 1000.0 / max(1, gif_ms))
-    mp4_path = scene_dir / f"scene_{scene_token}_{first_batch_index:06d}_{last_batch_index:06d}.mp4"
+    mp4_path = scene_dir / f"scene_{scene_token}{file_suffix}_{first_batch_index:06d}_{last_batch_index:06d}.mp4"
     writer = cv2.VideoWriter(
         str(mp4_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
@@ -605,7 +665,7 @@ def _save_scene_mp4(scene_token, image_paths, scene_dir, gif_ms, first_batch_ind
     return mp4_path
 
 
-def _save_scene_animations(scene_token, image_paths, scene_dir, gif_ms, first_batch_index, last_batch_index):
+def _save_scene_animations(scene_token, image_paths, scene_dir, gif_ms, first_batch_index, last_batch_index, file_suffix=""):
     gif_path = _save_scene_gif(
         scene_token,
         image_paths,
@@ -613,6 +673,7 @@ def _save_scene_animations(scene_token, image_paths, scene_dir, gif_ms, first_ba
         gif_ms,
         first_batch_index,
         last_batch_index,
+        file_suffix,
     )
     mp4_path = _save_scene_mp4(
         scene_token,
@@ -621,6 +682,7 @@ def _save_scene_animations(scene_token, image_paths, scene_dir, gif_ms, first_ba
         gif_ms,
         first_batch_index,
         last_batch_index,
+        file_suffix,
     )
     return gif_path, mp4_path
 
@@ -635,38 +697,69 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     cfg_grid_shape = tuple(int(x) for x in getattr(cfg, "grid_size", args.grid_shape))
 
+    # ---------- 场景边界统计（构建一次"未抽样"数据集）----------
+    # 关键：统计场景时必须禁用 dataset 的随机抽样（num_samples>0 会按
+    # subsample_seed 抽帧，导致场景统计与真实 keyframes 错位），因此显式
+    # 用 num_samples=0 + 完整 vis_indices 构建一次"未抽样"数据集来数帧。
+    from collections import OrderedDict
+    frames_per_scene = getattr(args, 'frames_per_scene', 40)
+    _full_vis = list(range(_dataset_len(cfg, args.split)))
+    _save_cfg = dict(cfg.val_dataset_config)
+    cfg.val_dataset_config.update({"vis_indices": _full_vis, "num_samples": 0})
+    loader_tmp = _build_loader(cfg, args.split)
+    keyframes = _resolve_dataset_keyframes(loader_tmp.dataset)
+    cfg.val_dataset_config.clear()
+    cfg.val_dataset_config.update(_save_cfg)
+    scene_frame_counts = OrderedDict()
+    for token, _idx in keyframes:
+        scene_frame_counts.setdefault(token, 0)
+        scene_frame_counts[token] += 1
+    scene_items = list(scene_frame_counts.items())
+
+    if args.list_scenes:
+        # --list-scenes：仅打印场景序号列表（不加载模型、不推理）
+        print(f"[SCENES] {len(scene_items)} scenes in split '{args.split}', in dataset order:")
+        for idx, (token, count) in enumerate(scene_items):
+            print(f"  [{idx:03d}] scene={token} frames={count}")
+        print("[SCENES] use --scene-indices <idx...> to visualize any subset, e.g. --scene-indices 3 7 12")
+        return
+
     checkpoint_path = _checkpoint_path(args)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     model_instance = _load_model(cfg, checkpoint_path, device)
-    if args.vis_index is not None and len(args.vis_index) > 0:
+
+    if args.scene_indices is not None and len(args.scene_indices) > 0:
+        # --scene-indices A B C：用户按场景序号（--list-scenes 输出）任意挑选
+        # 场景，按给定顺序依次可视化，每个场景独立产出 GIF/MP4 + 每帧轨迹图。
+        # 优先级高于 --vis-index / --scenes。
+        vis_indices = []
+        picked = []
+        for sidx in args.scene_indices:
+            if not 0 <= sidx < len(scene_items):
+                print(f"[WARN] scene index {sidx} out of range [0, {len(scene_items)}), skipped")
+                continue
+            token, count = scene_items[sidx]
+            take = min(count, frames_per_scene)
+            scene_offset = sum(c for _t, c in scene_items[:sidx])
+            vis_indices.extend(range(scene_offset, scene_offset + take))
+            picked.append((sidx, token, take))
+        if not vis_indices:
+            raise SystemExit("No valid scene indices given via --scene-indices.")
+        cfg.val_dataset_config.update({"vis_indices": vis_indices, "num_samples": 0})
+        args.num_samples = len(vis_indices)
+        for sidx, token, take in picked:
+            print(f"[SCENES] selected [{sidx:03d}] scene={token} frames={take}")
+    elif args.vis_index is not None and len(args.vis_index) > 0:
         # 显式索引会覆盖随机抽样，保持同 scene 帧连续（视频需要）
         cfg.val_dataset_config.update({"vis_indices": args.vis_index, "num_samples": 0})
         # 关键修复：--vis-index 显式列出所有帧时，覆盖默认 --num-samples
         # （默认 4 会在 4 帧后 break，导致 40 帧场景只出 4 帧）
         args.num_samples = len(args.vis_index)
-    if args.scenes > 0:
-        # --scenes N：自动取前 N 个完整场景，每场景固定取前 frames_per_scene 帧
-        # （默认 40），保证每个场景 GIF 恰好 40 帧。按场景边界对齐，超出部分
-        # （数据集个别场景 41/39 帧）自动截断。
-        # 关键：统计场景时必须禁用 dataset 的随机抽样（num_samples>0 会按
-        # subsample_seed 抽帧，导致场景统计与真实 keyframes 错位），因此显式
-        # 用 num_samples=0 + 完整 vis_indices 构建一次"未抽样"数据集来数帧。
-        from collections import OrderedDict
-        frames_per_scene = getattr(args, 'frames_per_scene', 40)
-        # 临时禁用抽样，统计完整 keyframes 的场景边界
-        _full_vis = list(range(_dataset_len(cfg, args.split)))
-        _save_cfg = dict(cfg.val_dataset_config)
-        cfg.val_dataset_config.update({"vis_indices": _full_vis, "num_samples": 0})
-        loader_tmp = _build_loader(cfg, args.split)
-        keyframes = _resolve_dataset_keyframes(loader_tmp.dataset)
-        cfg.val_dataset_config.clear()
-        cfg.val_dataset_config.update(_save_cfg)
-        scene_frame_counts = OrderedDict()
-        for token, _idx in keyframes:
-            scene_frame_counts.setdefault(token, 0)
-            scene_frame_counts[token] += 1
-        scenes_list = list(scene_frame_counts.items())[args.scene_start:args.scene_start + args.scenes]
-        scene_start = sum(cnt for _tok, cnt in list(scene_frame_counts.items())[:args.scene_start])
+    elif args.scenes > 0:
+        # --scenes N [--scene-start S]：自动取 [S, S+N) 连续场景，每场景固定取
+        # 前 frames_per_scene 帧（默认 40），按场景边界对齐，超出部分自动截断。
+        scenes_list = scene_items[args.scene_start:args.scene_start + args.scenes]
+        scene_start = sum(cnt for _tok, cnt in scene_items[:args.scene_start])
         vis_indices = []
         for token, count in scenes_list:
             take = min(count, frames_per_scene)
@@ -686,6 +779,7 @@ def main():
     current_scene_token = None
     current_scene_dir = None
     current_scene_image_paths = []
+    current_scene_traj_paths = []
     current_scene_first_batch_index = None
     current_scene_last_batch_index = None
 
@@ -719,12 +813,30 @@ def main():
                     if mp4_path is not None:
                         print(f"[OK] saved {mp4_path}")
                         saved_mp4s += 1
-                    if args.no_png:
-                        for tmp_png in current_scene_image_paths:
-                            if os.path.exists(tmp_png):
-                                os.remove(tmp_png)
-                        print(f"[cleanup] removed {len(current_scene_image_paths)} frame PNGs for {current_scene_token}")
+                    traj_gif_path, traj_mp4_path = _save_scene_animations(
+                        current_scene_token,
+                        current_scene_traj_paths,
+                        current_scene_dir,
+                        args.gif_ms,
+                        current_scene_first_batch_index,
+                        current_scene_last_batch_index,
+                        file_suffix="_traj",
+                    )
+                    if traj_gif_path is not None:
+                        print(f"[OK] saved {traj_gif_path}")
+                        saved_gifs += 1
+                    if traj_mp4_path is not None:
+                        print(f"[OK] saved {traj_mp4_path}")
+                        saved_mp4s += 1
+                    _cleanup_scene_pngs(
+                        current_scene_image_paths,
+                        current_scene_traj_paths,
+                        current_scene_token,
+                        keep_seven=args.keep_seven_png,
+                        keep_traj=not args.no_png,
+                    )
                 current_scene_image_paths = []
+                current_scene_traj_paths = []
                 current_scene_first_batch_index = None
                 current_scene_last_batch_index = None
 
@@ -762,6 +874,7 @@ def main():
             pred_map = _prediction_map_dict(result_dict, args.score_thresh)
 
             save_path = current_scene_dir / f"batch_{batch_index:06d}_frame_{scene_frame_index:03d}_{sample_token}.png"
+            traj_save_path = current_scene_dir / f"batch_{batch_index:06d}_frame_{scene_frame_index:03d}_{sample_token}_traj.png"
             _save_combined_figure(
                 pred_occ,
                 gt_occ,
@@ -779,8 +892,22 @@ def main():
                 front_image,
                 back_image,
             )
+            _save_traj_figure(
+                gt_map,
+                pred_map,
+                gt_traj,
+                pred_traj,
+                sample_token,
+                traj_save_path,
+                x_range,
+                y_range,
+                command_idx,
+                args.dpi,
+            )
             print(f"[OK] saved {save_path}")
+            print(f"[OK] saved {traj_save_path}")
             current_scene_image_paths.append(save_path)
+            current_scene_traj_paths.append(traj_save_path)
             current_scene_last_batch_index = batch_index
             saved += 1
 
@@ -799,11 +926,28 @@ def main():
         if mp4_path is not None:
             print(f"[OK] saved {mp4_path}")
             saved_mp4s += 1
-        if args.no_png:
-            for tmp_png in current_scene_image_paths:
-                if os.path.exists(tmp_png):
-                    os.remove(tmp_png)
-            print(f"[cleanup] removed {len(current_scene_image_paths)} frame PNGs for {current_scene_token}")
+        traj_gif_path, traj_mp4_path = _save_scene_animations(
+            current_scene_token,
+            current_scene_traj_paths,
+            current_scene_dir,
+            args.gif_ms,
+            current_scene_first_batch_index,
+            current_scene_last_batch_index,
+            file_suffix="_traj",
+        )
+        if traj_gif_path is not None:
+            print(f"[OK] saved {traj_gif_path}")
+            saved_gifs += 1
+        if traj_mp4_path is not None:
+            print(f"[OK] saved {traj_mp4_path}")
+            saved_mp4s += 1
+        _cleanup_scene_pngs(
+            current_scene_image_paths,
+            current_scene_traj_paths,
+            current_scene_token,
+            keep_seven=args.keep_seven_png,
+            keep_traj=not args.no_png,
+        )
 
     if saved == 0:
         raise SystemExit("No samples were visualized. Check --start-index and dataset length.")

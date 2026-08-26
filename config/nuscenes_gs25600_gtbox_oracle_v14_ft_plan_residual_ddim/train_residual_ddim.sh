@@ -7,7 +7,7 @@ TORCHRUN="${TORCHRUN:-/data/chenz/conda_env/splatting/bin/torchrun}"
 CONFIG="config/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim.py"
 BASELINE_CHECKPOINT="exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/checkpoints/epoch_15.pth"
 WORK_DIR="${WORK_DIR:-exp/nuscenes_gs25600_v14_ft_plan_residual_ddim}"
-GPUS="${GPUS:-0,1,2,3}"
+GPUS="${GPUS:-4,5,6,7}"
 VALIDATE_FIRST="${VALIDATE_FIRST:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
