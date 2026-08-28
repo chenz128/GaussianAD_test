@@ -10,7 +10,7 @@
 - 每个实验以独立 --out-dir 保存，输出目录结构相同
   （scene_<token>/），便于横向对比。
 
-[1] nuscenes_gs25600_base_plan_new（base planner 基线）
+[1] nuscenes_gs25600_base_plan_new（base planner 基线，物理 GPU0）
 cd /data/xinyao/navsim_workspace/GaussianAD
 /data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
     --py-config config/nuscenes_gs25600_base_plan_new/nuscenes_gs25600_base_plan_new.py \
@@ -21,26 +21,28 @@ cd /data/xinyao/navsim_workspace/GaussianAD
     --gif-ms 120 \
     --out-dir exp/nuscenes_gs25600_base_plan_new/vis_occ_map_plan_results_cmp
 
-[2] nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual（v12 fut-attn global-residual）
+[2] nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual（v12 fut-attn global-residual，物理 GPU1）
+注意：cumm/spconv 在非 cuda:0 设备号上会崩溃（CUDA illegal memory access），
+必须用 CUDA_VISIBLE_DEVICES=<物理卡> 把目标卡映射为进程内 cuda:0。
 cd /data/xinyao/navsim_workspace/GaussianAD
-/data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
+CUDA_VISIBLE_DEVICES=1 /data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
     --py-config config/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futattn_global_residual/nuscenes_gs25600_gtbox_oracle_v12_ft_plan_futattn_global_residual.py \
     --work-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual \
     --resume-from exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/checkpoints/epoch_15.pth \
     --scene-indices 0 15 30 45 60 75 90 105 120 135 \
-    --device cuda:1 \
+    --device cuda:0 \
     --gif-ms 120 \
     --out-dir exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/vis_occ_map_plan_results_cmp
 
-[3] nuscenes_gs25600_v14_ft_plan_residual_ddim（v14 residual-DDIM，需 VERIFIED_V12_CHECKPOINT）
+[3] nuscenes_gs25600_v14_ft_plan_residual_ddim（v14 residual-DDIM，物理 GPU2，需 VERIFIED_V12_CHECKPOINT）
 cd /data/xinyao/navsim_workspace/GaussianAD
 export VERIFIED_V12_CHECKPOINT=/data/xinyao/navsim_workspace/GaussianAD/exp/nuscenes_gs25600_v12_fixempty_ft_plan_futattn_global_residual/checkpoints/epoch_15.pth
-/data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
+CUDA_VISIBLE_DEVICES=2 /data/chenz/conda_env/splatting/bin/python tools/viz/visualize_occ_map_plan_results.py \
     --py-config config/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim/nuscenes_gs25600_gtbox_oracle_v14_ft_plan_residual_ddim.py \
     --work-dir exp/nuscenes_gs25600_v14_ft_plan_residual_ddim \
     --resume-from exp/nuscenes_gs25600_v14_ft_plan_residual_ddim/checkpoints/epoch_15.pth \
     --scene-indices 0 15 30 45 60 75 90 105 120 135 \
-    --device cuda:2 \
+    --device cuda:0 \
     --gif-ms 120 \
     --out-dir exp/nuscenes_gs25600_v14_ft_plan_residual_ddim/vis_occ_map_plan_results_cmp
 
