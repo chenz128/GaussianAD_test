@@ -1,5 +1,8 @@
+# Local-only files and directories
+.DS_Store
+/data
+
 # Large directories
-data/
 exp/
 assets/
 ckpts/
