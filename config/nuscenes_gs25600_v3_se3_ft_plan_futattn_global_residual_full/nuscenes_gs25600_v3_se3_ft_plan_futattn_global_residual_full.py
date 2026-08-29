@@ -2,10 +2,8 @@
 
 This configuration is intentionally isolated.  It inherits the isolated
 V3-SE3 port, preserves its OCC/flow/detection path and replaces only the
-planner backend.  Initial weights are assembled as follows:
-
-* V3-SE3 epoch 15: perception, detection and V3-SE3 OCC/future generator.
-* FutAttn-Global-Residual epoch 15: map_decoder and planner_head.
+planner backend.  The complete joint model is trained from epoch 0; only the
+R101 backbone pretraining used by ``nuscenes_gs25600_v12_full`` is loaded.
 
 The full-data schedule follows ``chenz/nuscenes_gs25600_v12_full``:
 all train/val keyframes, 20 epochs, validation every 4 epochs.
@@ -27,17 +25,18 @@ max_epochs = 20
 eval_every_epochs = 4
 train_dataset_config = dict(num_samples=0)
 val_dataset_config = dict(num_samples=0)
+# V3-SE3's direct-future head requires one sample per DDP worker.  With the
+# reference eight-GPU launch this gives a global batch size of eight.
+train_loader = dict(batch_size=1)
+val_loader = dict(batch_size=1)
 
 
 # -------------------------------------------------------------------------
-# Stage initialization and joint optimization.
-# load_from starts a fresh 20-epoch schedule; it does not resume either
-# source optimizer/scheduler.
+# From-scratch joint optimization.  As in v12_full, ``load_from`` supplies
+# only the generic R101 detector backbone initialization; all V3-SE3 future,
+# map and planner-specific parameters start randomly initialized.
 # -------------------------------------------------------------------------
-load_from = (
-    'exp/nuscenes_gs25600_v3_se3_ft_plan_futattn_global_residual_full/'
-    'init/v3_se3_occ_plus_futattn_global_residual_planner_epoch15.pth'
-)
+load_from = 'ckpts/r101_dcn_fcos3d_pretrain.pth'
 
 lr = float(os.environ.get('LR', 2e-4))
 optimizer = dict(
@@ -45,7 +44,7 @@ optimizer = dict(
     paramwise_cfg=dict(custom_keys={'img_backbone': dict(lr_mult=0.1)}),
 )
 
-# All frontend/backend modules take part in the full joint fine-tuning.
+# All frontend/backend modules take part in full joint training.
 frozen_modules = []
 # Preserve the proven V3-SE3 DDP policy.  V3 direct-future generation can
 # leave conditional parameters unused for a batch; static_graph was used by

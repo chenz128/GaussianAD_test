@@ -6,6 +6,7 @@ from mmengine.registry import MODELS
 from .future_gaussian_direct_generator_v3_isolated import (
     FutureGaussianDirectGenerator,
 )
+from .future_local_aggregate_v3_isolated import aggregate_v3_future
 from .gaussian_head import GaussianHead
 
 
@@ -236,8 +237,12 @@ class GaussianHeadFrontierV3Isolated(GaussianHead):
                 cov_step = torch.cat([cov_step, cov_all[:, -1:]], 1)
 
             _, count = means_step.shape[:2]
-            semantics = self.aggregator(
-                sampled_xyz.clone().float(), means_step,
+            # The current-frame path keeps the shared LocalAggregator and its
+            # centre-in-grid assertion.  Only V3 future-flow accepts centres
+            # outside the ROI whose finite Gaussian footprint overlaps it,
+            # matching the original V3-SE3 implementation.
+            semantics = aggregate_v3_future(
+                self.aggregator, sampled_xyz.clone().float(), means_step,
                 opacity_step.reshape(batch_size, count), semantics_step,
                 scales_step, cov_step)[None].transpose(1, 2)
             predictions.append([dict(
