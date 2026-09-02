@@ -31,6 +31,10 @@ fi
 export LR="${LR:-2e-4}"
 export AUX_W="${AUX_W:-2.0}"
 export COL_W="${COL_W:-0.1}"
+export PLAN_DIRECT_BUDGET="${PLAN_DIRECT_BUDGET:-6400}"
+# Protect the proven V3-SE3 OCC generator from Planner gradients by default.
+# Use a positive value only for a separate joint-gradient ablation.
+export PLAN_FUTURE_GRAD_SCALE="${PLAN_FUTURE_GRAD_SCALE:-0.0}"
 
 cd "${REPO}"
 mkdir -p "${WORK_DIR}"
@@ -45,6 +49,8 @@ mkdir -p "${WORK_DIR}"
   echo "batch      : per_gpu=${PER_GPU_BATCH}, global=${GLOBAL_BATCH}"
   echo "lr         : ${LR} (v12_full 8-GPU reference)"
   echo "loss       : V3 losses + map/plan + aux(${AUX_W}) + SAT col(${COL_W})"
+  echo "plan input : predicted Future Gaussian (current 25600 + direct ${PLAN_DIRECT_BUDGET})"
+  echo "plan->V3 grad scale: ${PLAN_FUTURE_GRAD_SCALE}"
   echo "gpus       : ${GPUS} (nproc=${NPROC}, port=${MASTER_PORT})"
   echo "git branch : $(git rev-parse --abbrev-ref HEAD)"
   echo "git commit : $(git rev-parse HEAD)"

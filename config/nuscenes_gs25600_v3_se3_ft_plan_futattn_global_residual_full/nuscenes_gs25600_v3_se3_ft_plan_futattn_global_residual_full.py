@@ -7,6 +7,12 @@ R101 backbone pretraining used by ``nuscenes_gs25600_v12_full`` is loaded.
 
 The full-data schedule follows ``chenz/nuscenes_gs25600_v12_full``:
 all train/val keyframes, 20 epochs, validation every 4 epochs.
+
+The OCC and Planner paths are deliberately separated.  The original V3-SE3
+OCC/flow branch stays numerically intact, while Planner receives only a
+whitelisted bank of model-predicted Future Gaussians generated from current /
+past observations.  Future pose GT, ego trajectory GT, GT boxes and occupancy
+labels cannot reach Planner forward.
 """
 
 from copy import deepcopy
@@ -16,6 +22,19 @@ import os
 _base_ = [
     '../nuscenes_gs25600_v3_se3/nuscenes_gs25600_v3_se3.py'
 ]
+
+custom_imports = dict(
+    imports=[
+        'model.encoder.temporal_encoder.gaussian_temporal_encoder_v3_isolated',
+        'model.head.gaussian_head_frontier_v3_isolated',
+        'loss.occupancy_loss_flow_v3_isolated',
+        'dataset.future_lidar_pose_v3_isolated',
+        'model.head.gaussian_head_frontier_v3_plan_isolated',
+        'model.planner.planner_v12_future_gaussian_isolated',
+        'model.segmentor.bev_segmentor_v3_future_plan_isolated',
+    ],
+    allow_failed_imports=False,
+)
 
 
 # -------------------------------------------------------------------------
@@ -78,8 +97,20 @@ _cross_layer = dict(
 )
 
 model = dict(
+    type='BEVSegmentorV3FuturePlanIsolated',
+    head=dict(
+        type='GaussianHeadFrontierV3PlanIsolated',
+        # Keep all 25,600 current Gaussians and append at most 6,400 direct
+        # future Gaussians.  Planner gradients do not modify the proven V3-SE3
+        # generator by default; set PLAN_FUTURE_GRAD_SCALE only for an ablation.
+        planner_direct_budget=int(os.environ.get(
+            'PLAN_DIRECT_BUDGET', 6400)),
+        planner_future_grad_scale=float(os.environ.get(
+            'PLAN_FUTURE_GRAD_SCALE', 0.0)),
+        planner_fut_ts=6,
+    ),
     planner_head=dict(
-        type='VADHeadFutAttnGlobalResidual',
+        type='VADHeadFutAttnGlobalResidualFutureGaussianIsolated',
         time_interval=0.5,
         num_fourier_bands=8,
         fut_self_decoder=dict(
