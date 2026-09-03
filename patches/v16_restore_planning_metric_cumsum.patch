@@ -1,0 +1,10 @@
+diff --git a/dataset/metric_stp3.py b/dataset/metric_stp3.py
+--- a/dataset/metric_stp3.py
++++ b/dataset/metric_stp3.py
+@@ -40,4 +40,4 @@ def compute_planner_metric_stp3(
+     # PlanningMetric operates on positions in the current LiDAR frame, where
+     # the planner and its GT targets are represented as per-step displacements.
+-    # pred_ego_fut_trajs = pred_ego_fut_trajs.cumsum(dim=-2)
+-    # gt_ego_fut_trajs = gt_ego_fut_trajs.cumsum(dim=-2)
++    pred_ego_fut_trajs = pred_ego_fut_trajs.cumsum(dim=-2)
++    gt_ego_fut_trajs = gt_ego_fut_trajs.cumsum(dim=-2)
