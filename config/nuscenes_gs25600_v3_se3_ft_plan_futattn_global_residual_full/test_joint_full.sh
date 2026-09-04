@@ -28,7 +28,7 @@ GPUS="${GPUS:-0,1,2,3}"
 MASTER_PORT="${MASTER_PORT:-21873}"
 
 # ---- checkpoint 选择 ----
-EPOCH="${EPOCH:-16}"
+EPOCH="${EPOCH:-10}"
 if [[ "${EPOCH}" == "latest" ]]; then
   CKPT_DIR="${WORK_DIR}/checkpoints"
   CKPT_FILE="$(
@@ -45,7 +45,7 @@ else
   CKPT="${CKPT:-${WORK_DIR}/checkpoints/epoch_${EPOCH}.pth}"
   EPOCH_TAG="epoch_${EPOCH}"
 fi
-LOG_NAME="${LOG_NAME:-test_${EPOCH_TAG}}"
+LOG_NAME="${LOG_NAME:-test_${EPOCH_TAG}_v1}"
 
 if [[ ! -f "${CKPT}" ]]; then
   echo "[FATAL] checkpoint not found: ${CKPT}" >&2
